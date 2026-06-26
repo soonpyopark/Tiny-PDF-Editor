@@ -1,0 +1,1 @@
+"""Tiny PDF Editor editor."""

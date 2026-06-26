@@ -1,0 +1,11 @@
+{
+  "name": "tiny-pdf-editor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tiny PDF Editor desktop app",
+  "scripts": {
+    "build": "node scripts/build-dist.mjs",
+    "build:dist:exe": "node scripts/build-dist.mjs",
+    "build:dist:exe:update": "node scripts/build-dist.mjs --update"
+  }
+}
