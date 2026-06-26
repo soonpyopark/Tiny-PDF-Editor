@@ -1,4 +1,4 @@
-"""Thumbnail sidebar with multi-select and drag-and-drop."""
+"""Thumbnail sidebar with page list and drag-and-drop."""
 
 from __future__ import annotations
 
@@ -10,15 +10,17 @@ from PyQt6.QtGui import (
     QDrag,
     QDragEnterEvent,
     QDropEvent,
+    QFont,
+    QKeyEvent,
     QMouseEvent,
     QPainter,
     QPen,
     QPixmap,
+    QWheelEvent,
 )
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QCheckBox,
     QFrame,
     QLabel,
     QListWidget,
@@ -34,7 +36,9 @@ from pdf_editor.pixmap_utils import pixmap_from_fitz
 
 THUMB_ROLE = Qt.ItemDataRole.UserRole + 1
 THUMB_EMPTY_HINT = "Drag & Drop here."
-DEFAULT_PANEL_WIDTH = 270
+THUMB_SCALE_LEVELS = (55, 70, 82, 95, 112, 135, 165)
+DEFAULT_THUMB_SCALE_LEVEL = 4
+DEFAULT_THUMB_SCALE = THUMB_SCALE_LEVELS[DEFAULT_THUMB_SCALE_LEVEL - 1]
 THUMB_CACHE_MAX = 50
 THUMB_KEEP_BUFFER = 3
 PAGE_MOVE_MIME = "application/x-pdf-editor-page-indices"
@@ -42,49 +46,35 @@ _CHILD_STYLE = "background: transparent; border: none;"
 _THUMB_MARGIN = 6
 _THUMB_SPACING = 4
 _THUMB_LABEL_HEIGHT = 20
-DROP_INDICATOR_COLOR = QColor("#d32f2f")
+THUMB_ITEM_GAP = 20
+_PANEL_HEADER_MIN_WIDTH = 212
+_PANEL_EDGE_PADDING = 12
+DROP_INDICATOR_COLOR = QColor("#1a73e8")
 DROP_INDICATOR_WIDTH = 2
 DROP_INDICATOR_TICK = 7
 
 
-def _paint_checkbox_indicator(painter: QPainter, rect, checked: bool) -> None:
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    if checked:
-        painter.setBrush(QColor("#1a73e8"))
-        painter.setPen(QPen(QColor("#1a73e8"), 1))
-    else:
-        painter.setBrush(QColor("#ffffff"))
-        painter.setPen(QPen(QColor("#b8b8b8"), 1))
-    painter.drawRoundedRect(rect, 3, 3)
-    if checked:
-        pen = QPen(QColor("#ffffff"), 2)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(pen)
-        x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
-        painter.drawLine(x + 3, y + h // 2, x + w // 2 - 1, y + h - 4)
-        painter.drawLine(x + w // 2 - 1, y + h - 4, x + w - 3, y + 3)
+def thumb_scale_for_level(level: int) -> int:
+    """Return pixel width for 1-based level (1..7)."""
+    index = max(1, min(len(THUMB_SCALE_LEVELS), level)) - 1
+    return THUMB_SCALE_LEVELS[index]
 
 
-class ThumbCheckBox(QCheckBox):
-    """Compact checkbox matching Windows-style thumbnail selection."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setFixedSize(18, 18)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setStyleSheet("background: transparent; border: none;")
-
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        _paint_checkbox_indicator(painter, QRect(1, 1, 16, 16), self.isChecked())
-        painter.end()
+def thumb_level_for_scale(scale: int) -> int:
+    """Return nearest 1-based level for a pixel width."""
+    best_level = 1
+    best_diff = abs(THUMB_SCALE_LEVELS[0] - scale)
+    for index, value in enumerate(THUMB_SCALE_LEVELS, start=1):
+        diff = abs(value - scale)
+        if diff < best_diff:
+            best_diff = diff
+            best_level = index
+    return best_level
 
 
 class ThumbnailItemWidget(QWidget):
-    """Single thumbnail with top-left checkbox."""
+    """Single thumbnail cell."""
 
-    check_changed = pyqtSignal(int)
     thumb_pressed = pyqtSignal(object)  # Qt.KeyboardModifiers
     thumb_released = pyqtSignal()
     drag_started = pyqtSignal()
@@ -99,7 +89,6 @@ class ThumbnailItemWidget(QWidget):
         super().__init__(parent)
         self._thumb_scale = max(32, thumb_scale)
         self._thumb_bounds = QSize(self._thumb_scale, max(45, int(self._thumb_scale * 1.4)))
-        self._block_checkbox = False
         self._press_pos: QPoint | None = None
         self._drag_started = False
         self._selected = False
@@ -121,10 +110,6 @@ class ThumbnailItemWidget(QWidget):
         self._image = QLabel(self._thumb_area)
         self._image.setStyleSheet(_CHILD_STYLE)
         self._image.setFrameShape(QFrame.Shape.NoFrame)
-        self._checkbox = ThumbCheckBox(self._thumb_area)
-        self._checkbox.move(4, 4)
-        self._checkbox.stateChanged.connect(self._on_checkbox_changed)
-        self._checkbox.raise_()
 
         layout.addWidget(self._thumb_area, alignment=Qt.AlignmentFlag.AlignHCenter)
 
@@ -139,6 +124,7 @@ class ThumbnailItemWidget(QWidget):
 
         self.set_pixmap(pixmap)
         self.set_selected(False)
+        self._apply_cell_size()
 
     @classmethod
     def cell_size(cls, thumb_scale: int) -> QSize:
@@ -147,6 +133,12 @@ class ThumbnailItemWidget(QWidget):
         width = thumb_scale + _THUMB_MARGIN * 2
         height = _THUMB_MARGIN * 2 + thumb_h + _THUMB_SPACING + _THUMB_LABEL_HEIGHT
         return QSize(width, height)
+
+    @classmethod
+    def list_grid_size(cls, thumb_scale: int) -> QSize:
+        """Grid cell size includes vertical gap below each thumbnail box."""
+        cell = cls.cell_size(thumb_scale)
+        return QSize(cell.width(), cell.height() + THUMB_ITEM_GAP)
 
     def sizeHint(self) -> QSize:
         return self.cell_size(self._thumb_scale)
@@ -165,15 +157,6 @@ class ThumbnailItemWidget(QWidget):
         painter.end()
         super().paintEvent(event)
 
-    def set_checked(self, checked: bool, block_signals: bool = False) -> None:
-        self._block_checkbox = block_signals
-        self._checkbox.setChecked(checked)
-        self._checkbox.update()
-        self._block_checkbox = False
-
-    def is_checked(self) -> bool:
-        return self._checkbox.isChecked()
-
     def pixmap(self) -> QPixmap:
         return self._image.pixmap() or QPixmap()
 
@@ -190,7 +173,6 @@ class ThumbnailItemWidget(QWidget):
             scaled.width(),
             scaled.height(),
         )
-        self._checkbox.raise_()
 
     def set_thumb_scale(self, thumb_scale: int) -> None:
         self._thumb_scale = max(32, thumb_scale)
@@ -199,6 +181,10 @@ class ThumbnailItemWidget(QWidget):
         current = self.pixmap()
         if not current.isNull():
             self.set_pixmap(current)
+        self._apply_cell_size()
+
+    def _apply_cell_size(self) -> None:
+        self.setFixedSize(self.sizeHint())
         self.updateGeometry()
 
     def set_page_number(self, page_number: int) -> None:
@@ -206,14 +192,7 @@ class ThumbnailItemWidget(QWidget):
 
     def set_selected(self, selected: bool) -> None:
         self._selected = selected
-        self._checkbox.raise_()
-        self._checkbox.update()
         self.update()
-
-    def _on_checkbox_changed(self, state: int) -> None:
-        if self._block_checkbox:
-            return
-        self.check_changed.emit(1 if int(state) else 0)
 
     def _on_thumb_pressed(self, event: QMouseEvent) -> None:
         self._handle_item_pressed(event)
@@ -252,11 +231,12 @@ class ThumbnailItemWidget(QWidget):
 
 
 class ThumbnailListWidget(QListWidget):
-    """List widget with rubber-band multi-select and drop-between insertion."""
+    """List widget with multi-select, reorder drag, and file drop."""
 
     drop_at_index = pyqtSignal(int, list)
     pages_move_requested = pyqtSignal(int, list)
     context_action = pyqtSignal(str)
+    scale_changed = pyqtSignal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -266,7 +246,8 @@ class ThumbnailListWidget(QListWidget):
         self.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.setMovement(QListWidget.Movement.Static)
         self.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        self.setSpacing(4)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setSpacing(0)
         self.setUniformItemSizes(True)
         self.setIconSize(self.iconSize())
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
@@ -276,7 +257,6 @@ class ThumbnailListWidget(QListWidget):
         self.viewport().setAcceptDrops(True)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
-        self.itemSelectionChanged.connect(self._sync_checkbox_states)
         self.setStyleSheet(
             """
             QListWidget::item {
@@ -295,50 +275,61 @@ class ThumbnailListWidget(QListWidget):
             """
         )
         self.setToolTip("페이지를 드래그해 순서를 바꾸거나, 파일을 끌어다 놓으세요")
-        self._rubber_origin: QPoint | None = None
-        self._rubber_rect = QRect()
         self._drop_indicator_index: int | None = None
-        self._drag_start_row: int | None = None
-        self._block_checkbox_sync = False
-        self._pending_thumb_row: int | None = None
-        self._pending_thumb_modifiers = Qt.KeyboardModifier.NoModifier
-        self._rubber_block_click = False
-        self._rubber_additive = False
-        self._rubber_press_row = -1
-        self._rubber_press_was_selected = False
-        self._thumb_scale = 95
+        self._drag_start_indices: list[int] = []
+        self._block_selection_sync = False
+        self._pending_click_row: int | None = None
+        self._pending_click_modifiers = Qt.KeyboardModifier.NoModifier
+        self._anchor_index = 0
+        self._thumb_level = DEFAULT_THUMB_SCALE_LEVEL
+        self._thumb_scale = thumb_scale_for_level(self._thumb_level)
         self.configure_grid(self._thumb_scale)
-        self.viewport().installEventFilter(self)
+        self.itemSelectionChanged.connect(self._sync_selection_visuals)
+        self.currentRowChanged.connect(self._sync_selection_visuals)
 
     @staticmethod
     def column_width_for(thumb_scale: int) -> int:
-        return ThumbnailItemWidget.cell_size(thumb_scale).width() + 16
+        return ThumbnailItemWidget.cell_size(thumb_scale).width() + _PANEL_EDGE_PADDING
 
     def configure_grid(self, thumb_scale: int) -> None:
         self._thumb_scale = thumb_scale
-        cell = ThumbnailItemWidget.cell_size(thumb_scale)
-        self.setGridSize(cell)
+        self._thumb_level = thumb_level_for_scale(thumb_scale)
+        self.setGridSize(ThumbnailItemWidget.list_grid_size(thumb_scale))
         self.setWrapping(False)
         self.setFlow(QListWidget.Flow.TopToBottom)
+
+    def set_thumb_level(self, level: int) -> None:
+        self._thumb_level = max(1, min(len(THUMB_SCALE_LEVELS), level))
+        self._thumb_scale = thumb_scale_for_level(self._thumb_level)
+        self.configure_grid(self._thumb_scale)
 
     def set_thumbnail_size(self, size: int) -> None:
         self.configure_grid(size)
         self.setIconSize(self.iconSize().__class__(size, int(size * 1.4)))
-        self._refresh_item_sizes()
+        self._sync_item_widget_geometry()
 
-    def _refresh_item_sizes(self) -> None:
+    def _sync_item_widget_geometry(self) -> None:
+        """QListWidget item widgets must be resized manually when the cell grows."""
         for row in range(self.count()):
             item = self.item(row)
             widget = self.itemWidget(item)
             if item and isinstance(widget, ThumbnailItemWidget):
-                item.setSizeHint(widget.sizeHint())
+                size = widget.sizeHint()
+                widget.setFixedSize(size)
+                item.setSizeHint(size)
+        self.doItemsLayout()
+
+    def _refresh_item_sizes(self) -> None:
+        self._sync_item_widget_geometry()
 
     def update_item_pixmap(self, row: int, pixmap: QPixmap) -> None:
         item = self.item(row)
         widget = self.itemWidget(item)
         if item and isinstance(widget, ThumbnailItemWidget):
             widget.set_pixmap(pixmap)
-            item.setSizeHint(widget.sizeHint())
+            size = widget.sizeHint()
+            widget.setFixedSize(size)
+            item.setSizeHint(size)
 
     def clear(self) -> None:
         super().clear()
@@ -355,225 +346,172 @@ class ThumbnailListWidget(QListWidget):
     def selected_indices(self) -> list[int]:
         return sorted(self.row(item) for item in self.selectedItems())
 
+    def clear_all_selection(self) -> None:
+        self._block_selection_sync = True
+        self.clearSelection()
+        self._block_selection_sync = False
+        self._sync_selection_visuals()
+
+    def select_all_pages(self) -> None:
+        self._block_selection_sync = True
+        for row in range(self.count()):
+            item = self.item(row)
+            if item:
+                item.setSelected(True)
+        self._block_selection_sync = False
+        if self.count() > 0:
+            self._anchor_index = self.currentRow() if self.currentRow() >= 0 else 0
+        self._sync_selection_visuals()
+
+    def scroll_to_row(self, row: int) -> None:
+        if 0 <= row < self.count():
+            item = self.item(row)
+            if item:
+                self.scrollToItem(item, QAbstractItemView.ScrollHint.EnsureVisible)
+
     def set_item_widget(self, row: int, pixmap: QPixmap, page_number: int) -> None:
         item = self.item(row)
         if not item:
             return
 
         widget = ThumbnailItemWidget(pixmap, page_number, self._thumb_scale)
-        widget.check_changed.connect(lambda checked, r=row: self._on_checkbox_changed(r, checked))
-        widget.thumb_pressed.connect(lambda modifiers, r=row: self._on_thumb_pressed(r, modifiers))
+        widget.thumb_pressed.connect(
+            lambda modifiers, r=row: self._on_thumb_pressed(r, modifiers)
+        )
         widget.thumb_released.connect(lambda r=row: self._on_thumb_released(r))
         widget.drag_started.connect(lambda r=row: self._start_page_drag_from_row(r))
-        widget.installEventFilter(self)
         self.setItemWidget(item, widget)
-        item.setSizeHint(widget.sizeHint())
-
-    def _on_checkbox_changed(self, row: int, checked: int) -> None:
-        item = self.item(row)
-        if not item:
-            return
-        self._block_checkbox_sync = True
-        if checked:
-            item.setSelected(True)
-            self.setCurrentRow(row)
-        else:
-            item.setSelected(False)
-        widget = self.itemWidget(item)
-        if isinstance(widget, ThumbnailItemWidget):
-            widget.set_selected(item.isSelected())
-        self._block_checkbox_sync = False
+        size = widget.sizeHint()
+        widget.setFixedSize(size)
+        item.setSizeHint(size)
 
     def _on_thumb_pressed(self, row: int, modifiers: Qt.KeyboardModifier) -> None:
-        self._pending_thumb_row = row
-        self._pending_thumb_modifiers = modifiers
+        self._pending_click_row = row
+        self._pending_click_modifiers = modifiers
 
     def _on_thumb_released(self, row: int) -> None:
-        if self._rubber_block_click:
+        if self._pending_click_row != row:
             return
-        if self._pending_thumb_row != row:
-            return
-        self._apply_thumb_click(row, self._pending_thumb_modifiers)
-        self._pending_thumb_row = None
-        self._pending_thumb_modifiers = Qt.KeyboardModifier.NoModifier
+        self._apply_item_click(row, self._pending_click_modifiers)
+        self._pending_click_row = None
+        self._pending_click_modifiers = Qt.KeyboardModifier.NoModifier
 
-    def _row_for_widget(self, widget: QWidget) -> int:
-        for row in range(self.count()):
+    def clear(self) -> None:
+        super().clear()
+        self._anchor_index = 0
+
+    def _resolve_anchor_index(self, fallback_row: int) -> int:
+        if 0 <= self._anchor_index < self.count():
+            return self._anchor_index
+        current = self.currentRow()
+        if 0 <= current < self.count():
+            return current
+        return max(0, min(fallback_row, self.count() - 1)) if self.count() else 0
+
+    def _select_index_range(self, start: int, end: int) -> None:
+        for row in range(start, end + 1):
             item = self.item(row)
-            if item and self.itemWidget(item) is widget:
-                return row
-        return -1
+            if item:
+                item.setSelected(True)
 
-    def _event_pos_in_viewport(self, obj: QWidget, event: QMouseEvent) -> QPoint:
-        if obj is self.viewport():
-            return event.pos()
-        return self.viewport().mapFromGlobal(event.globalPosition().toPoint())
-
-    def _begin_rubber_band(
-        self,
-        pos: QPoint,
-        *,
-        additive: bool,
-        press_row: int = -1,
-        was_selected: bool = False,
-    ) -> None:
-        self._rubber_origin = pos
-        self._rubber_rect = QRect(pos, pos)
-        self._rubber_block_click = False
-        self._rubber_additive = additive
-        self._rubber_press_row = press_row
-        self._rubber_press_was_selected = was_selected
-        if not additive and not (press_row >= 0 and was_selected):
-            self._block_checkbox_sync = True
-            self.clearSelection()
-            self._sync_checkbox_states()
-            self._block_checkbox_sync = False
-
-    def _update_rubber_band(self, pos: QPoint) -> bool:
-        if self._rubber_origin is None:
-            return False
-        if (
-            pos - self._rubber_origin
-        ).manhattanLength() >= QApplication.startDragDistance():
-            if (
-                self._rubber_press_row >= 0
-                and self._rubber_press_was_selected
-            ):
-                self._rubber_origin = None
-                self._rubber_rect = QRect()
-                self.viewport().update()
-                return False
-            self._rubber_block_click = True
-        if not self._rubber_block_click:
-            return False
-        self._rubber_rect = QRect(self._rubber_origin, pos).normalized()
-        self._select_in_rubber_band()
-        self.viewport().update()
-        return True
-
-    def _end_rubber_band(self) -> bool:
-        was_rubber = self._rubber_block_click
-        if self._rubber_origin is not None:
-            self._rubber_origin = None
-            self._rubber_rect = QRect()
-            self.viewport().update()
-        if was_rubber:
-            self._sync_checkbox_states()
-            self._pending_thumb_row = None
-            self._pending_thumb_modifiers = Qt.KeyboardModifier.NoModifier
-        self._rubber_block_click = False
-        return was_rubber
-
-    def eventFilter(self, obj, event) -> bool:
-        if obj is not self.viewport() and not isinstance(obj, ThumbnailItemWidget):
-            return super().eventFilter(obj, event)
-
-        event_type = event.type()
-        if event_type in (
-            QEvent.Type.MouseButtonPress,
-            QEvent.Type.MouseButtonRelease,
-            QEvent.Type.MouseMove,
-        ):
-            mouse_event = event
-            if not isinstance(mouse_event, QMouseEvent):
-                return super().eventFilter(obj, event)
-
-            if event_type == QEvent.Type.MouseButtonPress:
-                if mouse_event.button() != Qt.MouseButton.LeftButton:
-                    return super().eventFilter(obj, event)
-                if obj is self.viewport() and self.itemAt(mouse_event.pos()) is not None:
-                    return super().eventFilter(obj, event)
-                additive = bool(
-                    mouse_event.modifiers() & Qt.KeyboardModifier.ControlModifier
-                )
-                press_row = (
-                    self._row_for_widget(obj)
-                    if isinstance(obj, ThumbnailItemWidget)
-                    else -1
-                )
-                was_selected = False
-                if press_row >= 0:
-                    item = self.item(press_row)
-                    was_selected = bool(item and item.isSelected())
-                self._begin_rubber_band(
-                    self._event_pos_in_viewport(obj, mouse_event),
-                    additive=additive,
-                    press_row=press_row,
-                    was_selected=was_selected,
-                )
-                return False
-
-            if event_type == QEvent.Type.MouseMove:
-                if not (mouse_event.buttons() & Qt.MouseButton.LeftButton):
-                    return super().eventFilter(obj, event)
-                if self._update_rubber_band(
-                    self._event_pos_in_viewport(obj, mouse_event)
-                ):
-                    return isinstance(obj, ThumbnailItemWidget)
-                return False
-
-            if event_type == QEvent.Type.MouseButtonRelease:
-                if mouse_event.button() != Qt.MouseButton.LeftButton:
-                    return super().eventFilter(obj, event)
-                if self._end_rubber_band():
-                    return isinstance(obj, ThumbnailItemWidget)
-                return False
-
-        return super().eventFilter(obj, event)
-
-    def _apply_thumb_click(self, row: int, modifiers: Qt.KeyboardModifier) -> None:
+    def _apply_item_click(self, row: int, modifiers: Qt.KeyboardModifier) -> None:
         item = self.item(row)
         if not item:
             return
+        self._block_selection_sync = True
 
-        self._block_checkbox_sync = True
-        if modifiers & Qt.KeyboardModifier.ControlModifier:
+        has_ctrl = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+        has_shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+
+        if has_shift:
+            anchor = self._resolve_anchor_index(row)
+            start = min(anchor, row)
+            end = max(anchor, row)
+            if not has_ctrl:
+                self.clearSelection()
+            self._select_index_range(start, end)
+            self.setCurrentRow(row)
+        elif has_ctrl:
             item.setSelected(not item.isSelected())
             self.setCurrentRow(row)
+            self._anchor_index = row
         else:
             self.clearSelection()
             item.setSelected(True)
             self.setCurrentRow(row)
-        self._sync_checkbox_states()
-        self._block_checkbox_sync = False
+            self._anchor_index = row
 
-    def _sync_checkbox_states(self) -> None:
-        if self._block_checkbox_sync:
+        self._block_selection_sync = False
+        self._sync_selection_visuals()
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+
+    def _sync_selection_visuals(self) -> None:
+        if self._block_selection_sync:
             return
         for row in range(self.count()):
             item = self.item(row)
             widget = self.itemWidget(item)
             if item and isinstance(widget, ThumbnailItemWidget):
-                selected = item.isSelected()
-                widget.set_checked(selected, block_signals=True)
-                widget.set_selected(selected)
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if self._rubber_origin is not None and self._update_rubber_band(event.pos()):
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        self._end_rubber_band()
-        super().mouseReleaseEvent(event)
+                widget.set_selected(item.isSelected())
 
     def _start_page_drag_from_row(self, row: int) -> None:
-        self._pending_thumb_row = None
-        self._pending_thumb_modifiers = Qt.KeyboardModifier.NoModifier
-        if row not in self.selected_indices():
+        indices = self.selected_indices()
+        if row not in indices:
+            self._block_selection_sync = True
+            self.clearSelection()
             item = self.item(row)
             if item:
-                self._block_checkbox_sync = True
-                self.clearSelection()
                 item.setSelected(True)
-                self.setCurrentRow(row)
-                self._sync_checkbox_states()
-                self._block_checkbox_sync = False
-        self._drag_start_row = row
+            self.setCurrentRow(row)
+            self._anchor_index = row
+            self._block_selection_sync = False
+            indices = [row]
+        self._drag_start_indices = sorted(indices)
+        self._sync_selection_visuals()
         self._start_page_drag()
+
+    def _build_drag_pixmap(self, indices: list[int]) -> QPixmap:
+        width, height = 128, 96
+        pixmap = QPixmap(width, height)
+        pixmap.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        preview_row = indices[0]
+        item = self.item(preview_row)
+        widget = self.itemWidget(item) if item else None
+        if isinstance(widget, ThumbnailItemWidget):
+            thumb = widget.pixmap()
+            if not thumb.isNull():
+                painter.setOpacity(0.72)
+                scaled = thumb.scaled(
+                    width - 16,
+                    height - 28,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                x = (width - scaled.width()) // 2
+                y = 4
+                painter.drawPixmap(x, y, scaled)
+
+        painter.setOpacity(1.0)
+        font = QFont()
+        font.setPointSize(9)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor("#1a1a1a"))
+        label = f"{len(indices)}페이지" if len(indices) > 1 else "1페이지"
+        painter.drawText(
+            0,
+            height - 22,
+            width,
+            20,
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+            label,
+        )
+        painter.end()
+        return pixmap
 
     def _set_item_widgets_transparent_for_mouse(self, transparent: bool) -> None:
         for row in range(self.count()):
@@ -586,9 +524,7 @@ class ThumbnailListWidget(QListWidget):
                 )
 
     def _start_page_drag(self) -> None:
-        indices = self.selected_indices()
-        if not indices and self._drag_start_row is not None:
-            indices = [self._drag_start_row]
+        indices = self._drag_start_indices
         if not indices:
             return
 
@@ -597,6 +533,9 @@ class ThumbnailListWidget(QListWidget):
 
         drag = QDrag(self)
         drag.setMimeData(mime)
+        drag_pixmap = self._build_drag_pixmap(indices)
+        drag.setPixmap(drag_pixmap)
+        drag.setHotSpot(QPoint(drag_pixmap.width() // 2, drag_pixmap.height() // 2))
         self._set_item_widgets_transparent_for_mouse(True)
         try:
             drag.exec(Qt.DropAction.MoveAction)
@@ -605,16 +544,47 @@ class ThumbnailListWidget(QListWidget):
         self._drop_indicator_index = None
         self.update()
 
-    def _select_in_rubber_band(self) -> None:
-        if not self._rubber_additive:
-            self.clearSelection()
-        for row in range(self.count()):
-            item = self.item(row)
-            if not item:
-                continue
-            rect = self.visualItemRect(item)
-            if self._rubber_rect.intersects(rect):
-                item.setSelected(True)
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if (
+            event.key() == Qt.Key.Key_A
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            self.select_all_pages()
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Escape:
+            self.clear_all_selection()
+            event.accept()
+            return
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.context_action.emit("delete")
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self.itemAt(event.pos()) is None
+            and not (event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        ):
+            self.clear_all_selection()
+        super().mousePressEvent(event)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta_y = event.angleDelta().y()
+            if delta_y == 0:
+                event.accept()
+                return
+            step = 1 if delta_y > 0 else -1
+            new_level = max(1, min(len(THUMB_SCALE_LEVELS), self._thumb_level + step))
+            if new_level != self._thumb_level:
+                self.set_thumb_level(new_level)
+                self.scale_changed.emit(self._thumb_scale)
+            event.accept()
+            return
+        super().wheelEvent(event)
 
     def _paint_drop_indicator(self, painter: QPainter, y: int, x1: int, x2: int) -> None:
         if x2 <= x1:
@@ -634,11 +604,6 @@ class ThumbnailListWidget(QListWidget):
         super().paintEvent(event)
         painter = QPainter(self.viewport())
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        if self._rubber_origin is not None and not self._rubber_rect.isNull():
-            painter.setPen(QPen(Qt.GlobalColor.blue, 1, Qt.PenStyle.DashLine))
-            painter.setBrush(Qt.GlobalColor.transparent)
-            painter.drawRect(self._rubber_rect)
 
         if self._drop_indicator_index is not None:
             y, x1, x2 = self._indicator_geometry(self._drop_indicator_index)
@@ -832,16 +797,11 @@ class ThumbnailListWidget(QListWidget):
 
     def _show_context_menu(self, pos: QPoint) -> None:
         menu = QMenu(self)
-        menu.addAction("삭제", lambda: self.context_action.emit("delete"))
-        menu.addSeparator()
-        menu.addAction("페이지 삽입...", lambda: self.context_action.emit("insert"))
-        menu.addAction("페이지 바꾸기...", lambda: self.context_action.emit("replace"))
-        menu.addSeparator()
-        menu.addAction("페이지보내기...", lambda: self.context_action.emit("export_pdf"))
+        menu.addAction("페이지 삭제", lambda: self.context_action.emit("delete"))
         menu.addAction("시계 방향 회전", lambda: self.context_action.emit("rotate_cw"))
         menu.addAction("반시계 방향 회전", lambda: self.context_action.emit("rotate_ccw"))
         menu.addSeparator()
-        menu.addAction("이미지로보내기...", lambda: self.context_action.emit("export_images"))
+        menu.addAction("빈 페이지 삽입", lambda: self.context_action.emit("insert_blank"))
         menu.exec(self.mapToGlobal(pos))
 
 
@@ -856,11 +816,14 @@ class ThumbnailPanel(QWidget):
     rotate_requested = pyqtSignal(list, int)
     export_pdf_requested = pyqtSignal(list)
     export_images_requested = pyqtSignal(list)
+    blank_page_requested = pyqtSignal(int)
+    thumb_scale_changed = pyqtSignal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._document: PdfDocument | None = None
-        self._thumb_scale = 95
+        self._thumb_level = DEFAULT_THUMB_SCALE_LEVEL
+        self._thumb_scale = thumb_scale_for_level(self._thumb_level)
         self._block_signals = False
         self._pending_rows: set[int] = set()
         self._thumb_cache: OrderedDict[int, QPixmap] = OrderedDict()
@@ -890,10 +853,29 @@ class ThumbnailPanel(QWidget):
         self.list_widget.pages_move_requested.connect(self._on_pages_move)
         self.list_widget.context_action.connect(self._on_context_action)
         self.list_widget.verticalScrollBar().valueChanged.connect(self._on_thumbnail_scroll)
+        self.list_widget.scale_changed.connect(self._on_list_scale_changed)
         self.thumb_stack.addWidget(self.list_widget)
         layout.addWidget(self.thumb_stack)
 
-        self.list_widget.configure_grid(self._thumb_scale)
+        self.list_widget.set_thumb_level(self._thumb_level)
+
+    def current_thumb_level(self) -> int:
+        return self._thumb_level
+
+    def set_thumb_level(self, level: int) -> None:
+        level = max(1, min(len(THUMB_SCALE_LEVELS), level))
+        if level == self._thumb_level:
+            return
+        self._thumb_level = level
+        self.set_thumbnail_scale(thumb_scale_for_level(level))
+        self.thumb_scale_changed.emit(self._thumb_scale)
+
+    def step_thumb_level(self, step: int) -> bool:
+        new_level = max(1, min(len(THUMB_SCALE_LEVELS), self._thumb_level + step))
+        if new_level == self._thumb_level:
+            return False
+        self.set_thumb_level(new_level)
+        return True
 
     def _update_empty_state(self) -> None:
         has_pages = bool(self._document and self._document.page_count > 0)
@@ -939,7 +921,8 @@ class ThumbnailPanel(QWidget):
         self._block_signals = True
         self._clear_thumbnail_cache()
         self._pending_rows.clear()
-        selected = select_indices if select_indices is not None else self.selected_indices()
+        if select_indices:
+            keep_index = select_indices[0]
         self.list_widget.clear()
         if self._document and self._document.page_count > 0:
             placeholder = self._placeholder_pixmap()
@@ -953,11 +936,14 @@ class ThumbnailPanel(QWidget):
             target = keep_index if keep_index is not None else 0
             target = max(0, min(target, self.list_widget.count() - 1))
             self.list_widget.setCurrentRow(target)
-
-            for row in selected:
-                if 0 <= row < self.list_widget.count():
-                    self.list_widget.item(row).setSelected(True)
-            self.list_widget._sync_checkbox_states()
+            if select_indices:
+                self.list_widget._block_selection_sync = True
+                for row in select_indices:
+                    if 0 <= row < self.list_widget.count():
+                        self.list_widget.item(row).setSelected(True)
+                self.list_widget._block_selection_sync = False
+            self.list_widget._sync_selection_visuals()
+            self.list_widget.scroll_to_row(target)
         self._block_signals = False
         self._update_empty_state()
         QTimer.singleShot(0, self._process_pending_thumbnails)
@@ -999,13 +985,18 @@ class ThumbnailPanel(QWidget):
             return
 
         target = 0 if keep_index is None else max(0, min(keep_index, count - 1))
-        self.list_widget.setCurrentRow(target)
-        self.list_widget.clearSelection()
-        if select_indices is not None:
+        if select_indices:
+            self.list_widget._block_selection_sync = True
+            self.list_widget.clearSelection()
             for row in select_indices:
                 if 0 <= row < count:
                     self.list_widget.item(row).setSelected(True)
-        self.list_widget._sync_checkbox_states()
+            if select_indices:
+                target = max(0, min(select_indices[0], count - 1))
+            self.list_widget._block_selection_sync = False
+        self.list_widget.setCurrentRow(target)
+        self.list_widget._sync_selection_visuals()
+        self.list_widget.scroll_to_row(target)
 
         first_changed = min(deleted[0], count - 1)
         for row in range(first_changed, count):
@@ -1044,13 +1035,18 @@ class ThumbnailPanel(QWidget):
             self._set_row_placeholder(row)
 
         target = index if keep_index is None else max(0, min(keep_index, self.list_widget.count() - 1))
-        self.list_widget.setCurrentRow(target)
-        self.list_widget.clearSelection()
-        if select_indices is not None:
+        if select_indices:
+            self.list_widget._block_selection_sync = True
+            self.list_widget.clearSelection()
             for row in select_indices:
                 if 0 <= row < self.list_widget.count():
                     self.list_widget.item(row).setSelected(True)
-        self.list_widget._sync_checkbox_states()
+            if select_indices:
+                target = max(0, min(select_indices[0], self.list_widget.count() - 1))
+            self.list_widget._block_selection_sync = False
+        self.list_widget.setCurrentRow(target)
+        self.list_widget._sync_selection_visuals()
+        self.list_widget.scroll_to_row(target)
         self._block_signals = False
         self._update_empty_state()
         self._process_pending_thumbnails()
@@ -1067,7 +1063,9 @@ class ThumbnailPanel(QWidget):
         widget = self.list_widget.itemWidget(item)
         if item and isinstance(widget, ThumbnailItemWidget):
             widget.set_pixmap(self._placeholder_pixmap())
-            item.setSizeHint(widget.sizeHint())
+            size = widget.sizeHint()
+            widget.setFixedSize(size)
+            item.setSizeHint(size)
 
     def _renumber_page_labels(self) -> None:
         for row in range(self.list_widget.count()):
@@ -1079,6 +1077,8 @@ class ThumbnailPanel(QWidget):
 
     def _render_thumbnail(self, index: int) -> QPixmap:
         assert self._document is not None
+        if self._document.rendering_paused:
+            return self._placeholder_pixmap()
         pix = self._document.render_thumbnail_pixmap(index, self._thumb_scale)
         return pixmap_from_fitz(pix)
 
@@ -1145,11 +1145,18 @@ class ThumbnailPanel(QWidget):
     def set_current_index(self, index: int) -> None:
         if 0 <= index < self.list_widget.count():
             self.list_widget.setCurrentRow(index)
+            self.list_widget.scroll_to_row(index)
+            self.list_widget._sync_selection_visuals()
+
+    def _on_list_scale_changed(self, scale: int) -> None:
+        self.set_thumbnail_scale(scale)
+        self.thumb_scale_changed.emit(scale)
 
     def set_thumbnail_scale(self, width: int) -> None:
-        self._thumb_scale = width
-        self.list_widget.configure_grid(width)
-        self.list_widget.set_thumbnail_size(width)
+        self._thumb_level = thumb_level_for_scale(width)
+        self._thumb_scale = thumb_scale_for_level(self._thumb_level)
+        self.list_widget.set_thumb_level(self._thumb_level)
+        self.list_widget.set_thumbnail_size(self._thumb_scale)
         if not self._document or self.list_widget.count() == 0:
             return
 
@@ -1157,9 +1164,12 @@ class ThumbnailPanel(QWidget):
             item = self.list_widget.item(row)
             widget = self.list_widget.itemWidget(item)
             if item and isinstance(widget, ThumbnailItemWidget):
-                widget.set_thumb_scale(width)
-                item.setSizeHint(widget.sizeHint())
+                widget.set_thumb_scale(self._thumb_scale)
+                size = widget.sizeHint()
+                widget.setFixedSize(size)
+                item.setSizeHint(size)
 
+        self.list_widget._sync_item_widget_geometry()
         self._clear_thumbnail_cache()
         self._apply_fast_scale_preview()
         self._pending_rows = set(range(self.list_widget.count()))
@@ -1176,7 +1186,11 @@ class ThumbnailPanel(QWidget):
             if current.isNull():
                 continue
             widget.set_pixmap(current)
-            item.setSizeHint(widget.sizeHint())
+            size = widget.sizeHint()
+            widget.setFixedSize(size)
+            item.setSizeHint(size)
+
+        self.list_widget.doItemsLayout()
 
     def _on_thumbnail_scroll(self, _value: int) -> None:
         self._release_offscreen_thumbnails()
@@ -1185,6 +1199,8 @@ class ThumbnailPanel(QWidget):
 
     def _process_pending_thumbnails(self, batch_size: int = 6) -> None:
         if not self._document or not self._pending_rows:
+            return
+        if self._document.rendering_paused:
             return
 
         visible_pending = [
@@ -1235,7 +1251,7 @@ class ThumbnailPanel(QWidget):
     def get_panel_width_range(self) -> tuple[int, int, int]:
         """Return fixed width for single-column thumbnail sidebar."""
         col = ThumbnailListWidget.column_width_for(self._thumb_scale)
-        fixed_w = max(DEFAULT_PANEL_WIDTH, col + 20)
+        fixed_w = max(_PANEL_HEADER_MIN_WIDTH, col)
         return fixed_w, fixed_w, fixed_w
 
     def get_width_limits(self) -> tuple[int, int]:
@@ -1268,6 +1284,8 @@ class ThumbnailPanel(QWidget):
             self.rotate_requested.emit(indices or [self.current_index()], 90)
         elif action == "rotate_ccw":
             self.rotate_requested.emit(indices or [self.current_index()], -90)
+        elif action == "insert_blank":
+            self.blank_page_requested.emit(self._insert_index_after_current())
         elif action == "export_images":
             self.export_images_requested.emit(indices or [self.current_index()])
 

@@ -31,22 +31,32 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
-from pdf_editor.document import PdfDocument, SearchHit
+from pdf_editor.document import PdfDocument, SearchHit, format_file_size
 from pdf_editor.page_viewer import PageViewer
+from pdf_editor.reduce_size_dialog import ReduceSizeDialog
 from pdf_editor.resources import (
   apply_windows_window_icon,
   init_platform,
   load_app_icon,
 )
 from pdf_editor.splash_screen import finish_loading_splash, show_loading_splash, toggle_about_splash
-from pdf_editor.thumbnail_panel import ThumbnailPanel
+from pdf_editor.thumbnail_panel import (
+  DEFAULT_THUMB_SCALE_LEVEL,
+  THUMB_SCALE_LEVELS,
+  ThumbnailPanel,
+  thumb_scale_for_level,
+)
 
 
 AUTHOR_URL = "https://note4all.tistory.com"
 APP_TITLE = "Tiny PDF Editor"
-DEFAULT_WINDOW_WIDTH = 900
+APP_BORDER_COLOR = "#333333"
+APP_WINDOW_BACKGROUND = "#eeeeee"
+APP_BORDER_WIDTH = 1
+DEFAULT_WINDOW_WIDTH = 1024
 DEFAULT_WINDOW_HEIGHT = 900
 MIN_WINDOW_WIDTH = 520
 MIN_WINDOW_HEIGHT = 480
@@ -272,6 +282,8 @@ class DocumentTab(QWidget):
     header.addStretch()
 
     btn_width, btn_height = 28, 26
+    self._thumb_level = DEFAULT_THUMB_SCALE_LEVEL
+    self._thumb_size = thumb_scale_for_level(self._thumb_level)
     self.btn_thumb_zoom_out = QPushButton("-")
     self.btn_thumb_zoom_out.setFixedSize(btn_width, btn_height)
     self.btn_thumb_zoom_out.setToolTip("썸네일 축소")
@@ -280,6 +292,7 @@ class DocumentTab(QWidget):
     self.btn_thumb_zoom_in.setFixedSize(btn_width, btn_height)
     self.btn_thumb_zoom_in.setToolTip("썸네일 확대")
     header.addWidget(self.btn_thumb_zoom_in)
+
     self.btn_rotate_ccw = QPushButton("↺")
     self.btn_rotate_ccw.setFixedSize(btn_width, btn_height)
     self.btn_rotate_ccw.setToolTip("선택 페이지 반시계 회전")
@@ -306,10 +319,12 @@ class DocumentTab(QWidget):
     self.splitter.setStretchFactor(0, 0)
     self.splitter.setStretchFactor(1, 1)
     self.splitter.setChildrenCollapsible(False)
-    self.splitter.setHandleWidth(1)
+    self.splitter.setHandleWidth(APP_BORDER_WIDTH)
+    self.splitter.setStyleSheet(
+      f"QSplitter::handle:horizontal {{ background-color: {APP_WINDOW_BACKGROUND}; }}"
+    )
 
     self._left_panel = left
-    self._thumb_size = 95
     self._apply_panel_width_limits(set_default_size=True)
     if self.splitter.count() > 1:
       self.splitter.handle(0).setEnabled(False)
@@ -326,9 +341,16 @@ class DocumentTab(QWidget):
     self.thumbnails.rotate_requested.connect(self._on_rotate)
     self.thumbnails.export_pdf_requested.connect(self._on_export_pdf)
     self.thumbnails.export_images_requested.connect(self._on_export_images)
+    self.thumbnails.blank_page_requested.connect(self._on_insert_blank)
+    self.thumbnails.thumb_scale_changed.connect(
+      lambda _scale: self._apply_panel_width_limits()
+    )
+    self.thumbnails.thumb_scale_changed.connect(
+      lambda _scale: self._sync_thumb_zoom_buttons()
+    )
 
-    self.btn_thumb_zoom_in.clicked.connect(lambda: self._change_thumb_size(20))
-    self.btn_thumb_zoom_out.clicked.connect(lambda: self._change_thumb_size(-20))
+    self.btn_thumb_zoom_in.clicked.connect(lambda: self._change_thumb_size(1))
+    self.btn_thumb_zoom_out.clicked.connect(lambda: self._change_thumb_size(-1))
     self.btn_rotate_cw.clicked.connect(
       lambda: self._on_rotate(self.thumbnails.selected_indices() or [self.thumbnails.current_index()], 90)
     )
@@ -340,6 +362,23 @@ class DocumentTab(QWidget):
     )
 
     self._setup_page_navigation_shortcuts()
+    self._sync_thumb_zoom_buttons()
+
+  def _change_thumb_size(self, step: int) -> None:
+    if self.thumbnails.step_thumb_level(step):
+      self._thumb_level = self.thumbnails.current_thumb_level()
+      self._thumb_size = thumb_scale_for_level(self._thumb_level)
+      self._sync_thumb_zoom_buttons()
+
+  def _sync_thumb_zoom_buttons(self) -> None:
+    level = self.thumbnails.current_thumb_level()
+    max_level = len(THUMB_SCALE_LEVELS)
+    self._thumb_level = level
+    self._thumb_size = thumb_scale_for_level(level)
+    self.btn_thumb_zoom_out.setEnabled(level > 1)
+    self.btn_thumb_zoom_in.setEnabled(level < max_level)
+    self.btn_thumb_zoom_out.setToolTip(f"썸네일 축소 ({level}/{max_level})")
+    self.btn_thumb_zoom_in.setToolTip(f"썸네일 확대 ({level}/{max_level})")
 
   def _setup_page_navigation_shortcuts(self) -> None:
     prev_keys = (
@@ -373,17 +412,15 @@ class DocumentTab(QWidget):
       lambda: self.viewer.set_current_index(max(0, self.document.page_count - 1))
     )
 
-  def _change_thumb_size(self, delta: int) -> None:
-    self._thumb_size = max(55, min(220, self._thumb_size + delta))
-    self.thumbnails.set_thumbnail_scale(self._thumb_size)
-    self._apply_panel_width_limits()
-
   def _apply_panel_width_limits(self, set_default_size: bool = False) -> None:
     fixed_w, _, _ = self.thumbnails.get_panel_width_range()
     self._left_panel.setFixedWidth(fixed_w)
 
-    sizes = self.splitter.sizes()
-    total = sum(sizes) if sum(sizes) > 0 else DEFAULT_WINDOW_WIDTH
+    total = self.splitter.width()
+    if total <= 0:
+      total = self.width()
+    if total <= 0:
+      total = DEFAULT_WINDOW_WIDTH
 
     self.splitter.blockSignals(True)
     self.splitter.setSizes([fixed_w, max(200, total - fixed_w)])
@@ -391,6 +428,10 @@ class DocumentTab(QWidget):
 
     if self.splitter.count() > 1:
       self.splitter.handle(0).setEnabled(False)
+
+  def resizeEvent(self, event) -> None:
+    super().resizeEvent(event)
+    self._apply_panel_width_limits()
 
   def _on_thumb_selected(self, index: int) -> None:
     self.viewer.blockSignals(True)
@@ -453,6 +494,18 @@ class DocumentTab(QWidget):
         self.viewer.fit_height_when_ready()
     except Exception as exc:
       QMessageBox.critical(self, "삽입 오류", str(exc))
+
+  def _on_insert_blank(self, index: int) -> None:
+    try:
+      was_empty = self.document.page_count == 0
+      self.document.insert_blank_page_at(index)
+      self.thumbnails.insert_pages_at(index, 1, keep_index=index, select_indices=[index])
+      self.viewer.set_current_index(index)
+      self.viewer.refresh()
+      if was_empty:
+        self.viewer.fit_height_when_ready()
+    except Exception as exc:
+      QMessageBox.critical(self, "빈 페이지 삽입 오류", str(exc))
 
   def _on_delete(self, indices: list[int]) -> None:
     if not indices:
@@ -522,6 +575,8 @@ class DocumentTab(QWidget):
 class MainWindow(QMainWindow):
   def __init__(self) -> None:
     super().__init__()
+    self.setObjectName("mainWindow")
+    self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
     self.setWindowFlags(
       Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
     )
@@ -545,7 +600,14 @@ class MainWindow(QMainWindow):
     self._search_bar.search_prev.connect(self._search_prev)
     self.tabs.setCornerWidget(self._search_bar, Qt.Corner.TopRightCorner)
 
-    self.setCentralWidget(self.tabs)
+    self._content_frame = QWidget()
+    content_layout = QVBoxLayout(self._content_frame)
+    content_layout.setContentsMargins(
+        APP_BORDER_WIDTH, 0, APP_BORDER_WIDTH, 0
+    )
+    content_layout.setSpacing(0)
+    content_layout.addWidget(self.tabs)
+    self.setCentralWidget(self._content_frame)
 
     self._search_hits: list[SearchHit] = []
     self._search_index = -1
@@ -568,6 +630,9 @@ class MainWindow(QMainWindow):
   def resizeEvent(self, event) -> None:
     super().resizeEvent(event)
     self._update_search_bar_inset()
+    tab = self._current_tab()
+    if tab is not None:
+      tab._apply_panel_width_limits()
 
   def showEvent(self, event: QShowEvent) -> None:
     super().showEvent(event)
@@ -581,6 +646,9 @@ class MainWindow(QMainWindow):
         )
       self._centered_on_show = True
     self._update_search_bar_inset()
+    tab = self._current_tab()
+    if tab is not None:
+      QTimer.singleShot(0, tab._apply_panel_width_limits)
     QTimer.singleShot(0, lambda: apply_windows_window_icon(self))
 
   def _update_search_bar_inset(self) -> None:
@@ -636,6 +704,44 @@ class MainWindow(QMainWindow):
     menu.addAction(act_exit)
 
     edit_menu = self.menuBar().addMenu("편집(&E)")
+    edit_menu.setObjectName("editMenu")
+    edit_menu.setStyleSheet(
+        """
+        QMenu#editMenu::item {
+            padding: 6px 24px 6px 11px;
+        }
+        QMenu#editMenu::item:first {
+            padding: 0px;
+        }
+        QMenu#editMenu::item:first:selected {
+            background-color: #e8f0fe;
+        }
+        """
+    )
+    act_reduce = QWidgetAction(self)
+    reduce_btn = QPushButton("용량 줄이기...")
+    reduce_btn.setFlat(True)
+    reduce_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    reduce_btn.setStyleSheet(
+        """
+        QPushButton {
+            color: #e57373;
+            font-weight: bold;
+            border: none;
+            background: transparent;
+            text-align: left;
+            padding: 6px 24px 6px 11px;
+            margin: 0px;
+        }
+        QPushButton:hover {
+            background-color: #e8f0fe;
+        }
+        """
+    )
+    reduce_btn.clicked.connect(self._open_reduce_size_dialog)
+    act_reduce.setDefaultWidget(reduce_btn)
+    edit_menu.addAction(act_reduce)
+
     act_find = QAction("텍스트 검색...", self)
     act_find.setShortcut(QKeySequence.StandardKey.Find)
     act_find.triggered.connect(self._focus_search)
@@ -665,7 +771,9 @@ class MainWindow(QMainWindow):
 
     chrome = QWidget()
     chrome_layout = QVBoxLayout(chrome)
-    chrome_layout.setContentsMargins(0, 0, 0, 0)
+    chrome_layout.setContentsMargins(
+        APP_BORDER_WIDTH, APP_BORDER_WIDTH, APP_BORDER_WIDTH, 0
+    )
     chrome_layout.setSpacing(0)
     self._title_bar = TitleBar(self)
     chrome_layout.addWidget(self._title_bar)
@@ -673,35 +781,45 @@ class MainWindow(QMainWindow):
     self.setMenuWidget(chrome)
 
     self.setStyleSheet(
-      """
-      #appTitleBar {
+      f"""
+      #mainWindow {{
+        background-color: {APP_WINDOW_BACKGROUND};
+      }}
+      #appTitleBar {{
         background-color: #f3f3f3;
         border-bottom: 1px solid #d6d6d6;
-      }
-      #appTitleBar QPushButton {
+      }}
+      #mainWindow QMenuBar {{
+        background-color: #f3f3f3;
+      }}
+      #mainWindow QStatusBar {{
+        background-color: #f0f0f0;
+        margin: 0px {APP_BORDER_WIDTH}px {APP_BORDER_WIDTH}px {APP_BORDER_WIDTH}px;
+      }}
+      #appTitleBar QPushButton {{
         border: none;
         border-radius: 0;
-      }
-      #appTitleBar QPushButton:hover {
+      }}
+      #appTitleBar QPushButton:hover {{
         background-color: #e8e8e8;
-      }
-      #appTitleBar QPushButton:pressed {
+      }}
+      #appTitleBar QPushButton:pressed {{
         background-color: #d0d0d0;
-      }
-      #tabSearchBar QLineEdit {
+      }}
+      #tabSearchBar QLineEdit {{
         border: 1px solid #c8c8c8;
         border-radius: 3px;
         padding: 1px 6px;
         background: #ffffff;
-      }
-      #tabSearchBar QPushButton {
+      }}
+      #tabSearchBar QPushButton {{
         border: 1px solid #c8c8c8;
         border-radius: 3px;
         background: #f8f8f8;
-      }
-      #tabSearchBar QPushButton:hover {
+      }}
+      #tabSearchBar QPushButton:hover {{
         background: #ececec;
-      }
+      }}
       """
     )
 
@@ -879,6 +997,28 @@ class MainWindow(QMainWindow):
       os.startfile(pdf_path, "print")
     else:
       subprocess.run(["lp", pdf_path], check=False)
+
+  def _open_reduce_size_dialog(self) -> None:
+    tab = self._current_tab()
+    if tab is None or tab.document.page_count == 0:
+      QMessageBox.information(self, "용량 줄이기", "페이지가 있는 문서를 열어주세요.")
+      return
+    tab.document.pause_rendering()
+    accepted = False
+    dialog: ReduceSizeDialog | None = None
+    try:
+      dialog = ReduceSizeDialog(tab.document, parent=self)
+      accepted = dialog.exec() == QDialog.DialogCode.Accepted
+    finally:
+      tab.document.resume_rendering()
+    if not accepted or dialog is None:
+      return
+    tab.thumbnails.refresh()
+    tab.viewer.refresh()
+    self.statusBar().showMessage(
+      f"용량 줄이기 완료: {format_file_size(dialog.result_before)}"
+      f" → {format_file_size(dialog.result_after)}"
+    )
 
   def _delete_selected(self) -> None:
     tab = self._current_tab()

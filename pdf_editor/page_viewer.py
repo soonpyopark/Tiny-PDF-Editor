@@ -783,6 +783,8 @@ class PageViewer(QWidget):
             self.page_canvas.clear_selection()
             self._update_preview_stack()
             return
+        if self._document.rendering_paused:
+            return
 
         zoom = self._effective_zoom()
         if self._fit_mode is None:
