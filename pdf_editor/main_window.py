@@ -862,6 +862,9 @@ class MainWindow(QMainWindow):
       self._act_cut.setEnabled(can_copy)
     if hasattr(self, "_act_paste"):
       self._act_paste.setEnabled(can_paste)
+    can_add = bool(tab and tab.document.page_count > 0)
+    if hasattr(self, "_act_add"):
+      self._act_add.setEnabled(can_add)
 
   def _copy_current_tab(self) -> None:
     tab = self._current_tab()
@@ -900,6 +903,11 @@ class MainWindow(QMainWindow):
     act_open.setShortcut(QKeySequence.StandardKey.Open)
     act_open.triggered.connect(self._open_file)
     menu.addAction(act_open)
+
+    self._act_add = QAction("추가...", self)
+    self._act_add.setEnabled(False)
+    self._act_add.triggered.connect(self._add_files)
+    menu.addAction(self._act_add)
 
     menu.addSeparator()
 
@@ -1191,6 +1199,16 @@ class MainWindow(QMainWindow):
   def _new_tab(self) -> None:
     self._add_tab(PdfDocument(), "새 문서")
 
+  def _add_files(self) -> None:
+    tab = self._current_tab()
+    if tab is None or tab.document.page_count == 0:
+      return
+    before = tab.document.page_count
+    tab._on_insert(before, [])
+    after = tab.document.page_count
+    if after > before:
+      self.statusBar().showMessage(f"{after - before}페이지를 추가했습니다.")
+
   def _open_file(self) -> None:
     paths, _ = QFileDialog.getOpenFileNames(self, "파일 열기", "", SUPPORTED_FILE_FILTER)
     if not paths:
@@ -1205,6 +1223,7 @@ class MainWindow(QMainWindow):
         doc = PdfDocument()
         doc.open_file(path)
         self._add_tab(doc, _tab_title_for_filename(os.path.basename(path)))
+        self._update_edit_actions()
         self.statusBar().showMessage(f"열림: {path}")
       except Exception as exc:
         QMessageBox.critical(self, "열기 오류", str(exc))
@@ -1239,6 +1258,7 @@ class MainWindow(QMainWindow):
     tab = self._add_tab(doc, _tab_title_for_opened_files(opened))
     tab.refresh_all(keep_index=0)
     tab.viewer.fit_page_when_ready()
+    self._update_edit_actions()
     self.statusBar().showMessage(f"{len(opened)}개 파일, {doc.page_count}페이지를 열었습니다.")
 
     if failed:
