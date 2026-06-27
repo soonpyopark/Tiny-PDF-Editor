@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDoubleSpinBox,
     QFrame,
@@ -23,6 +24,10 @@ from PyQt6.QtWidgets import (
 )
 
 from pdf_editor.document import (
+    DocumentReduceProfile,
+    GEOMETRY_MODE_BOTH,
+    GEOMETRY_MODE_CONTENT_ONLY,
+    GEOMETRY_MODE_PAGE_ONLY,
     PRESET_OPTIONS,
     PdfDocument,
     ReduceSizeOptions,
@@ -38,12 +43,33 @@ _PANEL_FRAME_STYLE = (
 _DIALOG_WIDTH = 800
 _SETTINGS_HEADER_HEIGHT = 44
 _STEP1_BTN_RELOCATE_SAVED_HEIGHT = 14  # root spacing removed when btn joins step1 section
+_STEP3_HEADER_ADDED_HEIGHT = 24  # step2 spacing (10) + step header label (~14)
+_DESIRED_PANEL_VERTICAL_MARGIN = 6  # original loose panel grid top/bottom margin (each side)
+_DESIRED_PANEL_INNER_MARGIN = 4  # compact panel top/bottom padding (each side)
+_DESIRED_PANEL_COMPACT_SAVED_HEIGHT = (
+    (_DESIRED_PANEL_VERTICAL_MARGIN - _DESIRED_PANEL_INNER_MARGIN) * 2
+)
+_DESIRED_PANEL_STRETCH_SAVED_HEIGHT = 40  # inflated layout height beyond padded compact row (~76 - 36)
+_DESIRED_PANEL_SAVED_HEIGHT = _DESIRED_PANEL_STRETCH_SAVED_HEIGHT
+_DESIRED_PANEL_SIZEHINT_OVERHEAD = (
+    _DESIRED_PANEL_SAVED_HEIGHT - _DESIRED_PANEL_COMPACT_SAVED_HEIGHT
+)
 _EXTRA_TERMINAL_HEIGHT = 48
 _PROGRESS_LOG_MIN_HEIGHT = (
-    110 + _SETTINGS_HEADER_HEIGHT + _STEP1_BTN_RELOCATE_SAVED_HEIGHT + _EXTRA_TERMINAL_HEIGHT
+    110
+    + _SETTINGS_HEADER_HEIGHT
+    + _STEP1_BTN_RELOCATE_SAVED_HEIGHT
+    + _EXTRA_TERMINAL_HEIGHT
+    - _STEP3_HEADER_ADDED_HEIGHT
+    + _DESIRED_PANEL_SAVED_HEIGHT
 )
 _PROGRESS_LOG_MAX_HEIGHT = (
-    150 + _SETTINGS_HEADER_HEIGHT + _STEP1_BTN_RELOCATE_SAVED_HEIGHT + _EXTRA_TERMINAL_HEIGHT
+    150
+    + _SETTINGS_HEADER_HEIGHT
+    + _STEP1_BTN_RELOCATE_SAVED_HEIGHT
+    + _EXTRA_TERMINAL_HEIGHT
+    - _STEP3_HEADER_ADDED_HEIGHT
+    + _DESIRED_PANEL_SAVED_HEIGHT
 )
 _PRIMARY_BTN_STYLE = """
     QPushButton {
@@ -184,6 +210,13 @@ class _EstimateWorker(QThread):
                 reduced.close()
 
 
+def _format_scale_percent(scale: float) -> str:
+    percent = round(scale * 100, 1)
+    if percent.is_integer():
+        return f"{int(percent)}%"
+    return f"{percent}%"
+
+
 class ReduceSizeDialog(QDialog):
     """Modal dialog to configure and apply PDF size reduction."""
 
@@ -257,9 +290,35 @@ class ReduceSizeDialog(QDialog):
         advanced_grid.addWidget(self._dpi_slider, 2, 1)
         advanced_grid.addWidget(self._dpi_spin, 2, 2)
 
+        geometry_label = _make_advanced_label("크기 조정")
+        self._geometry_mode_combo = QComboBox()
+        self._geometry_mode_combo.addItem("페이지·내용 함께", GEOMETRY_MODE_BOTH)
+        self._geometry_mode_combo.addItem("페이지 크기만", GEOMETRY_MODE_PAGE_ONLY)
+        self._geometry_mode_combo.addItem("내용 크기만", GEOMETRY_MODE_CONTENT_ONLY)
+        self._geometry_mode_combo.currentIndexChanged.connect(self._on_advanced_changed)
+        advanced_grid.addWidget(geometry_label, 3, 0)
+        advanced_grid.addWidget(self._geometry_mode_combo, 3, 1, 1, 2)
+
         control_row_height = self._size_spin.sizeHint().height()
-        for label in (size_label, quality_label, dpi_label):
+        for label in (size_label, quality_label, dpi_label, geometry_label):
             label.setFixedHeight(control_row_height)
+
+        self._reduce_profile = document.reduce_profile()
+        self._embedded_scale_warning = QLabel()
+        self._embedded_scale_warning.setWordWrap(True)
+        self._embedded_scale_warning.setStyleSheet(
+            "color: #8a6d00; font-size: 12px; background: #fff8e1;"
+            "border: 1px solid #ffe082; border-radius: 6px; padding: 8px 10px;"
+        )
+        if self._reduce_profile.prefers_page_only:
+            self._geometry_mode_combo.blockSignals(True)
+            for index in range(self._geometry_mode_combo.count()):
+                if self._geometry_mode_combo.itemData(index) == GEOMETRY_MODE_PAGE_ONLY:
+                    self._geometry_mode_combo.setCurrentIndex(index)
+                    break
+            self._geometry_mode_combo.blockSignals(False)
+        self._update_reduce_profile_warning()
+        advanced_layout.addWidget(self._embedded_scale_warning)
 
         color_row = QHBoxLayout()
         color_row.setSpacing(16)
@@ -331,8 +390,11 @@ class ReduceSizeDialog(QDialog):
         desired_panel = QFrame()
         desired_panel.setStyleSheet(_PANEL_FRAME_STYLE)
         desired_grid = QGridLayout(desired_panel)
-        desired_grid.setContentsMargins(14, 6, 14, 6)
+        desired_grid.setContentsMargins(
+            14, _DESIRED_PANEL_INNER_MARGIN, 14, _DESIRED_PANEL_INNER_MARGIN
+        )
         desired_grid.setHorizontalSpacing(10)
+        desired_grid.setVerticalSpacing(0)
         desired_grid.setColumnStretch(1, 1)
 
         desired_label = _make_advanced_label("희망 최종 용량")
@@ -352,14 +414,21 @@ class ReduceSizeDialog(QDialog):
         self._desired_spin.setValue(_DESIRED_MB_DEFAULT)
         self._desired_spin.valueChanged.connect(self._on_desired_spin_changed)
 
-        desired_grid.addWidget(desired_label, 0, 0)
-        desired_grid.addWidget(self._desired_slider, 0, 1)
-        desired_grid.addWidget(self._desired_spin, 0, 2)
+        row_align = Qt.AlignmentFlag.AlignVCenter
+        desired_grid.addWidget(desired_label, 0, 0, alignment=row_align)
+        desired_grid.addWidget(self._desired_slider, 0, 1, alignment=row_align)
+        desired_grid.addWidget(self._desired_spin, 0, 2, alignment=row_align)
+        desired_panel.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        desired_panel.setFixedHeight(
+            control_row_height + 2 + _DESIRED_PANEL_INNER_MARGIN * 2
+        )
 
         self._apply_btn = QPushButton("용량 줄이기 반복 실행")
         self._apply_btn.setMinimumHeight(40)
         self._apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._apply_btn.setStyleSheet(_PRIMARY_BTN_STYLE)
+        self._apply_btn.setStyleSheet(outline_btn_style)
         self._apply_btn.clicked.connect(self._apply_reduction)
 
         step2_layout.addWidget(desired_panel)
@@ -368,6 +437,7 @@ class ReduceSizeDialog(QDialog):
         apply_row.addWidget(self._apply_btn)
         apply_row.addStretch(1)
         step2_layout.addLayout(apply_row)
+        step2_layout.addWidget(_make_step_label("[3단계] 최종 적용 하기"))
         root.addWidget(step2_section)
 
         self._progress_log = QPlainTextEdit()
@@ -426,13 +496,15 @@ class ReduceSizeDialog(QDialog):
         layout.activate()
         margins = layout.contentsMargins()
         height = layout.sizeHint().height() + margins.top() + margins.bottom()
+        height -= _DESIRED_PANEL_SIZEHINT_OVERHEAD
         self.setFixedSize(_DIALOG_WIDTH, height)
 
     def _invalidate_estimate(self) -> None:
         self._estimated_size_bytes = None
         self._last_reduced_payload = None
         self._final_apply_ready = False
-        self._estimated_size_label.setText("예상 최종 크기: -")
+        if hasattr(self, "_estimated_size_label"):
+            self._estimated_size_label.setText("예상 최종 크기: -")
         self._update_final_apply_btn()
 
     def _has_valid_estimate(self) -> bool:
@@ -488,6 +560,7 @@ class ReduceSizeDialog(QDialog):
             self._quality_spin,
             self._dpi_slider,
             self._dpi_spin,
+            self._geometry_mode_combo,
             self._grayscale_check,
             self._monochrome_check,
         ):
@@ -543,6 +616,39 @@ class ReduceSizeDialog(QDialog):
         self._dpi_slider.blockSignals(False)
         self._on_advanced_changed()
 
+    def _update_reduce_profile_warning(self) -> None:
+        profile = self._reduce_profile
+        if not profile.prefers_page_only:
+            self._embedded_scale_warning.hide()
+            return
+
+        parts: list[str] = []
+        if profile.fullpage_raster_ratio >= 0.5:
+            ratio = round(profile.fullpage_raster_ratio * 100)
+            parts.append(f"페이지당 큰 이미지 1장 형태({ratio}% 샘플)")
+        if profile.publisher_flip_scale is not None:
+            parts.append(
+                f"출판용 Y축 뒤집기 배율 {_format_scale_percent(profile.publisher_flip_scale)}"
+            )
+        if profile.embedded_uniform_scale is not None:
+            parts.append(
+                f"내장 배율 {_format_scale_percent(profile.embedded_uniform_scale)}"
+            )
+
+        detail = ", ".join(parts) if parts else "특수 페이지 변환"
+        self._embedded_scale_warning.setText(
+            f"출판/인쇄용 PDF로 보입니다 ({detail}). "
+            "기본값을 [페이지 크기만]으로 설정했습니다. "
+            "이미지 압축은 유지되며, 필요하면 [크기 조정] 방식을 바꿔 주세요."
+        )
+        self._embedded_scale_warning.show()
+
+    def _current_geometry_mode(self) -> str:
+        value = self._geometry_mode_combo.currentData()
+        if isinstance(value, str):
+            return value
+        return GEOMETRY_MODE_BOTH
+
     def _on_advanced_changed(self) -> None:
         self._active_preset = "custom"
         self._invalidate_estimate()
@@ -553,6 +659,7 @@ class ReduceSizeDialog(QDialog):
             jpeg_quality=self._quality_slider.value(),
             max_dpi=self._dpi_spin.value(),
             image_size_percent=self._size_slider.value(),
+            geometry_mode=self._current_geometry_mode(),
             grayscale=self._grayscale_check.isChecked(),
             monochrome=self._monochrome_check.isChecked(),
         )
@@ -1061,6 +1168,7 @@ class ReduceSizeDialog(QDialog):
             self._quality_spin,
             self._dpi_slider,
             self._dpi_spin,
+            self._geometry_mode_combo,
             self._grayscale_check,
             self._monochrome_check,
         ):

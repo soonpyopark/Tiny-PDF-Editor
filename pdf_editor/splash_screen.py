@@ -2,21 +2,79 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QTimer, QUrl
-from PyQt6.QtGui import QDesktopServices, QIcon, QPixmap
+from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QTimer, QUrl
+from PyQt6.QtGui import QDesktopServices, QIcon, QMouseEvent, QPixmap
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from pdf_editor.resources import branding_path
+from pdf_editor.version import APP_NAME, version_label
 
 SPLASH_BG = "#0a1a33"
 SPLASH_WIDTH = 400
 SPLASH_HEIGHT = 129
 SPLASH_MIN_MS = 700
-AUTHOR_NAME = "청년안민규"
 AUTHOR_URL = "https://note4all.tistory.com"
-APP_SPLASH_TITLE = "Tiny PDF Editor"
 
 _about_splash: SplashScreen | None = None
+_about_dismiss_filter: "_AboutDismissFilter | None" = None
+
+
+class _AboutDismissFilter(QObject):
+    """Close the about splash when the user clicks outside or on the splash itself."""
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        splash = _about_splash
+        if splash is None or not splash.isVisible():
+            return False
+        if event.type() != QEvent.Type.MouseButtonPress:
+            return False
+        mouse = event
+        if not isinstance(mouse, QMouseEvent):
+            return False
+        if mouse.button() != Qt.MouseButton.LeftButton:
+            return False
+
+        global_pos = mouse.globalPosition().toPoint()
+        if not splash.frameGeometry().contains(global_pos):
+            close_about_splash()
+            return False
+
+        link = splash._link_label
+        if link is not None and link.isVisible():
+            top_left = link.mapToGlobal(QPoint(0, 0))
+            link_rect = QRect(top_left, link.size())
+            if link_rect.contains(global_pos):
+                return False
+
+        close_about_splash()
+        return False
+
+
+def _install_about_dismiss_filter() -> None:
+    global _about_dismiss_filter
+    app = QApplication.instance()
+    if app is None:
+        return
+    if _about_dismiss_filter is None:
+        _about_dismiss_filter = _AboutDismissFilter()
+    app.installEventFilter(_about_dismiss_filter)
+
+
+def _remove_about_dismiss_filter() -> None:
+    global _about_dismiss_filter
+    app = QApplication.instance()
+    if app is not None and _about_dismiss_filter is not None:
+        app.removeEventFilter(_about_dismiss_filter)
+
+
+def close_about_splash() -> None:
+    global _about_splash
+    if _about_splash is None:
+        return
+    splash = _about_splash
+    _about_splash = None
+    _remove_about_dismiss_filter()
+    splash.close()
 
 
 def _load_splash_logo() -> QPixmap:
@@ -67,17 +125,12 @@ class SplashScreen(QWidget):
         content.setSpacing(5)
         content.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        title = QLabel(APP_SPLASH_TITLE)
+        title = QLabel(f"{APP_NAME} {version_label()}")
         title.setStyleSheet(
             "color: #ffffff; font-size: 22px; font-weight: 700; background: transparent;"
         )
         title.setWordWrap(True)
         content.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        credit = QLabel(f'Made by <span style="color:#f4c430;font-weight:700;">{AUTHOR_NAME}</span>')
-        credit.setTextFormat(Qt.TextFormat.RichText)
-        credit.setStyleSheet("color: #ffffff; font-size: 14px; background: transparent;")
-        content.addWidget(credit, 0, Qt.AlignmentFlag.AlignVCenter)
 
         link = QLabel(
             f'<a href="{AUTHOR_URL}" style="color:#a8b4c4;text-decoration:none;">{AUTHOR_URL}</a>'
@@ -121,9 +174,7 @@ def toggle_about_splash() -> None:
     if _about_splash is not None:
         try:
             if _about_splash.isVisible():
-                splash = _about_splash
-                _about_splash = None
-                splash.close()
+                close_about_splash()
                 return
         except RuntimeError:
             _about_splash = None
@@ -131,11 +182,13 @@ def toggle_about_splash() -> None:
     splash = SplashScreen(startup=False)
     _about_splash = splash
     splash.show_centered()
+    _install_about_dismiss_filter()
     splash.destroyed.connect(lambda *_: _on_about_splash_destroyed(splash))
 
 
 def _on_about_splash_destroyed(splash: SplashScreen) -> None:
     global _about_splash
+    _remove_about_dismiss_filter()
     if _about_splash is splash:
         _about_splash = None
 

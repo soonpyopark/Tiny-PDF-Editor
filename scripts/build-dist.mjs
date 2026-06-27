@@ -36,6 +36,16 @@ function sanitizeFileName(name) {
   return name.replace(/[<>:"/\\|?*]/g, "_").trim() || "app";
 }
 
+function readReleaseBaseName() {
+  const versionPath = path.join(ROOT, "pdf_editor", "version.py");
+  const source = fs.readFileSync(versionPath, "utf8");
+  const match = source.match(/__version__\s*=\s*"([^"]+)"/);
+  if (!match) {
+    throw new Error(`Could not parse __version__ from ${versionPath}`);
+  }
+  return sanitizeFileName(`Tiny PDF Editor v${match[1]}`);
+}
+
 function formatTimestamp(date = new Date()) {
   const pad = (n) => String(n).padStart(2, "0");
   const yy = String(date.getFullYear()).slice(2);
@@ -129,7 +139,7 @@ function listReleaseFolders() {
     return [];
   }
 
-  const rootName = sanitizeFileName(path.basename(ROOT));
+  const rootName = readReleaseBaseName();
   const pattern = new RegExp(
     `^${rootName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}_\\d{6}_\\d{6}$`,
   );
@@ -177,7 +187,7 @@ function getLatestReleaseFolder() {
 }
 
 function findReleaseExeName(releaseDir) {
-  const rootName = sanitizeFileName(path.basename(ROOT));
+  const rootName = readReleaseBaseName();
   const matches = fs
     .readdirSync(releaseDir)
     .filter((name) => name.endsWith(".exe") && name.startsWith(rootName));
@@ -279,7 +289,7 @@ function cleanupLegacyArtifacts() {
     return;
   }
 
-  const rootName = sanitizeFileName(path.basename(ROOT));
+  const rootName = readReleaseBaseName();
   for (const name of fs.readdirSync(DIST_DIR)) {
     const fullPath = path.join(DIST_DIR, name);
     if (name.endsWith(".zip")) {
@@ -311,7 +321,7 @@ function ensureBuiltOutput() {
 }
 
 function mainFull() {
-  const rootName = sanitizeFileName(path.basename(ROOT));
+  const rootName = readReleaseBaseName();
   const timestamp = formatTimestamp();
   const releaseName = `${rootName}_${timestamp}`;
   const exeName = `${releaseName}.exe`;

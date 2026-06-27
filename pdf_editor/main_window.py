@@ -34,7 +34,8 @@ from PyQt6.QtWidgets import (
     QWidgetAction,
 )
 
-from pdf_editor.document import PdfDocument, SearchHit, format_file_size
+from pdf_editor.document import PdfDocument, SearchHit, SUPPORTED_FILE_FILTER, format_file_size
+from pdf_editor.page_clipboard import PageClipboard
 from pdf_editor.page_viewer import PageViewer
 from pdf_editor.reduce_size_dialog import ReduceSizeDialog
 from pdf_editor.resources import (
@@ -42,7 +43,11 @@ from pdf_editor.resources import (
   init_platform,
   load_app_icon,
 )
-from pdf_editor.splash_screen import finish_loading_splash, show_loading_splash, toggle_about_splash
+from pdf_editor.splash_screen import (
+  finish_loading_splash,
+  show_loading_splash,
+  toggle_about_splash,
+)
 from pdf_editor.thumbnail_panel import (
   DEFAULT_THUMB_SCALE_LEVEL,
   THUMB_SCALE_LEVELS,
@@ -51,8 +56,9 @@ from pdf_editor.thumbnail_panel import (
 )
 
 
+from pdf_editor.version import APP_NAME, __version__, titled_name, version_label
+
 AUTHOR_URL = "https://note4all.tistory.com"
-APP_TITLE = "Tiny PDF Editor"
 APP_BORDER_COLOR = "#333333"
 APP_WINDOW_BACKGROUND = "#eeeeee"
 APP_BORDER_WIDTH = 1
@@ -60,9 +66,34 @@ DEFAULT_WINDOW_WIDTH = 1024
 DEFAULT_WINDOW_HEIGHT = 900
 MIN_WINDOW_WIDTH = 520
 MIN_WINDOW_HEIGHT = 480
+_TAB_BASENAME_MAX_LEN = 24
 
 
-class CloseSaveChoice(Enum):
+def _truncate_middle(text: str, max_len: int) -> str:
+    if max_len <= 0 or len(text) <= max_len:
+        return text
+    if max_len <= 3:
+        return text[:max_len]
+    keep = max_len - 3
+    front = (keep + 1) // 2
+    back = keep // 2
+    return f"{text[:front]}...{text[-back:]}"
+
+
+def _tab_title_for_filename(filename: str, *, extra_count: int = 0) -> str:
+    suffix = f" 외 {extra_count}개" if extra_count > 0 else ""
+    max_name_len = max(8, _TAB_BASENAME_MAX_LEN - len(suffix))
+    return f"{_truncate_middle(filename, max_name_len)}{suffix}"
+
+
+def _tab_title_for_opened_files(opened: list[str]) -> str:
+    first_name = os.path.basename(opened[0])
+    if len(opened) == 1:
+        return _tab_title_for_filename(first_name)
+    return _tab_title_for_filename(first_name, extra_count=len(opened) - 1)
+
+
+class CloseSaveChoice(str, Enum):
     SAVE_AS = "save_as"
     DISCARD = "discard"
     CANCEL = "cancel"
@@ -147,6 +178,10 @@ class TabSearchBar(QWidget):
     self.btn_search_next.clicked.connect(self.search_next.emit)
     layout.addWidget(self.btn_search_next)
 
+    layout.addSpacing(8)
+    self.search_result_label = QLabel("검색 결과 : ")
+    layout.addWidget(self.search_result_label)
+
     self.search_status = QLabel("[ 0 / 0 ]")
     self.search_status.setFixedWidth(72)
     self.search_status.setAlignment(
@@ -177,7 +212,7 @@ class TabSearchBar(QWidget):
 
 
 class TitleBar(QWidget):
-  """Title row: icon, app name, attribution link, and window controls."""
+  """Title row: icon, app name, and window controls."""
 
   def __init__(self, window: QMainWindow) -> None:
     super().__init__(window)
@@ -197,19 +232,13 @@ class TitleBar(QWidget):
       icon_label.setPixmap(icon.pixmap(16, 16))
     layout.addWidget(icon_label)
 
-    title = QLabel(APP_TITLE)
+    title = QLabel(APP_NAME)
+    title.setStyleSheet("font-weight: 600;")
     layout.addWidget(title)
 
-    credit = QLabel(
-      f'- Made by : 청년안민규 (<a href="{AUTHOR_URL}">{AUTHOR_URL}</a>)'
-    )
-    credit.setTextFormat(Qt.TextFormat.RichText)
-    credit.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-    credit.setOpenExternalLinks(False)
-    credit.linkActivated.connect(
-      lambda href: QDesktopServices.openUrl(QUrl(href))
-    )
-    layout.addWidget(credit)
+    version = QLabel(version_label())
+    version.setStyleSheet("color: #666666; font-size: 12px; padding-top: 1px;")
+    layout.addWidget(version)
 
     layout.addStretch(1)
 
@@ -342,6 +371,11 @@ class DocumentTab(QWidget):
     self.thumbnails.export_pdf_requested.connect(self._on_export_pdf)
     self.thumbnails.export_images_requested.connect(self._on_export_images)
     self.thumbnails.blank_page_requested.connect(self._on_insert_blank)
+    self.thumbnails.undo_requested.connect(self._on_undo)
+    self.thumbnails.redo_requested.connect(self._on_redo)
+    self.thumbnails.copy_pages_requested.connect(self._on_copy_pages)
+    self.thumbnails.cut_pages_requested.connect(self._on_cut_pages)
+    self.thumbnails.paste_pages_requested.connect(self._on_paste_pages)
     self.thumbnails.thumb_scale_changed.connect(
       lambda _scale: self._apply_panel_width_limits()
     )
@@ -362,7 +396,163 @@ class DocumentTab(QWidget):
     )
 
     self._setup_page_navigation_shortcuts()
+    self._setup_history_shortcuts()
+    self._setup_clipboard_shortcuts()
     self._sync_thumb_zoom_buttons()
+
+  def _setup_clipboard_shortcuts(self) -> None:
+    for sequence, slot in (
+      (QKeySequence.StandardKey.Copy, self._on_copy_pages_shortcut),
+      (QKeySequence.StandardKey.Cut, self._on_cut_pages_shortcut),
+      (QKeySequence.StandardKey.Paste, self._on_paste_pages_shortcut),
+    ):
+      shortcut = QShortcut(sequence, self)
+      shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+      shortcut.activated.connect(slot)
+
+  def _page_indices_for_clipboard(self) -> list[int]:
+    return self.thumbnails.copy_indices()
+
+  def _should_copy_viewer_text(self) -> bool:
+    canvas = self.viewer.page_canvas
+    if not canvas.selected_text():
+      return False
+    focus = QApplication.focusWidget()
+    if focus is None:
+      return False
+    if isinstance(focus, QLineEdit):
+      return False
+    return focus is canvas or self.viewer.isAncestorOf(focus)
+
+  def _on_copy_pages_shortcut(self) -> None:
+    if self._should_copy_viewer_text():
+      self.viewer.page_canvas._copy_selection()
+      return
+    indices = self._page_indices_for_clipboard()
+    if indices:
+      self._on_copy_pages(indices)
+
+  def _on_cut_pages_shortcut(self) -> None:
+    indices = self._page_indices_for_clipboard()
+    if indices:
+      self._on_cut_pages(indices)
+
+  def _on_paste_pages_shortcut(self) -> None:
+    if not PageClipboard.has_pages():
+      return
+    insert_at = self.thumbnails.resolve_paste_index()
+    self._on_paste_pages(insert_at)
+
+  def _on_copy_pages(self, indices: list[int]) -> None:
+    if not indices:
+      return
+    try:
+      valid = sorted({index for index in indices if 0 <= index < self.document.page_count})
+      if not valid:
+        return
+      pdf_bytes = self.document.extract_pages_to_bytes(valid)
+      PageClipboard.set_pages(pdf_bytes, len(valid))
+      self._notify_clipboard_changed()
+    except Exception as exc:
+      QMessageBox.critical(self, "복사 오류", str(exc))
+
+  def _on_cut_pages(self, indices: list[int]) -> None:
+    if not indices:
+      return
+    try:
+      valid = sorted({index for index in indices if 0 <= index < self.document.page_count})
+      if not valid:
+        return
+      pdf_bytes = self.document.extract_pages_to_bytes(valid)
+      PageClipboard.set_pages(pdf_bytes, len(valid))
+      self._apply_page_deletion(valid)
+      self._notify_clipboard_changed()
+    except Exception as exc:
+      QMessageBox.critical(self, "잘라내기 오류", str(exc))
+
+  def _on_paste_pages(self, insert_at: int) -> None:
+    payload = PageClipboard.get_payload()
+    if payload is None:
+      return
+    try:
+      was_empty = self.document.page_count == 0
+      insert_at = max(0, min(insert_at, self.document.page_count))
+      added = self.document.insert_pages_from_bytes(insert_at, payload.pdf_bytes)
+      if not added:
+        return
+      pasted = list(range(insert_at, insert_at + added))
+      focus = insert_at + added - 1
+      self.thumbnails.insert_pages_at(
+        insert_at,
+        added,
+        keep_index=focus,
+        select_indices=pasted,
+      )
+      self.thumbnails._set_paste_anchor(insert_at + added)
+      self.viewer.set_current_index(focus)
+      self.viewer.refresh()
+      if was_empty:
+        self.viewer.fit_page_when_ready()
+      self._notify_history_changed()
+      self._notify_clipboard_changed()
+    except Exception as exc:
+      QMessageBox.critical(self, "붙여넣기 오류", str(exc))
+
+  def _apply_page_deletion(self, indices: list[int]) -> None:
+    deleted = sorted(set(indices))
+    keep = min(deleted)
+    selected = self.thumbnails.selected_indices()
+    self.document.delete_pages(deleted)
+    if self.document.page_count == 0:
+      self.thumbnails.refresh(0)
+      self.viewer.set_current_index(0)
+      self.viewer.refresh()
+      self._notify_history_changed()
+      return
+    keep = min(keep, self.document.page_count - 1)
+    remaining_selection = self._indices_after_delete(deleted, selected)
+    self.thumbnails.remove_pages(deleted, keep_index=keep, select_indices=remaining_selection)
+    self.viewer.set_current_index(keep)
+    self.viewer.refresh()
+    self._notify_history_changed()
+
+  def _notify_clipboard_changed(self) -> None:
+    window = self.window()
+    if isinstance(window, MainWindow):
+      window._update_edit_actions()
+
+  def _setup_history_shortcuts(self) -> None:
+    for sequence, slot in (
+      (QKeySequence.StandardKey.Undo, self._on_undo),
+      (QKeySequence.StandardKey.Redo, self._on_redo),
+      (QKeySequence("Ctrl+Y"), self._on_redo),
+    ):
+      shortcut = QShortcut(sequence, self)
+      shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+      shortcut.activated.connect(slot)
+
+  def _on_undo(self) -> None:
+    if not self.document.undo():
+      return
+    index = self.thumbnails.current_index()
+    if self.document.page_count > 0:
+      index = max(0, min(index, self.document.page_count - 1))
+    self.refresh_all(keep_index=index)
+    self._notify_history_changed()
+
+  def _on_redo(self) -> None:
+    if not self.document.redo():
+      return
+    index = self.thumbnails.current_index()
+    if self.document.page_count > 0:
+      index = max(0, min(index, self.document.page_count - 1))
+    self.refresh_all(keep_index=index)
+    self._notify_history_changed()
+
+  def _notify_history_changed(self) -> None:
+    window = self.window()
+    if isinstance(window, MainWindow):
+      window._update_edit_actions()
 
   def _change_thumb_size(self, step: int) -> None:
     if self.thumbnails.step_thumb_level(step):
@@ -469,6 +659,7 @@ class DocumentTab(QWidget):
       self.thumbnails.refresh(keep_index=insert_at, select_indices=moved)
       self.viewer.set_current_index(insert_at)
       self.viewer.refresh()
+      self._notify_history_changed()
     except Exception as exc:
       QMessageBox.critical(self, "페이지 이동 오류", str(exc))
 
@@ -478,7 +669,7 @@ class DocumentTab(QWidget):
         self,
         "삽입할 파일 선택",
         "",
-        "지원 파일 (*.pdf *.png *.jpg *.jpeg *.bmp *.gif *.tiff *.tif *.webp);;모든 파일 (*.*)",
+        SUPPORTED_FILE_FILTER,
       )
     if not paths:
       return
@@ -491,7 +682,8 @@ class DocumentTab(QWidget):
       self.viewer.set_current_index(focus)
       self.viewer.refresh()
       if added and was_empty:
-        self.viewer.fit_height_when_ready()
+        self.viewer.fit_page_when_ready()
+      self._notify_history_changed()
     except Exception as exc:
       QMessageBox.critical(self, "삽입 오류", str(exc))
 
@@ -503,7 +695,8 @@ class DocumentTab(QWidget):
       self.viewer.set_current_index(index)
       self.viewer.refresh()
       if was_empty:
-        self.viewer.fit_height_when_ready()
+        self.viewer.fit_page_when_ready()
+      self._notify_history_changed()
     except Exception as exc:
       QMessageBox.critical(self, "빈 페이지 삽입 오류", str(exc))
 
@@ -519,20 +712,7 @@ class DocumentTab(QWidget):
     )
     if reply != QMessageBox.StandardButton.Yes:
       return
-    deleted = sorted(set(indices))
-    keep = min(deleted)
-    selected = self.thumbnails.selected_indices()
-    self.document.delete_pages(deleted)
-    if self.document.page_count == 0:
-      self.thumbnails.refresh(0)
-      self.viewer.set_current_index(0)
-      self.viewer.refresh()
-      return
-    keep = min(keep, self.document.page_count - 1)
-    remaining_selection = self._indices_after_delete(deleted, selected)
-    self.thumbnails.remove_pages(deleted, keep_index=keep, select_indices=remaining_selection)
-    self.viewer.set_current_index(keep)
-    self.viewer.refresh()
+    self._apply_page_deletion(indices)
 
   def _on_rotate(self, indices: list[int], degrees: int) -> None:
     if not indices:
@@ -541,6 +721,7 @@ class DocumentTab(QWidget):
     self.thumbnails.invalidate_thumbnails(indices)
     if self.viewer.current_index() in indices:
       self.viewer.refresh()
+    self._notify_history_changed()
 
   def _on_export_pdf(self, indices: list[int]) -> None:
     path, _ = QFileDialog.getSaveFileName(self, "페이지 보내기", "", "PDF (*.pdf)")
@@ -580,7 +761,7 @@ class MainWindow(QMainWindow):
     self.setWindowFlags(
       Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
     )
-    self.setWindowTitle(APP_TITLE)
+    self.setWindowTitle(titled_name())
     self.setMinimumSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
     self.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
     self._centered_on_show = False
@@ -617,6 +798,7 @@ class MainWindow(QMainWindow):
     self._build_menu()
     self._setup_title_bar()
     self.setStatusBar(QStatusBar())
+    self._setup_status_credit()
     self.statusBar().setSizeGripEnabled(True)
     self.statusBar().showMessage("준비")
 
@@ -664,6 +846,48 @@ class MainWindow(QMainWindow):
     widget = self.tabs.currentWidget()
     return widget if isinstance(widget, DocumentTab) else None
 
+  def _update_edit_actions(self) -> None:
+    tab = self._current_tab()
+    can_undo = tab.document.can_undo() if tab else False
+    can_redo = tab.document.can_redo() if tab else False
+    can_copy = bool(tab and tab._page_indices_for_clipboard()) if tab else False
+    can_paste = PageClipboard.has_pages()
+    if hasattr(self, "_act_undo"):
+      self._act_undo.setEnabled(can_undo)
+    if hasattr(self, "_act_redo"):
+      self._act_redo.setEnabled(can_redo)
+    if hasattr(self, "_act_copy"):
+      self._act_copy.setEnabled(can_copy)
+    if hasattr(self, "_act_cut"):
+      self._act_cut.setEnabled(can_copy)
+    if hasattr(self, "_act_paste"):
+      self._act_paste.setEnabled(can_paste)
+
+  def _copy_current_tab(self) -> None:
+    tab = self._current_tab()
+    if tab is not None:
+      tab._on_copy_pages_shortcut()
+
+  def _cut_current_tab(self) -> None:
+    tab = self._current_tab()
+    if tab is not None:
+      tab._on_cut_pages_shortcut()
+
+  def _paste_current_tab(self) -> None:
+    tab = self._current_tab()
+    if tab is not None:
+      tab._on_paste_pages_shortcut()
+
+  def _undo_current_tab(self) -> None:
+    tab = self._current_tab()
+    if tab is not None:
+      tab._on_undo()
+
+  def _redo_current_tab(self) -> None:
+    tab = self._current_tab()
+    if tab is not None:
+      tab._on_redo()
+
   def _build_menu(self) -> None:
     menu = self.menuBar().addMenu("파일(&F)")
 
@@ -710,14 +934,43 @@ class MainWindow(QMainWindow):
         QMenu#editMenu::item {
             padding: 6px 24px 6px 11px;
         }
-        QMenu#editMenu::item:first {
+        QMenu#editMenu::item:nth-child(3) {
             padding: 0px;
         }
-        QMenu#editMenu::item:first:selected {
+        QMenu#editMenu::item:nth-child(3):selected {
             background-color: #e8f0fe;
         }
         """
     )
+    self._act_undo = QAction("되돌리기(&U)", self)
+    self._act_undo.setShortcut(QKeySequence.StandardKey.Undo)
+    self._act_undo.triggered.connect(self._undo_current_tab)
+    edit_menu.addAction(self._act_undo)
+
+    self._act_redo = QAction("재실행(&R)", self)
+    self._act_redo.setShortcuts(
+      [QKeySequence.StandardKey.Redo, QKeySequence("Ctrl+Y")]
+    )
+    self._act_redo.triggered.connect(self._redo_current_tab)
+    edit_menu.addAction(self._act_redo)
+
+    edit_menu.addSeparator()
+    self._act_copy = QAction("복사(&C)", self)
+    self._act_copy.setShortcut(QKeySequence.StandardKey.Copy)
+    self._act_copy.triggered.connect(self._copy_current_tab)
+    edit_menu.addAction(self._act_copy)
+
+    self._act_cut = QAction("잘라내기(&T)", self)
+    self._act_cut.setShortcut(QKeySequence.StandardKey.Cut)
+    self._act_cut.triggered.connect(self._cut_current_tab)
+    edit_menu.addAction(self._act_cut)
+
+    self._act_paste = QAction("붙여넣기(&P)", self)
+    self._act_paste.setShortcut(QKeySequence.StandardKey.Paste)
+    self._act_paste.triggered.connect(self._paste_current_tab)
+    edit_menu.addAction(self._act_paste)
+
+    edit_menu.addSeparator()
     act_reduce = QWidgetAction(self)
     reduce_btn = QPushButton("용량 줄이기...")
     reduce_btn.setFlat(True)
@@ -759,11 +1012,26 @@ class MainWindow(QMainWindow):
     act_fit_height = QAction("높이 맞추기", self)
     act_fit_height.triggered.connect(lambda: self._current_tab() and self._current_tab().viewer.fit_height())
     view_menu.addAction(act_fit_height)
+    act_fit_page = QAction("화면 맞추기", self)
+    act_fit_page.triggered.connect(lambda: self._current_tab() and self._current_tab().viewer.fit_page())
+    view_menu.addAction(act_fit_page)
 
     help_menu = self.menuBar().addMenu("도움말(&H)")
     act_about = QAction("About", self)
     act_about.triggered.connect(toggle_about_splash)
     help_menu.addAction(act_about)
+
+  def _setup_status_credit(self) -> None:
+    credit = QLabel(f'<a href="{AUTHOR_URL}">{AUTHOR_URL}</a>')
+    credit.setObjectName("statusCredit")
+    credit.setTextFormat(Qt.TextFormat.RichText)
+    credit.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+    credit.setOpenExternalLinks(False)
+    credit.linkActivated.connect(
+      lambda href: QDesktopServices.openUrl(QUrl(href))
+    )
+    credit.setCursor(Qt.CursorShape.PointingHandCursor)
+    self.statusBar().addPermanentWidget(credit)
 
   def _setup_title_bar(self) -> None:
     menu_bar = self.menuBar()
@@ -796,6 +1064,19 @@ class MainWindow(QMainWindow):
         background-color: #f0f0f0;
         margin: 0px {APP_BORDER_WIDTH}px {APP_BORDER_WIDTH}px {APP_BORDER_WIDTH}px;
       }}
+      #statusCredit {{
+        color: #666666;
+        font-size: 11px;
+        padding-right: 4px;
+      }}
+      #statusCredit a {{
+        color: #666666;
+        text-decoration: none;
+      }}
+      #statusCredit a:hover {{
+        color: #1a73e8;
+        text-decoration: underline;
+      }}
       #appTitleBar QPushButton {{
         border: none;
         border-radius: 0;
@@ -827,6 +1108,7 @@ class MainWindow(QMainWindow):
     self._search_bar.focus_search()
 
   def _on_tab_changed(self, _index: int) -> None:
+    self._update_edit_actions()
     if self._search_query:
       self._run_search(self._search_query)
     else:
@@ -910,16 +1192,62 @@ class MainWindow(QMainWindow):
     self._add_tab(PdfDocument(), "새 문서")
 
   def _open_file(self) -> None:
-    path, _ = QFileDialog.getOpenFileName(self, "PDF 열기", "", "PDF (*.pdf)")
-    if not path:
+    paths, _ = QFileDialog.getOpenFileNames(self, "파일 열기", "", SUPPORTED_FILE_FILTER)
+    if not paths:
       return
-    try:
-      doc = PdfDocument()
-      doc.open_file(path)
-      self._add_tab(doc, os.path.basename(path))
-      self.statusBar().showMessage(f"열림: {path}")
-    except Exception as exc:
-      QMessageBox.critical(self, "열기 오류", str(exc))
+
+    if len(paths) == 1:
+      path = paths[0]
+      if not PdfDocument.is_supported_file(path):
+        QMessageBox.critical(self, "열기 오류", "지원하지 않는 파일 형식입니다.")
+        return
+      try:
+        doc = PdfDocument()
+        doc.open_file(path)
+        self._add_tab(doc, _tab_title_for_filename(os.path.basename(path)))
+        self.statusBar().showMessage(f"열림: {path}")
+      except Exception as exc:
+        QMessageBox.critical(self, "열기 오류", str(exc))
+      return
+
+    doc = PdfDocument()
+    opened: list[str] = []
+    failed: list[tuple[str, str]] = []
+    for path in paths:
+      if not PdfDocument.is_supported_file(path):
+        failed.append((path, "지원하지 않는 파일 형식입니다."))
+        continue
+      try:
+        added = doc.insert_files_at(doc.page_count, [path])
+        if added == 0:
+          failed.append((path, "페이지를 추가할 수 없습니다."))
+        else:
+          opened.append(path)
+      except Exception as exc:
+        failed.append((path, str(exc)))
+
+    if not opened:
+      details = "\n".join(f"{os.path.basename(path)}: {message}" for path, message in failed)
+      QMessageBox.critical(self, "열기 오류", details or "열 수 있는 파일이 없습니다.")
+      doc._doc.close()
+      return
+
+    doc._source_path = None
+    doc._modified = False
+    doc.clear_history()
+
+    tab = self._add_tab(doc, _tab_title_for_opened_files(opened))
+    tab.refresh_all(keep_index=0)
+    tab.viewer.fit_page_when_ready()
+    self.statusBar().showMessage(f"{len(opened)}개 파일, {doc.page_count}페이지를 열었습니다.")
+
+    if failed:
+      details = "\n".join(f"{os.path.basename(path)}: {message}" for path, message in failed)
+      QMessageBox.warning(
+        self,
+        "일부 파일을 열 수 없음",
+        f"{len(failed)}개 파일을 열지 못했습니다.\n\n{details}",
+      )
 
   def _save(self) -> None:
     tab = self._current_tab()
@@ -1015,6 +1343,7 @@ class MainWindow(QMainWindow):
       return
     tab.thumbnails.refresh()
     tab.viewer.refresh()
+    self._update_edit_actions()
     self.statusBar().showMessage(
       f"용량 줄이기 완료: {format_file_size(dialog.result_before)}"
       f" → {format_file_size(dialog.result_after)}"
@@ -1059,8 +1388,9 @@ class MainWindow(QMainWindow):
 def run() -> None:
   init_platform()
   app = QApplication(sys.argv)
-  app.setApplicationName("Tiny PDF Editor")
-  app.setApplicationDisplayName(APP_TITLE)
+  app.setApplicationName(APP_NAME)
+  app.setApplicationDisplayName(titled_name())
+  app.setApplicationVersion(__version__)
   app_icon = load_app_icon()
   if not app_icon.isNull():
     app.setWindowIcon(app_icon)

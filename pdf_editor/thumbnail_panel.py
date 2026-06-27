@@ -12,6 +12,7 @@ from PyQt6.QtGui import (
     QDropEvent,
     QFont,
     QKeyEvent,
+    QKeySequence,
     QMouseEvent,
     QPainter,
     QPen,
@@ -32,12 +33,13 @@ from PyQt6.QtWidgets import (
 )
 
 from pdf_editor.document import PdfDocument
+from pdf_editor.page_clipboard import PageClipboard
 from pdf_editor.pixmap_utils import pixmap_from_fitz
 
 THUMB_ROLE = Qt.ItemDataRole.UserRole + 1
-THUMB_EMPTY_HINT = "Drag & Drop here."
+THUMB_EMPTY_HINT = "Drag & Drop files here."
 THUMB_SCALE_LEVELS = (55, 70, 82, 95, 112, 135, 165)
-DEFAULT_THUMB_SCALE_LEVEL = 4
+DEFAULT_THUMB_SCALE_LEVEL = 1
 DEFAULT_THUMB_SCALE = THUMB_SCALE_LEVELS[DEFAULT_THUMB_SCALE_LEVEL - 1]
 THUMB_CACHE_MAX = 50
 THUMB_KEEP_BUFFER = 3
@@ -236,6 +238,8 @@ class ThumbnailListWidget(QListWidget):
     drop_at_index = pyqtSignal(int, list)
     pages_move_requested = pyqtSignal(int, list)
     context_action = pyqtSignal(str)
+    paste_at_index = pyqtSignal(int)
+    paste_anchor_changed = pyqtSignal(int)
     scale_changed = pyqtSignal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -276,6 +280,7 @@ class ThumbnailListWidget(QListWidget):
         )
         self.setToolTip("페이지를 드래그해 순서를 바꾸거나, 파일을 끌어다 놓으세요")
         self._drop_indicator_index: int | None = None
+        self._history_state = lambda: (False, False)
         self._drag_start_indices: list[int] = []
         self._block_selection_sync = False
         self._pending_click_row: int | None = None
@@ -429,8 +434,10 @@ class ThumbnailListWidget(QListWidget):
             end = max(anchor, row)
             if not has_ctrl:
                 self.clearSelection()
-            self._select_index_range(start, end)
+            # Set current before selecting: moving current downward after selecting
+            # a higher row would otherwise drop the top end of the range.
             self.setCurrentRow(row)
+            self._select_index_range(start, end)
         elif has_ctrl:
             item.setSelected(not item.isSelected())
             self.setCurrentRow(row)
@@ -544,7 +551,21 @@ class ThumbnailListWidget(QListWidget):
         self._drop_indicator_index = None
         self.update()
 
+    def set_history_state(self, provider) -> None:
+        self._history_state = provider
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.matches(QKeySequence.StandardKey.Undo):
+            self.context_action.emit("undo")
+            event.accept()
+            return
+        if event.matches(QKeySequence.StandardKey.Redo) or (
+            event.modifiers() & Qt.KeyboardModifier.ControlModifier
+            and event.key() == Qt.Key.Key_Y
+        ):
+            self.context_action.emit("redo")
+            event.accept()
+            return
         if (
             event.key() == Qt.Key.Key_A
             and event.modifiers() & Qt.KeyboardModifier.ControlModifier
@@ -796,13 +817,42 @@ class ThumbnailListWidget(QListWidget):
         return self._indicator_geometry(index)[0]
 
     def _show_context_menu(self, pos: QPoint) -> None:
+        insert_index = self._index_at_pos(pos)
+        self._drop_indicator_index = insert_index
+        self.paste_anchor_changed.emit(insert_index)
+        self.viewport().update()
+
         menu = QMenu(self)
+        can_undo, can_redo = self._history_state()
+        act_undo = menu.addAction("되돌리기")
+        act_undo.setShortcut(QKeySequence.StandardKey.Undo)
+        act_undo.setEnabled(can_undo)
+        act_undo.triggered.connect(lambda: self.context_action.emit("undo"))
+        act_redo = menu.addAction("재실행")
+        act_redo.setShortcut(QKeySequence.StandardKey.Redo)
+        act_redo.setEnabled(can_redo)
+        act_redo.triggered.connect(lambda: self.context_action.emit("redo"))
+        menu.addSeparator()
+        act_copy = menu.addAction("복사")
+        act_copy.setShortcut(QKeySequence.StandardKey.Copy)
+        act_copy.triggered.connect(lambda: self.context_action.emit("copy"))
+        act_cut = menu.addAction("잘라내기")
+        act_cut.setShortcut(QKeySequence.StandardKey.Cut)
+        act_cut.triggered.connect(lambda: self.context_action.emit("cut"))
+        act_paste = menu.addAction("붙여넣기")
+        act_paste.setShortcut(QKeySequence.StandardKey.Paste)
+        act_paste.setEnabled(PageClipboard.has_pages())
+        act_paste.triggered.connect(lambda: self.paste_at_index.emit(insert_index))
+        menu.addSeparator()
         menu.addAction("페이지 삭제", lambda: self.context_action.emit("delete"))
         menu.addAction("시계 방향 회전", lambda: self.context_action.emit("rotate_cw"))
         menu.addAction("반시계 방향 회전", lambda: self.context_action.emit("rotate_ccw"))
         menu.addSeparator()
         menu.addAction("빈 페이지 삽입", lambda: self.context_action.emit("insert_blank"))
         menu.exec(self.mapToGlobal(pos))
+
+        self._drop_indicator_index = None
+        self.viewport().update()
 
 
 class ThumbnailPanel(QWidget):
@@ -818,6 +868,11 @@ class ThumbnailPanel(QWidget):
     export_images_requested = pyqtSignal(list)
     blank_page_requested = pyqtSignal(int)
     thumb_scale_changed = pyqtSignal(int)
+    undo_requested = pyqtSignal()
+    redo_requested = pyqtSignal()
+    copy_pages_requested = pyqtSignal(list)
+    cut_pages_requested = pyqtSignal(list)
+    paste_pages_requested = pyqtSignal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -828,6 +883,7 @@ class ThumbnailPanel(QWidget):
         self._pending_rows: set[int] = set()
         self._thumb_cache: OrderedDict[int, QPixmap] = OrderedDict()
         self._loaded_rows: set[int] = set()
+        self._paste_anchor_index: int | None = None
         self.setAcceptDrops(True)
 
         layout = QVBoxLayout(self)
@@ -852,6 +908,8 @@ class ThumbnailPanel(QWidget):
         self.list_widget.drop_at_index.connect(self._on_drop)
         self.list_widget.pages_move_requested.connect(self._on_pages_move)
         self.list_widget.context_action.connect(self._on_context_action)
+        self.list_widget.paste_at_index.connect(self.paste_pages_requested.emit)
+        self.list_widget.paste_anchor_changed.connect(self._set_paste_anchor)
         self.list_widget.verticalScrollBar().valueChanged.connect(self._on_thumbnail_scroll)
         self.list_widget.scale_changed.connect(self._on_list_scale_changed)
         self.thumb_stack.addWidget(self.list_widget)
@@ -915,7 +973,13 @@ class ThumbnailPanel(QWidget):
 
     def set_document(self, document: PdfDocument | None) -> None:
         self._document = document
+        self.list_widget.set_history_state(self._history_state)
         self.refresh()
+
+    def _history_state(self) -> tuple[bool, bool]:
+        if self._document is None:
+            return False, False
+        return self._document.can_undo(), self._document.can_redo()
 
     def refresh(self, keep_index: int | None = None, select_indices: list[int] | None = None) -> None:
         self._block_signals = True
@@ -1145,6 +1209,7 @@ class ThumbnailPanel(QWidget):
     def set_current_index(self, index: int) -> None:
         if 0 <= index < self.list_widget.count():
             self.list_widget.setCurrentRow(index)
+            self.list_widget._anchor_index = index
             self.list_widget.scroll_to_row(index)
             self.list_widget._sync_selection_visuals()
 
@@ -1259,19 +1324,66 @@ class ThumbnailPanel(QWidget):
         _, default_w, max_w = self.get_panel_width_range()
         return default_w, max_w
 
+    def _set_paste_anchor(self, index: int) -> None:
+        self._paste_anchor_index = max(0, index)
+
+    def resolve_paste_index(self, menu_pos: QPoint | None = None) -> int:
+        lw = self.list_widget
+        if lw.count() == 0:
+            return 0
+        if menu_pos is not None:
+            return lw._index_at_pos(menu_pos)
+        if self._paste_anchor_index is not None:
+            return min(self._paste_anchor_index, lw.count())
+        selected = self.selected_indices()
+        if selected:
+            return max(selected) + 1
+        row = lw.currentRow()
+        if row >= 0:
+            return row + 1
+        return lw.count()
+
+    def copy_indices(self) -> list[int]:
+        indices = self.selected_indices()
+        if indices:
+            return indices
+        row = self.current_index()
+        if row >= 0:
+            return [row]
+        return []
+
     def _on_current_changed(self, row: int) -> None:
         if self._block_signals or row < 0:
             return
+        self._paste_anchor_index = row + 1
         self.page_selected.emit(row)
 
     def _on_drop(self, index: int, paths: list[str]) -> None:
+        self._set_paste_anchor(index)
         self.insert_requested.emit(index, paths)
 
     def _on_pages_move(self, target_index: int, indices: list[int]) -> None:
+        self._set_paste_anchor(target_index)
         self.pages_move_requested.emit(target_index, indices)
 
     def _on_context_action(self, action: str) -> None:
         indices = self.selected_indices()
+        if action == "undo":
+            self.undo_requested.emit()
+            return
+        if action == "redo":
+            self.redo_requested.emit()
+            return
+        if action == "copy":
+            copy_indices = self.copy_indices()
+            if copy_indices:
+                self.copy_pages_requested.emit(copy_indices)
+            return
+        if action == "cut":
+            cut_indices = self.copy_indices()
+            if cut_indices:
+                self.cut_pages_requested.emit(cut_indices)
+            return
         if action == "delete":
             self.delete_requested.emit(indices)
         elif action == "insert":
