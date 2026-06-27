@@ -183,20 +183,22 @@ def toggle_about_splash() -> None:
     _about_splash = splash
     splash.show_centered()
     _install_about_dismiss_filter()
-    splash.destroyed.connect(lambda *_: _on_about_splash_destroyed(splash))
+    splash.destroyed.connect(_on_about_splash_destroyed)
 
 
-def _on_about_splash_destroyed(splash: SplashScreen) -> None:
+def _on_about_splash_destroyed(_obj: QObject | None = None) -> None:
     global _about_splash
     _remove_about_dismiss_filter()
-    if _about_splash is splash:
-        _about_splash = None
+    _about_splash = None
 
 
 def finish_loading_splash(splash: SplashScreen, elapsed_ms: int, on_done) -> None:
     """Close loading splash after minimum display time, then run *on_done*."""
     delay = max(0, SPLASH_MIN_MS - elapsed_ms)
-    QTimer.singleShot(delay, lambda: _close_loading_and_run(splash, on_done))
+    QTimer.singleShot(
+        delay,
+        lambda s=splash, done=on_done: _close_loading_and_run(s, done),
+    )
 
 
 def _close_loading_and_run(splash: SplashScreen, on_done) -> None:
