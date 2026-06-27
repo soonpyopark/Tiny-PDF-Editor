@@ -18,8 +18,10 @@ const PYI_DIST = path.join(BUILD_DIR, "pyinstaller-dist");
 const PYI_WORK = path.join(BUILD_DIR, "pyinstaller-work");
 const MANIFEST_PATH = path.join(BUILD_DIR, "latest-release.json");
 const BRANDING_DIR = path.join(ROOT, "pdf_editor", "branding");
+const SOURCE_LOGO = path.join(ROOT, "assets", "source_logo.png");
 const APP_ICON = path.join(BRANDING_DIR, "app_icon.ico");
 const APP_LOGO = path.join(BRANDING_DIR, "app_logo.png");
+const APP_ICON_PNG = path.join(BRANDING_DIR, "app_icon.png");
 const MAX_RELEASES = 3;
 const isUpdate = process.argv.includes("--update");
 
@@ -56,14 +58,29 @@ function ensurePythonDeps() {
   run("python -m pip install -r requirements.txt pyinstaller --quiet");
 }
 
-function buildPortableApp() {
-  fs.mkdirSync(PYI_DIST, { recursive: true });
-  fs.mkdirSync(PYI_WORK, { recursive: true });
-
+function ensureBrandingAssets() {
+  if (fs.existsSync(SOURCE_LOGO)) {
+    run("python scripts/prepare-branding.py");
+  }
   if (!fs.existsSync(APP_ICON) || !fs.existsSync(APP_LOGO)) {
     throw new Error(
       "Branding assets missing. Run: python scripts/prepare-branding.py",
     );
+  }
+}
+
+function buildPortableApp() {
+  fs.mkdirSync(PYI_DIST, { recursive: true });
+  fs.mkdirSync(PYI_WORK, { recursive: true });
+
+  ensureBrandingAssets();
+
+  const addData = [
+    `${APP_LOGO};pdf_editor/branding`,
+    `${APP_ICON};pdf_editor/branding`,
+  ];
+  if (fs.existsSync(APP_ICON_PNG)) {
+    addData.push(`${APP_ICON_PNG};pdf_editor/branding`);
   }
 
   const args = [
@@ -76,8 +93,7 @@ function buildPortableApp() {
     `--workpath "${PYI_WORK}"`,
     `--specpath "${BUILD_DIR}"`,
     `--icon "${APP_ICON}"`,
-    `--add-data "${APP_LOGO};pdf_editor/branding"`,
-    `--add-data "${APP_ICON};pdf_editor/branding"`,
+    ...addData.map((entry) => `--add-data "${entry}"`),
     "--hidden-import fitz",
     "--collect-all PyQt6",
     "--collect-all pymupdf",
