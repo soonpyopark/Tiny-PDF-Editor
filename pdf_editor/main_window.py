@@ -475,24 +475,26 @@ class DocumentTab(QWidget):
     if payload is None:
       return
     try:
-      was_empty = self.document.page_count == 0
-      insert_at = max(0, min(insert_at, self.document.page_count))
+      page_count_before = self.document.page_count
+      was_empty = page_count_before == 0
+      insert_at = max(0, min(insert_at, page_count_before))
       added = self.document.insert_pages_from_bytes(insert_at, payload.pdf_bytes)
       if not added:
         return
-      pasted = list(range(insert_at, insert_at + added))
-      focus = insert_at + added - 1
+      focus = self._insert_focus_index(
+        insert_at,
+        added,
+        was_empty=was_empty,
+        page_count_before=page_count_before,
+      )
       self.thumbnails.insert_pages_at(
         insert_at,
         added,
         keep_index=focus,
-        select_indices=pasted,
+        select_indices=[focus],
       )
       self.thumbnails._set_paste_anchor(insert_at + added)
-      self.viewer.set_current_index(focus)
-      self.viewer.refresh()
-      if was_empty:
-        self.viewer.fit_page_when_ready()
+      self.go_to_page(focus, fit_page=was_empty)
       self._notify_history_changed()
       self._notify_clipboard_changed()
     except Exception as exc:
@@ -639,6 +641,32 @@ class DocumentTab(QWidget):
     self.viewer.set_current_index(index)
     self.viewer.refresh()
 
+  def go_to_page(self, index: int, *, fit_page: bool = False) -> None:
+    if self.document.page_count == 0:
+      return
+    index = max(0, min(index, self.document.page_count - 1))
+    self.thumbnails.set_current_index(index)
+    if self.viewer.current_index() != index:
+      self.viewer.set_current_index(index)
+    else:
+      self.viewer.refresh()
+    if fit_page:
+      self.viewer.fit_page_when_ready()
+
+  @staticmethod
+  def _insert_focus_index(
+    insert_at: int,
+    added: int,
+    *,
+    was_empty: bool,
+    page_count_before: int,
+  ) -> int:
+    if added <= 0:
+      return insert_at
+    if was_empty or insert_at < page_count_before:
+      return insert_at
+    return insert_at + added - 1
+
   @staticmethod
   def _indices_after_delete(deleted: list[int], rows: list[int]) -> list[int]:
     deleted_set = set(deleted)
@@ -674,15 +702,23 @@ class DocumentTab(QWidget):
     if not paths:
       return
     try:
-      was_empty = self.document.page_count == 0
+      page_count_before = self.document.page_count
+      was_empty = page_count_before == 0
       added = self.document.insert_files_at(index, paths)
-      focus = index + added - 1 if added else index
       if added:
-        self.thumbnails.insert_pages_at(index, added, keep_index=focus)
-      self.viewer.set_current_index(focus)
-      self.viewer.refresh()
-      if added and was_empty:
-        self.viewer.fit_page_when_ready()
+        focus = self._insert_focus_index(
+          index,
+          added,
+          was_empty=was_empty,
+          page_count_before=page_count_before,
+        )
+        self.thumbnails.insert_pages_at(
+          index,
+          added,
+          keep_index=focus,
+          select_indices=[focus],
+        )
+        self.go_to_page(focus, fit_page=was_empty)
       self._notify_history_changed()
     except Exception as exc:
       QMessageBox.critical(self, "삽입 오류", str(exc))
@@ -1207,6 +1243,7 @@ class MainWindow(QMainWindow):
     tab._on_insert(before, [])
     after = tab.document.page_count
     if after > before:
+      tab.go_to_page(after - 1)
       self.statusBar().showMessage(f"{after - before}페이지를 추가했습니다.")
 
   def _open_file(self) -> None:
@@ -1222,7 +1259,8 @@ class MainWindow(QMainWindow):
       try:
         doc = PdfDocument()
         doc.open_file(path)
-        self._add_tab(doc, _tab_title_for_filename(os.path.basename(path)))
+        tab = self._add_tab(doc, _tab_title_for_filename(os.path.basename(path)))
+        QTimer.singleShot(0, lambda: tab.go_to_page(0, fit_page=True))
         self._update_edit_actions()
         self.statusBar().showMessage(f"열림: {path}")
       except Exception as exc:
@@ -1256,8 +1294,7 @@ class MainWindow(QMainWindow):
     doc.clear_history()
 
     tab = self._add_tab(doc, _tab_title_for_opened_files(opened))
-    tab.refresh_all(keep_index=0)
-    tab.viewer.fit_page_when_ready()
+    QTimer.singleShot(0, lambda: tab.go_to_page(0, fit_page=True))
     self._update_edit_actions()
     self.statusBar().showMessage(f"{len(opened)}개 파일, {doc.page_count}페이지를 열었습니다.")
 
