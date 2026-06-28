@@ -93,6 +93,26 @@ def _tab_title_for_opened_files(opened: list[str]) -> str:
     return _tab_title_for_filename(first_name, extra_count=len(opened) - 1)
 
 
+def parse_launch_paths(argv: list[str]) -> list[str]:
+    """Return supported file paths passed on the command line (e.g. Windows file association)."""
+    paths: list[str] = []
+    seen: set[str] = set()
+    for arg in argv[1:]:
+        if not arg or arg.startswith("-"):
+            continue
+        path = str(Path(arg))
+        if not os.path.isfile(path):
+            continue
+        if not PdfDocument.is_supported_file(path):
+            continue
+        key = os.path.normcase(os.path.abspath(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return paths
+
+
 class CloseSaveChoice(str, Enum):
     SAVE_AS = "save_as"
     DISCARD = "discard"
@@ -790,7 +810,7 @@ class DocumentTab(QWidget):
 
 
 class MainWindow(QMainWindow):
-  def __init__(self) -> None:
+  def __init__(self, launch_paths: list[str] | None = None) -> None:
     super().__init__()
     self.setObjectName("mainWindow")
     self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -842,7 +862,11 @@ class MainWindow(QMainWindow):
     QShortcut(QKeySequence("F3"), self, self._search_next)
     QShortcut(QKeySequence("Shift+F3"), self, self._search_prev)
 
-    self._new_tab()
+    self._pending_launch_paths = list(launch_paths or [])
+    if self._pending_launch_paths:
+      QTimer.singleShot(0, self._open_pending_launch_paths)
+    else:
+      self._new_tab()
     QTimer.singleShot(0, self._update_search_bar_inset)
 
   def resizeEvent(self, event) -> None:
@@ -1246,16 +1270,21 @@ class MainWindow(QMainWindow):
       tab.go_to_page(after - 1)
       self.statusBar().showMessage(f"{after - before}페이지를 추가했습니다.")
 
-  def _open_file(self) -> None:
-    paths, _ = QFileDialog.getOpenFileNames(self, "파일 열기", "", SUPPORTED_FILE_FILTER)
+  def _open_pending_launch_paths(self) -> None:
+    paths = self._pending_launch_paths
+    self._pending_launch_paths = []
+    if not self._open_paths(paths) and self.tabs.count() == 0:
+      self._new_tab()
+
+  def _open_paths(self, paths: list[str]) -> bool:
     if not paths:
-      return
+      return False
 
     if len(paths) == 1:
       path = paths[0]
       if not PdfDocument.is_supported_file(path):
         QMessageBox.critical(self, "열기 오류", "지원하지 않는 파일 형식입니다.")
-        return
+        return False
       try:
         doc = PdfDocument()
         doc.open_file(path)
@@ -1263,9 +1292,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, lambda: tab.go_to_page(0, fit_page=True))
         self._update_edit_actions()
         self.statusBar().showMessage(f"열림: {path}")
+        return True
       except Exception as exc:
         QMessageBox.critical(self, "열기 오류", str(exc))
-      return
+        return False
 
     doc = PdfDocument()
     opened: list[str] = []
@@ -1287,7 +1317,7 @@ class MainWindow(QMainWindow):
       details = "\n".join(f"{os.path.basename(path)}: {message}" for path, message in failed)
       QMessageBox.critical(self, "열기 오류", details or "열 수 있는 파일이 없습니다.")
       doc._doc.close()
-      return
+      return False
 
     doc._source_path = None
     doc._modified = False
@@ -1305,6 +1335,13 @@ class MainWindow(QMainWindow):
         "일부 파일을 열 수 없음",
         f"{len(failed)}개 파일을 열지 못했습니다.\n\n{details}",
       )
+    return True
+
+  def _open_file(self) -> None:
+    paths, _ = QFileDialog.getOpenFileNames(self, "파일 열기", "", SUPPORTED_FILE_FILTER)
+    if not paths:
+      return
+    self._open_paths(paths)
 
   def _save(self) -> None:
     tab = self._current_tab()
@@ -1442,7 +1479,7 @@ class MainWindow(QMainWindow):
     event.accept()
 
 
-def run() -> None:
+def run(argv: list[str] | None = None) -> None:
   init_platform()
   app = QApplication(sys.argv)
   app.setApplicationName(APP_NAME)
@@ -1452,9 +1489,11 @@ def run() -> None:
   if not app_icon.isNull():
     app.setWindowIcon(app_icon)
 
+  launch_paths = parse_launch_paths(argv if argv is not None else sys.argv)
+
   splash = show_loading_splash(app_icon)
   started = time.monotonic()
-  window = MainWindow()
+  window = MainWindow(launch_paths=launch_paths)
   elapsed_ms = int((time.monotonic() - started) * 1000)
 
   finish_loading_splash(splash, elapsed_ms, window.show)
