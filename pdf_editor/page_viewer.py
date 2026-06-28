@@ -28,6 +28,7 @@ from pdf_editor.pixmap_utils import pixmap_from_fitz
 
 ZOOM_PRESETS = [25, 50, 75, 100, 125, 150, 200, 250]
 MAX_ZOOM = 2.5
+PREVIEW_BACKGROUND = "#efefef"
 EMPTY_PREVIEW_HINT = (
     "병합할 이미지나 PDF 를 좌측 썸네일 화면으로\n"
     "드래그 앤 드랍으로 추가해주세요"
@@ -276,8 +277,10 @@ class PageViewer(QWidget):
         root.setSpacing(0)
 
         self.preview_stack = QStackedWidget()
+        preview_bg = f"background-color: {PREVIEW_BACKGROUND};"
 
         empty_page = QWidget()
+        empty_page.setStyleSheet(preview_bg)
         empty_layout = QVBoxLayout(empty_page)
         empty_layout.setContentsMargins(24, 24, 24, 24)
         self.empty_hint = QLabel(EMPTY_PREVIEW_HINT)
@@ -290,18 +293,23 @@ class PageViewer(QWidget):
         self.preview_stack.addWidget(empty_page)
 
         self.scroll_area = QScrollArea()
+        self.scroll_area.setStyleSheet(
+            f"QScrollArea {{ {preview_bg} border: none; }}"
+        )
         self.scroll_area.setWidgetResizable(False)
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         viewport = self.scroll_area.viewport()
+        viewport.setStyleSheet(preview_bg)
         viewport.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         viewport.installEventFilter(self)
 
         self.page_canvas = PageCanvas()
         self.scroll_area.setWidget(self.page_canvas)
         self.preview_stack.addWidget(self.scroll_area)
+        self.preview_stack.setStyleSheet(preview_bg)
         root.addWidget(self.preview_stack, 1)
 
         self.log_panel = QPlainTextEdit()
