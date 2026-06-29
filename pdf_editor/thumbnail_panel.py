@@ -51,9 +51,11 @@ _THUMB_LABEL_HEIGHT = 20
 THUMB_ITEM_GAP = 20
 _PANEL_HEADER_MIN_WIDTH = 212
 _PANEL_EDGE_PADDING = 12
-DROP_INDICATOR_COLOR = QColor("#1a73e8")
+DROP_INDICATOR_COLOR = QColor("#f28b82")
 DROP_INDICATOR_WIDTH = 2
 DROP_INDICATOR_TICK = 7
+THUMB_BORDER_COLOR = "#666666"
+THUMB_CURRENT_BORDER_COLOR = "#f28b82"
 
 
 def _menu_action_text(label: str, standard_key: QKeySequence.StandardKey) -> str:
@@ -100,6 +102,7 @@ class ThumbnailItemWidget(QWidget):
         self._press_pos: QPoint | None = None
         self._drag_started = False
         self._selected = False
+        self._current = False
         self._list_row = 0
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
         self.setStyleSheet(_CHILD_STYLE)
@@ -158,10 +161,16 @@ class ThumbnailItemWidget(QWidget):
         rect = self.rect().adjusted(1, 1, -1, -1)
         if self._selected:
             painter.setBrush(QColor("#ebebeb"))
-            painter.setPen(QPen(QColor("#8e8e8e"), 1))
         else:
             painter.setBrush(QColor("#ffffff"))
-            painter.setPen(Qt.PenStyle.NoPen)
+        painter.setPen(
+            QPen(
+                QColor(
+                    THUMB_CURRENT_BORDER_COLOR if self._current else THUMB_BORDER_COLOR
+                ),
+                1,
+            )
+        )
         painter.drawRoundedRect(rect, 4, 4)
         painter.end()
         super().paintEvent(event)
@@ -207,6 +216,10 @@ class ThumbnailItemWidget(QWidget):
 
     def set_selected(self, selected: bool) -> None:
         self._selected = selected
+        self.update()
+
+    def set_current(self, current: bool) -> None:
+        self._current = current
         self.update()
 
     def _on_thumb_pressed(self, event: QMouseEvent) -> None:
@@ -482,11 +495,13 @@ class ThumbnailListWidget(QListWidget):
     def _sync_selection_visuals(self) -> None:
         if self._block_selection_sync:
             return
+        current_row = self.currentRow()
         for row in range(self.count()):
             item = self.item(row)
             widget = self.itemWidget(item)
             if item and isinstance(widget, ThumbnailItemWidget):
                 widget.set_selected(item.isSelected())
+                widget.set_current(row == current_row)
 
     def _start_page_drag_from_row(self, row: int) -> None:
         indices = self.selected_indices()
