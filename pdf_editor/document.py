@@ -69,6 +69,9 @@ _IMAGE_DO_CM_RE = re.compile(
 )
 _FULLPAGE_RASTER_COVERAGE = 0.65
 _PROFILE_SAMPLE_PAGES = 20
+_MICRO_IMAGE_MAX_PT = 12.0
+_MICRO_IMAGE_RATIO_THRESHOLD = 0.35
+_DISTILLER_MICRO_RATIO_THRESHOLD = 0.20
 _MAX_UNDO_LEVELS = 50
 
 
@@ -172,9 +175,25 @@ class DocumentReduceProfile:
     embedded_uniform_scale: float | None = None
     publisher_flip_scale: float | None = None
     fullpage_raster_ratio: float = 0.0
+    distiller_print_pdf: bool = False
+    micro_image_ratio: float = 0.0
+
+    @property
+    def prefers_compression_only(self) -> bool:
+        """True when geometry downscale is likely to break mixed text/raster layouts."""
+        if self.micro_image_ratio >= _MICRO_IMAGE_RATIO_THRESHOLD:
+            return True
+        if (
+            self.distiller_print_pdf
+            and self.micro_image_ratio >= _DISTILLER_MICRO_RATIO_THRESHOLD
+        ):
+            return True
+        return False
 
     @property
     def prefers_page_only(self) -> bool:
+        if self.prefers_compression_only:
+            return True
         if self.fullpage_raster_ratio >= 0.5:
             return True
         if self.publisher_flip_scale is not None:
@@ -182,6 +201,11 @@ class DocumentReduceProfile:
         if self.embedded_uniform_scale is not None:
             return True
         return False
+
+    @property
+    def prefers_individual_image_recompress(self) -> bool:
+        """Use per-image recompress so micro-image skips can be applied."""
+        return self.prefers_compression_only or self.micro_image_ratio >= 0.15
 
 
 class PdfDocument:
@@ -461,10 +485,16 @@ class PdfDocument:
 
         quality = max(1, min(100, options.jpeg_quality))
         processed: set[int] = set()
+        micro_xrefs: set[int] = set()
+        for xref, (display_rect, _page_index, _smask) in PdfDocument._collect_image_resize_targets(
+            doc
+        ).items():
+            if PdfDocument._is_micro_image_rect(display_rect):
+                micro_xrefs.add(xref)
         for page in doc:
             for img in page.get_images(full=True):
                 xref = img[0]
-                if xref in processed:
+                if xref in processed or xref in micro_xrefs:
                     continue
                 processed.add(xref)
                 pix = PdfDocument._safe_pixmap_from_xref(doc, xref)
@@ -492,6 +522,45 @@ class PdfDocument:
                     pix = None
 
     @staticmethod
+    def _is_micro_image_rect(display_rect: fitz.Rect) -> bool:
+        if display_rect.is_empty:
+            return True
+        return max(display_rect.width, display_rect.height) < _MICRO_IMAGE_MAX_PT
+
+    @staticmethod
+    def _is_distiller_print_pdf(doc: fitz.Document) -> bool:
+        meta = doc.metadata or {}
+        creator = (meta.get("creator") or "").lower()
+        producer = (meta.get("producer") or "").lower()
+        return "pscript" in creator or "distiller" in producer
+
+    @staticmethod
+    def _sample_micro_image_ratio(doc: fitz.Document, page_indices: list[int]) -> float:
+        total = 0
+        micro = 0
+        for page_index in page_indices:
+            if page_index < 0 or page_index >= len(doc):
+                continue
+            page = doc[page_index]
+            try:
+                images = page.get_images(full=True)
+            except Exception:
+                continue
+            for img in images:
+                xref = img[0]
+                try:
+                    rects = page.get_image_rects(xref)
+                except Exception:
+                    continue
+                for rect in rects:
+                    total += 1
+                    if PdfDocument._is_micro_image_rect(rect):
+                        micro += 1
+        if total == 0:
+            return 0.0
+        return micro / total
+
+    @staticmethod
     def _resample_single_image(
         doc: fitz.Document,
         xref: int,
@@ -504,7 +573,7 @@ class PdfDocument:
         skip_if_display_dpi_met: bool = True,
     ) -> bool:
         """Downsample one embedded image to its on-page display size; return True if updated."""
-        if display_rect.is_empty:
+        if display_rect.is_empty or PdfDocument._is_micro_image_rect(display_rect):
             return False
 
         target_w = max(1, int(display_rect.width * target_dpi / 72))
@@ -573,19 +642,23 @@ class PdfDocument:
         *,
         target_dpi: int,
         dpi_threshold: int | None,
+        profile: DocumentReduceProfile | None = None,
     ) -> None:
         """Recompress embedded images only; do not recolor or outline text."""
+        if profile is None:
+            profile = PdfDocument.analyze_reduce_profile(doc)
         bulk_ok = False
-        try:
-            doc.rewrite_images(
-                dpi_threshold=dpi_threshold,
-                dpi_target=target_dpi,
-                quality=options.jpeg_quality,
-                set_to_gray=False,
-            )
-            bulk_ok = True
-        except Exception:
-            bulk_ok = False
+        if not profile.prefers_individual_image_recompress:
+            try:
+                doc.rewrite_images(
+                    dpi_threshold=dpi_threshold,
+                    dpi_target=target_dpi,
+                    quality=options.jpeg_quality,
+                    set_to_gray=False,
+                )
+                bulk_ok = True
+            except Exception:
+                bulk_ok = False
         if not bulk_ok:
             PdfDocument._recompress_images_individually(
                 doc,
@@ -911,8 +984,9 @@ class PdfDocument:
         flip_counts: dict[float, int] = {}
         raster_hits = 0
         samples = 0
+        page_indices = PdfDocument._profile_sample_page_indices(doc)
 
-        for page_index in PdfDocument._profile_sample_page_indices(doc):
+        for page_index in page_indices:
             samples += 1
             page_geometry = PdfDocument.analyze_page_reduce_geometry(doc, page_index)
             if page_geometry.is_fullpage_raster:
@@ -944,6 +1018,8 @@ class PdfDocument:
             embedded_uniform_scale=embedded_uniform,
             publisher_flip_scale=publisher_flip,
             fullpage_raster_ratio=raster_ratio,
+            distiller_print_pdf=PdfDocument._is_distiller_print_pdf(doc),
+            micro_image_ratio=PdfDocument._sample_micro_image_ratio(doc, page_indices),
         )
 
     def reduce_profile(self) -> DocumentReduceProfile:
@@ -1187,6 +1263,7 @@ class PdfDocument:
         """Build a reduced copy: recompress → post-process → geometry → resample → compact."""
         target_dpi = max(MIN_IMAGE_DPI, options.max_dpi)
         working = fitz.open(stream=source.tobytes(), filetype="pdf")
+        profile = PdfDocument.analyze_reduce_profile(working)
 
         if status_callback is not None:
             if options.grayscale or options.monochrome:
@@ -1207,6 +1284,7 @@ class PdfDocument:
                 options,
                 target_dpi=target_dpi,
                 dpi_threshold=dpi_threshold,
+                profile=profile,
             )
         except Exception:
             if status_callback is not None:

@@ -1,11 +1,11 @@
-# Tiny PDF Editor v1.0.1
+# Tiny PDF Editor v1.0.2
 
 Windows용 **포터블 PDF 편집기**입니다. Python 설치 없이 실행할 수 있는 배포판을 제공하며, 페이지 병합·편집·검색·용량 줄이기 등 일상적인 PDF 작업을 한 프로그램에서 처리할 수 있습니다.
 
 ## 다운로드 및 실행 (배포판)
 
 1. 블로그 또는 배포 페이지에서 **최신 빌드 폴더 전체**를 받습니다.
-2. 압축을 푼 뒤, 폴더 안의 `Tiny PDF Editor v1.0.1_YYMMDD_HHMMSS.exe`를 실행합니다.
+2. 압축을 푼 뒤, 폴더 안의 `Tiny PDF Editor v1.0.2_YYMMDD_HHMMSS.exe`를 실행합니다.
 3. `_internal` 폴더와 exe는 **같은 위치**에 있어야 합니다. exe만 따로 복사하면 실행되지 않습니다.
 
 USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다. 자세한 내용은 `DISTRIBUTE.md`를 참고하세요.
@@ -145,8 +145,8 @@ npm run build:dist:exe:update
 
 ```
 dist/
-  Tiny PDF Editor v1.0.1_YYMMDD_HHMMSS/
-    Tiny PDF Editor v1.0.1_YYMMDD_HHMMSS.exe
+  Tiny PDF Editor v1.0.2_YYMMDD_HHMMSS/
+    Tiny PDF Editor v1.0.2_YYMMDD_HHMMSS.exe
     _internal/          (실행에 필요한 라이브러리)
     LICENSE
     README.md

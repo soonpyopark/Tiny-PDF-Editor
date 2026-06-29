@@ -1,6 +1,6 @@
 """Application version — single source of truth."""
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 APP_NAME = "Tiny PDF Editor"
 
@@ -14,5 +14,5 @@ def titled_name() -> str:
 
 
 def release_base_name() -> str:
-    """Portable build folder/exe prefix (e.g. ``Tiny PDF Editor v1.0.1``)."""
+    """Portable build folder/exe prefix (e.g. ``Tiny PDF Editor v1.0.2``)."""
     return f"{APP_NAME} {version_label()}"

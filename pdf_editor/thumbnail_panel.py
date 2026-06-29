@@ -374,6 +374,12 @@ class ThumbnailListWidget(QListWidget):
             if item:
                 self.scrollToItem(item, QAbstractItemView.ScrollHint.EnsureVisible)
 
+    def _set_focus_row(self, row: int) -> None:
+        """Keep current row and shift-click anchor aligned after list mutations."""
+        if 0 <= row < self.count():
+            self.setCurrentRow(row)
+            self._anchor_index = row
+
     def set_item_widget(self, row: int, pixmap: QPixmap, page_number: int) -> None:
         item = self.item(row)
         if not item:
@@ -410,8 +416,11 @@ class ThumbnailListWidget(QListWidget):
             return self._anchor_index
         current = self.currentRow()
         if 0 <= current < self.count():
+            self._anchor_index = current
             return current
-        return max(0, min(fallback_row, self.count() - 1)) if self.count() else 0
+        anchor = max(0, min(fallback_row, self.count() - 1)) if self.count() else 0
+        self._anchor_index = anchor
+        return anchor
 
     def _select_index_range(self, start: int, end: int) -> None:
         for row in range(start, end + 1):
@@ -999,13 +1008,14 @@ class ThumbnailPanel(QWidget):
 
             target = keep_index if keep_index is not None else 0
             target = max(0, min(target, self.list_widget.count() - 1))
-            self.list_widget.setCurrentRow(target)
             if select_indices:
                 self.list_widget._block_selection_sync = True
                 for row in select_indices:
                     if 0 <= row < self.list_widget.count():
                         self.list_widget.item(row).setSelected(True)
                 self.list_widget._block_selection_sync = False
+                target = max(0, min(select_indices[0], self.list_widget.count() - 1))
+            self.list_widget._set_focus_row(target)
             self.list_widget._sync_selection_visuals()
             self.list_widget.scroll_to_row(target)
         self._block_signals = False
@@ -1055,10 +1065,9 @@ class ThumbnailPanel(QWidget):
             for row in select_indices:
                 if 0 <= row < count:
                     self.list_widget.item(row).setSelected(True)
-            if select_indices:
-                target = max(0, min(select_indices[0], count - 1))
+            target = max(0, min(select_indices[0], count - 1))
             self.list_widget._block_selection_sync = False
-        self.list_widget.setCurrentRow(target)
+        self.list_widget._set_focus_row(target)
         self.list_widget._sync_selection_visuals()
         self.list_widget.scroll_to_row(target)
 
@@ -1105,10 +1114,9 @@ class ThumbnailPanel(QWidget):
             for row in select_indices:
                 if 0 <= row < self.list_widget.count():
                     self.list_widget.item(row).setSelected(True)
-            if select_indices:
-                target = max(0, min(select_indices[0], self.list_widget.count() - 1))
+            target = max(0, min(select_indices[0], self.list_widget.count() - 1))
             self.list_widget._block_selection_sync = False
-        self.list_widget.setCurrentRow(target)
+        self.list_widget._set_focus_row(target)
         self.list_widget._sync_selection_visuals()
         self.list_widget.scroll_to_row(target)
         self._block_signals = False
@@ -1208,8 +1216,7 @@ class ThumbnailPanel(QWidget):
 
     def set_current_index(self, index: int) -> None:
         if 0 <= index < self.list_widget.count():
-            self.list_widget.setCurrentRow(index)
-            self.list_widget._anchor_index = index
+            self.list_widget._set_focus_row(index)
             self.list_widget.scroll_to_row(index)
             self.list_widget._sync_selection_visuals()
 

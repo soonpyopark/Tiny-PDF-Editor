@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QFont, QTextCursor
+from PyQt6.QtCore import Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QFont, QTextCursor
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from pdf_editor.app_settings import REDUCE_USAGE_GUIDE_URL
 from pdf_editor.document import (
     DocumentReduceProfile,
     GEOMETRY_MODE_BOTH,
@@ -41,9 +42,14 @@ _PANEL_FRAME_STYLE = (
     "QFrame { background: #fafafa; border: 1px solid #e4e4e4; border-radius: 8px; }"
 )
 _DIALOG_WIDTH = 800
+_STEP_BLOCK_SPACING = 12
+_STEP_REGION_GAP = 14  # equal whitespace above each [N단계] header
+_STEP_LABEL_HEIGHT = 14
 _SETTINGS_HEADER_HEIGHT = 44
 _STEP1_BTN_RELOCATE_SAVED_HEIGHT = 14  # root spacing removed when btn joins step1 section
-_STEP3_HEADER_ADDED_HEIGHT = 24  # step2 spacing (10) + step header label (~14)
+_STEP0_SECTION_SAVED_HEIGHT = (
+    _STEP_LABEL_HEIGHT + _STEP_BLOCK_SPACING + 40
+)
 _DESIRED_PANEL_VERTICAL_MARGIN = 6  # original loose panel grid top/bottom margin (each side)
 _DESIRED_PANEL_INNER_MARGIN = 4  # compact panel top/bottom padding (each side)
 _DESIRED_PANEL_COMPACT_SAVED_HEIGHT = (
@@ -60,16 +66,16 @@ _PROGRESS_LOG_MIN_HEIGHT = (
     + _SETTINGS_HEADER_HEIGHT
     + _STEP1_BTN_RELOCATE_SAVED_HEIGHT
     + _EXTRA_TERMINAL_HEIGHT
-    - _STEP3_HEADER_ADDED_HEIGHT
     + _DESIRED_PANEL_SAVED_HEIGHT
+    - _STEP0_SECTION_SAVED_HEIGHT
 )
 _PROGRESS_LOG_MAX_HEIGHT = (
     150
     + _SETTINGS_HEADER_HEIGHT
     + _STEP1_BTN_RELOCATE_SAVED_HEIGHT
     + _EXTRA_TERMINAL_HEIGHT
-    - _STEP3_HEADER_ADDED_HEIGHT
     + _DESIRED_PANEL_SAVED_HEIGHT
+    - _STEP0_SECTION_SAVED_HEIGHT
 )
 _PRIMARY_BTN_STYLE = """
     QPushButton {
@@ -102,14 +108,21 @@ _TARGET_UNDERSHOOT = 0.96
 _ESTIMATE_REQUIRED_MESSAGE = (
     "먼저 [예상 최종 크기 산정]을 실행해 주세요."
 )
+_REDUCE_GUIDE_TEXT = "용량 줄이기 사용 방법"
 
 
 def _make_step_label(text: str) -> QLabel:
     label = QLabel(text)
     label.setFont(_STEP_HEADER_FONT)
+    label.setFixedHeight(_STEP_LABEL_HEIGHT)
     label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     return label
+
+
+def _configure_step_layout(layout: QVBoxLayout) -> None:
+    layout.setContentsMargins(0, _STEP_REGION_GAP, 0, 0)
+    layout.setSpacing(_STEP_BLOCK_SPACING)
 
 
 def _make_advanced_label(text: str) -> QLabel:
@@ -242,8 +255,8 @@ class ReduceSizeDialog(QDialog):
         self.setWindowTitle("용량 줄이기")
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(14)
+        root.setContentsMargins(18, 0, 18, 18)
+        root.setSpacing(0)
 
         self._advanced_panel = QFrame()
         self._advanced_panel.setStyleSheet(_PANEL_FRAME_STYLE)
@@ -310,14 +323,6 @@ class ReduceSizeDialog(QDialog):
             "color: #8a6d00; font-size: 12px; background: #fff8e1;"
             "border: 1px solid #ffe082; border-radius: 6px; padding: 8px 10px;"
         )
-        if self._reduce_profile.prefers_page_only:
-            self._geometry_mode_combo.blockSignals(True)
-            for index in range(self._geometry_mode_combo.count()):
-                if self._geometry_mode_combo.itemData(index) == GEOMETRY_MODE_PAGE_ONLY:
-                    self._geometry_mode_combo.setCurrentIndex(index)
-                    break
-            self._geometry_mode_combo.blockSignals(False)
-        self._update_reduce_profile_warning()
         advanced_layout.addWidget(self._embedded_scale_warning)
 
         color_row = QHBoxLayout()
@@ -333,13 +338,6 @@ class ReduceSizeDialog(QDialog):
         advanced_layout.addLayout(advanced_grid)
         advanced_layout.addLayout(color_row)
 
-        step1_section = QWidget()
-        step1_section_layout = QVBoxLayout(step1_section)
-        step1_section_layout.setContentsMargins(0, 0, 0, 0)
-        step1_section_layout.setSpacing(10)
-        step1_section_layout.addWidget(_make_step_label("[1단계] 예상 최종 크기 산정"))
-        step1_section_layout.addWidget(self._advanced_panel)
-
         outline_btn_style = """
             QPushButton {
                 background: #ffffff;
@@ -354,10 +352,35 @@ class ReduceSizeDialog(QDialog):
             QPushButton:disabled { color: #a8c7f5; border-color: #a8c7f5; }
             """
 
+        step0_section = QWidget()
+        step0_layout = QVBoxLayout(step0_section)
+        _configure_step_layout(step0_layout)
+        step0_layout.addWidget(_make_step_label("[0단계] 용량 줄이기 사용 방법"))
+        step0_btn_row = QHBoxLayout()
+        step0_btn_row.setContentsMargins(0, 0, 0, 0)
+        step0_btn_row.setSpacing(0)
+        self._guide_btn = QPushButton(_REDUCE_GUIDE_TEXT)
+        self._guide_btn.setMinimumHeight(40)
+        self._guide_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._guide_btn.setStyleSheet(outline_btn_style)
+        self._guide_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(REDUCE_USAGE_GUIDE_URL))
+        )
+        step0_btn_row.addWidget(self._guide_btn)
+        step0_btn_row.addStretch(1)
+        step0_layout.addLayout(step0_btn_row)
+        root.addWidget(step0_section)
+
+        step1_section = QWidget()
+        step1_section_layout = QVBoxLayout(step1_section)
+        _configure_step_layout(step1_section_layout)
+        step1_section_layout.addWidget(_make_step_label("[1단계] 예상 최종 크기 산정"))
+        step1_section_layout.addWidget(self._advanced_panel)
+
         step1_row = QWidget()
         step1_layout = QHBoxLayout(step1_row)
         step1_layout.setContentsMargins(0, 0, 0, 0)
-        step1_layout.setSpacing(10)
+        step1_layout.setSpacing(_STEP_BLOCK_SPACING)
 
         self._estimate_btn = QPushButton("예상 최종 크기 산정")
         self._estimate_btn.setMinimumHeight(40)
@@ -373,15 +396,13 @@ class ReduceSizeDialog(QDialog):
             "font-size: 13px; font-weight: 600; color: #1a73e8; border: none;"
         )
         step1_layout.addWidget(self._original_size_label)
-        step1_layout.addSpacing(12)
         step1_layout.addWidget(self._estimated_size_label)
         step1_section_layout.addWidget(step1_row)
         root.addWidget(step1_section)
 
         step2_section = QWidget()
         step2_layout = QVBoxLayout(step2_section)
-        step2_layout.setContentsMargins(0, 0, 0, 0)
-        step2_layout.setSpacing(10)
+        _configure_step_layout(step2_layout)
 
         step2_layout.addWidget(
             _make_step_label("[2단계] (선택) 희망 최종 용량 설정 및 용량 줄이기 자동 반복")
@@ -434,10 +455,10 @@ class ReduceSizeDialog(QDialog):
         step2_layout.addWidget(desired_panel)
         apply_row = QHBoxLayout()
         apply_row.setContentsMargins(0, 0, 0, 0)
+        apply_row.setSpacing(0)
         apply_row.addWidget(self._apply_btn)
         apply_row.addStretch(1)
         step2_layout.addLayout(apply_row)
-        step2_layout.addWidget(_make_step_label("[3단계] 최종 적용 하기"))
         root.addWidget(step2_section)
 
         self._progress_log = QPlainTextEdit()
@@ -462,7 +483,12 @@ class ReduceSizeDialog(QDialog):
             }
             """
         )
-        root.addWidget(self._progress_log)
+
+        step3_section = QWidget()
+        step3_layout = QVBoxLayout(step3_section)
+        _configure_step_layout(step3_layout)
+        step3_layout.addWidget(_make_step_label("[3단계] 최종 적용 하기"))
+        step3_layout.addWidget(self._progress_log)
 
         self._final_apply_btn = QPushButton("최종 적용 하기")
         self._final_apply_btn.setMinimumHeight(40)
@@ -472,20 +498,25 @@ class ReduceSizeDialog(QDialog):
         self._final_apply_btn.clicked.connect(self._confirm_final_apply)
         final_apply_row = QHBoxLayout()
         final_apply_row.setContentsMargins(0, 0, 0, 0)
+        final_apply_row.setSpacing(0)
         final_apply_row.addWidget(self._final_apply_btn)
         final_apply_row.addStretch(1)
-        root.addLayout(final_apply_row)
+        step3_layout.addLayout(final_apply_row)
+        root.addWidget(step3_section)
 
         action_btn_width = max(
+            self._guide_btn.sizeHint().width(),
             self._estimate_btn.sizeHint().width(),
             self._apply_btn.sizeHint().width(),
             self._final_apply_btn.sizeHint().width(),
         )
+        self._guide_btn.setFixedWidth(action_btn_width)
         self._estimate_btn.setFixedWidth(action_btn_width)
         self._apply_btn.setFixedWidth(action_btn_width)
         self._final_apply_btn.setFixedWidth(action_btn_width)
 
         self._apply_default_options()
+        self._apply_profile_defaults()
         self._fit_dialog_size()
 
     def _fit_dialog_size(self) -> None:
@@ -551,6 +582,22 @@ class ReduceSizeDialog(QDialog):
         self._grayscale_check.setChecked(options.grayscale)
         self._monochrome_check.setChecked(options.monochrome)
         self._block_advanced_signals(False)
+
+    def _apply_profile_defaults(self) -> None:
+        profile = self._reduce_profile
+        if profile.prefers_page_only:
+            self._geometry_mode_combo.blockSignals(True)
+            for index in range(self._geometry_mode_combo.count()):
+                if self._geometry_mode_combo.itemData(index) == GEOMETRY_MODE_PAGE_ONLY:
+                    self._geometry_mode_combo.setCurrentIndex(index)
+                    break
+            self._geometry_mode_combo.blockSignals(False)
+        if profile.prefers_compression_only:
+            self._block_advanced_signals(True)
+            self._size_slider.setValue(100)
+            self._size_spin.setValue(100)
+            self._block_advanced_signals(False)
+        self._update_reduce_profile_warning()
 
     def _block_advanced_signals(self, block: bool) -> None:
         for widget in (
@@ -623,6 +670,12 @@ class ReduceSizeDialog(QDialog):
             return
 
         parts: list[str] = []
+        if profile.prefers_compression_only:
+            if profile.distiller_print_pdf:
+                parts.append("인쇄용 Distiller PDF")
+            micro_pct = round(profile.micro_image_ratio * 100)
+            if micro_pct > 0:
+                parts.append(f"미세 이미지 조각 {micro_pct}%")
         if profile.fullpage_raster_ratio >= 0.5:
             ratio = round(profile.fullpage_raster_ratio * 100)
             parts.append(f"페이지당 큰 이미지 1장 형태({ratio}% 샘플)")
@@ -636,11 +689,18 @@ class ReduceSizeDialog(QDialog):
             )
 
         detail = ", ".join(parts) if parts else "특수 페이지 변환"
-        self._embedded_scale_warning.setText(
-            f"출판/인쇄용 PDF로 보입니다 ({detail}). "
-            "기본값을 [페이지 크기만]으로 설정했습니다. "
-            "이미지 압축은 유지되며, 필요하면 [크기 조정] 방식을 바꿔 주세요."
-        )
+        if profile.prefers_compression_only:
+            self._embedded_scale_warning.setText(
+                f"인쇄/혼합 레이아웃 PDF로 보입니다 ({detail}). "
+                "글자 주변 미세 이미지 보호를 위해 [이미지 사이즈 100%]와 "
+                "[페이지 크기만]으로 설정했습니다. 이미지 압축은 유지됩니다."
+            )
+        else:
+            self._embedded_scale_warning.setText(
+                f"출판/인쇄용 PDF로 보입니다 ({detail}). "
+                "기본값을 [페이지 크기만]으로 설정했습니다. "
+                "이미지 압축은 유지되며, 필요하면 [크기 조정] 방식을 바꿔 주세요."
+            )
         self._embedded_scale_warning.show()
 
     def _current_geometry_mode(self) -> str:

@@ -57,8 +57,16 @@ from pdf_editor.thumbnail_panel import (
 
 
 from pdf_editor.version import APP_NAME, __version__, titled_name, version_label
+from pdf_editor.windows_file_assoc import (
+  is_pdf_association_registered,
+  is_windows as is_windows_platform,
+  open_pdf_default_apps_settings,
+  register_pdf_association,
+  unregister_pdf_association,
+)
 
 AUTHOR_URL = "https://note4all.tistory.com"
+THUMB_FOOTER_LINK_TEXT = "모두의 노트 소프트웨어 연구소"
 APP_BORDER_COLOR = "#333333"
 APP_WINDOW_BACKGROUND = "#eeeeee"
 APP_BORDER_WIDTH = 1
@@ -67,6 +75,20 @@ DEFAULT_WINDOW_HEIGHT = 900
 MIN_WINDOW_WIDTH = 520
 MIN_WINDOW_HEIGHT = 480
 _TAB_BASENAME_MAX_LEN = 24
+_REDUCE_MENU_BTN_STYLE = """
+    QPushButton {
+        color: #e57373;
+        font-weight: bold;
+        border: none;
+        background: transparent;
+        text-align: left;
+        padding: 6px 24px 6px 11px;
+        margin: 0px;
+    }
+    QPushButton:hover {
+        background-color: #e8f0fe;
+    }
+"""
 
 
 def _truncate_middle(text: str, max_len: int) -> str:
@@ -358,7 +380,27 @@ class DocumentTab(QWidget):
 
     self.thumbnails = ThumbnailPanel()
     self.thumbnails.set_document(document)
-    left_layout.addWidget(self.thumbnails)
+    left_layout.addWidget(self.thumbnails, 1)
+
+    guide_footer = QWidget()
+    guide_footer.setObjectName("thumbGuideFooter")
+    guide_footer.setFixedHeight(28)
+    guide_layout = QHBoxLayout(guide_footer)
+    guide_layout.setContentsMargins(6, 0, 4, 0)
+    guide_layout.setSpacing(0)
+    guide_link = QLabel(f'<a href="{AUTHOR_URL}">{THUMB_FOOTER_LINK_TEXT}</a>')
+    guide_link.setObjectName("thumbGuideLink")
+    guide_link.setTextFormat(Qt.TextFormat.RichText)
+    guide_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+    guide_link.setOpenExternalLinks(False)
+    guide_link.linkActivated.connect(
+      lambda href: QDesktopServices.openUrl(QUrl(href))
+    )
+    guide_link.setCursor(Qt.CursorShape.PointingHandCursor)
+    guide_layout.addStretch(1)
+    guide_layout.addWidget(guide_link)
+    guide_layout.addStretch(1)
+    left_layout.addWidget(guide_footer)
 
     self.viewer = PageViewer()
     self.viewer.set_document(document)
@@ -988,6 +1030,12 @@ class MainWindow(QMainWindow):
     act_print.triggered.connect(self._print)
     menu.addAction(act_print)
 
+    if is_windows_platform():
+      menu.addSeparator()
+      act_assoc = QAction("PDF 파일 연결...", self)
+      act_assoc.triggered.connect(self._manage_pdf_file_association)
+      menu.addAction(act_assoc)
+
     menu.addSeparator()
 
     act_exit = QAction("종료", self)
@@ -1043,22 +1091,7 @@ class MainWindow(QMainWindow):
     reduce_btn = QPushButton("용량 줄이기...")
     reduce_btn.setFlat(True)
     reduce_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    reduce_btn.setStyleSheet(
-        """
-        QPushButton {
-            color: #e57373;
-            font-weight: bold;
-            border: none;
-            background: transparent;
-            text-align: left;
-            padding: 6px 24px 6px 11px;
-            margin: 0px;
-        }
-        QPushButton:hover {
-            background-color: #e8f0fe;
-        }
-        """
-    )
+    reduce_btn.setStyleSheet(_REDUCE_MENU_BTN_STYLE)
     reduce_btn.clicked.connect(self._open_reduce_size_dialog)
     act_reduce.setDefaultWidget(reduce_btn)
     edit_menu.addAction(act_reduce)
@@ -1142,6 +1175,22 @@ class MainWindow(QMainWindow):
         text-decoration: none;
       }}
       #statusCredit a:hover {{
+        color: #1a73e8;
+        text-decoration: underline;
+      }}
+      #thumbGuideFooter {{
+        background-color: #f0f0f0;
+        border-top: 1px solid #d6d6d6;
+      }}
+      #thumbGuideLink {{
+        color: #666666;
+        font-size: 11px;
+      }}
+      #thumbGuideLink a {{
+        color: #666666;
+        text-decoration: none;
+      }}
+      #thumbGuideLink a:hover {{
         color: #1a73e8;
         text-decoration: underline;
       }}
@@ -1342,6 +1391,81 @@ class MainWindow(QMainWindow):
     if not paths:
       return
     self._open_paths(paths)
+
+  def _manage_pdf_file_association(self) -> None:
+    if not is_windows_platform():
+      return
+
+    registered = is_pdf_association_registered()
+    status = "등록됨" if registered else "등록 안 됨"
+    box = QMessageBox(self)
+    box.setWindowTitle("PDF 파일 연결")
+    box.setText(
+      f"현재 상태: {status}\n\n"
+      f"등록 경로:\n{sys.executable}\n\n"
+      "「연결 등록」: Windows 연결 프로그램 목록에 추가\n"
+      "「연결 해제」: 위 경로로 등록한 항목을 레지스트리에서 삭제\n"
+      "「Windows 설정」: PDF 기본 앱 설정 열기"
+    )
+    btn_register = box.addButton("연결 등록", QMessageBox.ButtonRole.AcceptRole)
+    btn_unregister = box.addButton("연결 해제", QMessageBox.ButtonRole.DestructiveRole)
+    btn_settings = box.addButton("Windows 설정", QMessageBox.ButtonRole.ActionRole)
+    box.addButton(QMessageBox.StandardButton.Close)
+    box.setDefaultButton(btn_register)
+    box.exec()
+    clicked = box.clickedButton()
+    if clicked is None or clicked == box.button(QMessageBox.StandardButton.Close):
+      return
+
+    if clicked == btn_settings:
+      open_pdf_default_apps_settings()
+      return
+
+    if clicked == btn_unregister:
+      if not registered:
+        QMessageBox.information(
+          self,
+          "PDF 파일 연결",
+          "현재 이 실행 파일로 등록된 연결이 없습니다.",
+        )
+        return
+      reply = QMessageBox.question(
+        self,
+        "PDF 파일 연결",
+        "이 PC에 등록된 Tiny PDF Editor PDF 연결을 삭제하시겠습니까?\n\n"
+        "Windows에서 PDF 기본 앱으로 지정해 두었다면 "
+        "설정 → 앱 → 기본 앱에서 PDF 기본 앱도 다른 프로그램으로 바꿔 주세요.",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+      )
+      if reply != QMessageBox.StandardButton.Yes:
+        return
+      try:
+        unregister_pdf_association()
+      except OSError as exc:
+        QMessageBox.critical(self, "PDF 파일 연결", str(exc))
+        return
+      QMessageBox.information(self, "PDF 파일 연결", "연결 해제가 완료되었습니다.")
+      return
+
+    try:
+      register_pdf_association()
+    except OSError as exc:
+      QMessageBox.critical(self, "PDF 파일 연결", str(exc))
+      return
+
+    follow = QMessageBox.question(
+      self,
+      "PDF 파일 연결",
+      "연결 등록이 완료되었습니다.\n\n"
+      "Windows 설정에서 PDF 기본 앱을 「Tiny PDF Editor」로 선택하면 "
+      "「항상」 옵션으로 열 수 있습니다.\n\n"
+      "Windows 기본 앱 설정을 열까요?",
+      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+      QMessageBox.StandardButton.Yes,
+    )
+    if follow == QMessageBox.StandardButton.Yes:
+      open_pdf_default_apps_settings()
 
   def _save(self) -> None:
     tab = self._current_tab()
