@@ -4,6 +4,14 @@ __version__ = "1.0.2"
 
 APP_NAME = "Tiny PDF Editor"
 
+AUTHOR_URL = (
+    "https://note4all.tistory.com/category/"
+    "%EC%86%8C%ED%94%84%ED%8A%B8%EC%9B%A8%EC%96%B4%20%EC%97%B0%EA%B5%AC%EC%86%8C/"
+    "TIny%20PDF%20Editor"
+)
+AUTHOR_LINK_TEXT = "https://note4all.tistory.com"
+THUMB_FOOTER_LINK_TEXT = "모두의 노트 소프트웨어 연구소"
+
 
 def version_label() -> str:
     return f"v{__version__}"

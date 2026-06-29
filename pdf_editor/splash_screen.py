@@ -7,13 +7,12 @@ from PyQt6.QtGui import QDesktopServices, QIcon, QMouseEvent, QPixmap
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from pdf_editor.resources import branding_path
-from pdf_editor.version import APP_NAME, version_label
+from pdf_editor.version import APP_NAME, AUTHOR_LINK_TEXT, AUTHOR_URL, version_label
 
 SPLASH_BG = "#0a1a33"
 SPLASH_WIDTH = 400
 SPLASH_HEIGHT = 129
 SPLASH_MIN_MS = 700
-AUTHOR_URL = "https://note4all.tistory.com"
 
 _about_splash: SplashScreen | None = None
 _about_dismiss_filter: "_AboutDismissFilter | None" = None
@@ -133,7 +132,8 @@ class SplashScreen(QWidget):
         content.addWidget(title, 0, Qt.AlignmentFlag.AlignVCenter)
 
         link = QLabel(
-            f'<a href="{AUTHOR_URL}" style="color:#a8b4c4;text-decoration:none;">{AUTHOR_URL}</a>'
+            f'<a href="{AUTHOR_URL}" style="color:#a8b4c4;text-decoration:none;">'
+            f"{AUTHOR_LINK_TEXT}</a>"
         )
         link.setTextFormat(Qt.TextFormat.RichText)
         link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)

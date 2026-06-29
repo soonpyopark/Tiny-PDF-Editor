@@ -55,7 +55,15 @@ from pdf_editor.thumbnail_panel import (
 )
 
 
-from pdf_editor.version import APP_NAME, __version__, titled_name, version_label
+from pdf_editor.version import (
+  APP_NAME,
+  AUTHOR_LINK_TEXT,
+  AUTHOR_URL,
+  THUMB_FOOTER_LINK_TEXT,
+  __version__,
+  titled_name,
+  version_label,
+)
 from pdf_editor.windows_file_assoc import (
   is_pdf_association_registered,
   is_windows as is_windows_platform,
@@ -64,8 +72,6 @@ from pdf_editor.windows_file_assoc import (
   unregister_pdf_association,
 )
 
-AUTHOR_URL = "https://note4all.tistory.com"
-THUMB_FOOTER_LINK_TEXT = "모두의 노트 소프트웨어 연구소"
 APP_BORDER_COLOR = "#333333"
 APP_WINDOW_BACKGROUND = "#eeeeee"
 APP_BORDER_WIDTH = 1
@@ -1129,7 +1135,7 @@ class MainWindow(QMainWindow):
     help_menu.addAction(act_about)
 
   def _setup_status_credit(self) -> None:
-    credit = QLabel(f'<a href="{AUTHOR_URL}">{AUTHOR_URL}</a>')
+    credit = QLabel(f'<a href="{AUTHOR_URL}">{AUTHOR_LINK_TEXT}</a>')
     credit.setObjectName("statusCredit")
     credit.setTextFormat(Qt.TextFormat.RichText)
     credit.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
