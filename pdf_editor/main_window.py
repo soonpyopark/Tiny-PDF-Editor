@@ -630,7 +630,8 @@ class DocumentTab(QWidget):
 
   def _apply_panel_width_limits(self, set_default_size: bool = False) -> None:
     fixed_w, _, _ = self.thumbnails.get_panel_width_range()
-    self._left_panel.setFixedWidth(fixed_w)
+    if self._left_panel.width() != fixed_w:
+      self._left_panel.setFixedWidth(fixed_w)
 
     total = self.splitter.width()
     if total <= 0:

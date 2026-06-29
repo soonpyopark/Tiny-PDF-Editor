@@ -56,6 +56,7 @@ class OptimizeSizeOptions:
 
 _MICRO_IMAGE_MAX_PT = 12.0
 _MAX_UNDO_LEVELS = 50
+_EMPTY_SNAPSHOT = b""
 
 
 MIN_IMAGE_DPI = 24
@@ -161,9 +162,7 @@ class PdfDocument:
     def _record_undo_checkpoint(self) -> None:
         if self._restoring_history:
             return
-        if len(self._doc) == 0:
-            return
-        self._undo_stack.append(self.save_to_bytes())
+        self._undo_stack.append(self._snapshot_bytes())
         if len(self._undo_stack) > _MAX_UNDO_LEVELS:
             self._undo_stack.pop(0)
         self._redo_stack.clear()
@@ -172,7 +171,10 @@ class PdfDocument:
         self._restoring_history = True
         try:
             self._doc.close()
-            self._doc = fitz.open(stream=payload, filetype="pdf")
+            if not payload:
+                self._doc = fitz.open()
+            else:
+                self._doc = fitz.open(stream=payload, filetype="pdf")
             self._touch()
         finally:
             self._restoring_history = False
@@ -180,7 +182,7 @@ class PdfDocument:
     def undo(self) -> bool:
         if not self._undo_stack:
             return False
-        self._redo_stack.append(self.save_to_bytes())
+        self._redo_stack.append(self._snapshot_bytes())
         payload = self._undo_stack.pop()
         self._restore_from_snapshot(payload)
         return True
@@ -188,7 +190,7 @@ class PdfDocument:
     def redo(self) -> bool:
         if not self._redo_stack:
             return False
-        self._undo_stack.append(self.save_to_bytes())
+        self._undo_stack.append(self._snapshot_bytes())
         payload = self._redo_stack.pop()
         self._restore_from_snapshot(payload)
         return True
@@ -233,9 +235,15 @@ class PdfDocument:
         return target
 
     def save_to_bytes(self) -> bytes:
+        if len(self._doc) == 0:
+            return _EMPTY_SNAPSHOT
         buffer = io.BytesIO()
         self._doc.save(buffer, **PDF_SAVE_KWARGS)
         return buffer.getvalue()
+
+    def _snapshot_bytes(self) -> bytes:
+        """Serialize document for undo/redo; empty documents use a sentinel payload."""
+        return self.save_to_bytes()
 
     @staticmethod
     def _serialize_doc_bytes(doc: fitz.Document) -> bytes:
@@ -244,10 +252,16 @@ class PdfDocument:
         return buffer.getvalue()
 
     def current_file_size(self) -> int:
-        return len(self.save_to_bytes())
+        if len(self._doc) == 0:
+            return 0
+        payload = self.save_to_bytes()
+        return 0 if not payload else len(payload)
 
     def _clone_document(self) -> fitz.Document:
-        return fitz.open(stream=self.save_to_bytes(), filetype="pdf")
+        payload = self.save_to_bytes()
+        if not payload:
+            return fitz.open()
+        return fitz.open(stream=payload, filetype="pdf")
 
     @staticmethod
     def _safe_pixmap_from_xref(doc: fitz.Document, xref: int) -> fitz.Pixmap | None:
