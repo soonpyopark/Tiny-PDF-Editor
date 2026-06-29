@@ -33,6 +33,31 @@ EMPTY_PREVIEW_HINT = (
     "병합할 이미지나 PDF 를 좌측 썸네일 화면으로\n"
     "드래그 앤 드랍으로 추가해주세요"
 )
+_LOG_HEADER_HEIGHT = 28
+_LOG_BODY_MIN_HEIGHT = 96
+_LOG_BODY_MAX_HEIGHT = 160
+_LOG_HEADER_STYLE = (
+    "QWidget#logHeader {"
+    "background-color: #2d2d2d;"
+    "border-top: 1px solid #333333;"
+    "}"
+)
+_LOG_TAB_STYLE = """
+    QPushButton {
+        color: #cccccc;
+        background: transparent;
+        border: none;
+        border-radius: 4px;
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 600;
+        text-align: left;
+    }
+    QPushButton:hover {
+        background-color: #3a3a3a;
+        color: #ffffff;
+    }
+"""
 
 
 def _edge_nav_icon(to_first: bool) -> QIcon:
@@ -312,11 +337,33 @@ class PageViewer(QWidget):
         self.preview_stack.setStyleSheet(preview_bg)
         root.addWidget(self.preview_stack, 1)
 
+        self._log_section = QWidget()
+        self._log_section.setVisible(False)
+        self._log_expanded = True
+        log_section_layout = QVBoxLayout(self._log_section)
+        log_section_layout.setContentsMargins(0, 0, 0, 0)
+        log_section_layout.setSpacing(0)
+
+        self._log_header = QWidget()
+        self._log_header.setObjectName("logHeader")
+        self._log_header.setFixedHeight(_LOG_HEADER_HEIGHT)
+        self._log_header.setStyleSheet(_LOG_HEADER_STYLE)
+        log_header_layout = QHBoxLayout(self._log_header)
+        log_header_layout.setContentsMargins(4, 0, 8, 0)
+        log_header_layout.setSpacing(0)
+
+        self._log_tab_btn = QPushButton("▼  터미널")
+        self._log_tab_btn.setFlat(True)
+        self._log_tab_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._log_tab_btn.setStyleSheet(_LOG_TAB_STYLE)
+        self._log_tab_btn.clicked.connect(self._toggle_log_panel)
+        log_header_layout.addWidget(self._log_tab_btn, 0, Qt.AlignmentFlag.AlignLeft)
+        log_header_layout.addStretch(1)
+
         self.log_panel = QPlainTextEdit()
         self.log_panel.setReadOnly(True)
-        self.log_panel.setMinimumHeight(96)
-        self.log_panel.setMaximumHeight(160)
-        self.log_panel.setVisible(False)
+        self.log_panel.setMinimumHeight(_LOG_BODY_MIN_HEIGHT)
+        self.log_panel.setMaximumHeight(_LOG_BODY_MAX_HEIGHT)
         log_font = QFont("Consolas")
         if not log_font.family():
             log_font = QFont("Courier New")
@@ -326,11 +373,14 @@ class PageViewer(QWidget):
             "QPlainTextEdit {"
             "background-color: #1e1e1e;"
             "color: #d4d4d4;"
-            "border-top: 1px solid #333333;"
+            "border: none;"
             "padding: 6px;"
             "}"
         )
-        root.addWidget(self.log_panel)
+
+        log_section_layout.addWidget(self._log_header)
+        log_section_layout.addWidget(self.log_panel)
+        root.addWidget(self._log_section)
 
         self.status_bar = self._build_status_bar()
         root.addWidget(self.status_bar)
@@ -359,12 +409,22 @@ class PageViewer(QWidget):
     def hide_busy_message(self) -> None:
         self._busy_overlay.hide()
 
+    def _toggle_log_panel(self) -> None:
+        self._log_expanded = not self._log_expanded
+        self.log_panel.setVisible(self._log_expanded)
+        self._log_tab_btn.setText(
+            "▼  터미널" if self._log_expanded else "▶  터미널"
+        )
+
     def show_log_panel(self) -> None:
         self.log_panel.clear()
+        self._log_expanded = True
         self.log_panel.setVisible(True)
+        self._log_tab_btn.setText("▼  터미널")
+        self._log_section.setVisible(True)
 
     def hide_log_panel(self) -> None:
-        self.log_panel.setVisible(False)
+        self._log_section.setVisible(False)
 
     def append_log_line(self, text: str) -> None:
         self.log_panel.appendPlainText(text)
@@ -373,8 +433,7 @@ class PageViewer(QWidget):
         QApplication.processEvents()
 
     def _refresh_busy_overlay(self) -> None:
-        text = f"{self._busy_base_message} ( {self._busy_progress} / 100% )"
-        self._busy_overlay.setText(text)
+        self._busy_overlay.setText(self._busy_base_message)
         self._busy_overlay.setGeometry(self.preview_stack.rect())
         self._busy_overlay.show()
         self._busy_overlay.raise_()

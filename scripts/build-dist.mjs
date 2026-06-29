@@ -128,7 +128,6 @@ function copyDistributionDocs(targetDir) {
     ["LICENSE", path.join(ROOT, "LICENSE")],
     ["README.md", path.join(ROOT, "README.md")],
     ["DISTRIBUTE.md", path.join(ROOT, "DISTRIBUTE.md")],
-    ["HELP.txt", path.join(ROOT, "HELP.txt")],
   ];
 
   let updated = 0;
@@ -321,7 +320,7 @@ function cleanupLegacyArtifacts() {
       continue;
     }
 
-    if (["LICENSE", "README.md", "DISTRIBUTE.md", "HELP.txt"].includes(name) && fs.statSync(fullPath).isFile()) {
+    if (["LICENSE", "README.md", "DISTRIBUTE.md"].includes(name) && fs.statSync(fullPath).isFile()) {
       removePath(fullPath);
       log(`removed legacy file: ${name}`);
     }

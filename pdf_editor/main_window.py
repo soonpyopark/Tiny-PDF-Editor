@@ -18,7 +18,6 @@ from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -38,6 +37,7 @@ from pdf_editor.document import PdfDocument, SearchHit, SUPPORTED_FILE_FILTER, f
 from pdf_editor.page_clipboard import PageClipboard
 from pdf_editor.page_viewer import PageViewer
 from pdf_editor.reduce_size_dialog import ReduceSizeDialog
+from pdf_editor.reduce_size_new_dialog import ReduceSizeNewDialog
 from pdf_editor.resources import (
   apply_windows_window_icon,
   init_platform,
@@ -822,33 +822,39 @@ class DocumentTab(QWidget):
     self._notify_history_changed()
 
   def _on_export_pdf(self, indices: list[int]) -> None:
-    path, _ = QFileDialog.getSaveFileName(self, "페이지 보내기", "", "PDF (*.pdf)")
+    if not indices:
+      QMessageBox.information(self, "새 파일로 저장", "저장할 페이지를 선택하세요.")
+      return
+    stem = Path(self.document.display_name).stem
+    source = self.document.source_path
+    default_path = str(Path(source).with_name(f"{stem}.pdf")) if source else f"{stem}.pdf"
+    path, _ = QFileDialog.getSaveFileName(
+      self, "새 파일로 저장", default_path, "PDF (*.pdf)"
+    )
     if not path:
       return
     if not path.lower().endswith(".pdf"):
       path += ".pdf"
     try:
       self.document.export_pages_to_pdf(indices, path)
-      QMessageBox.information(self, "보내기 완료", f"저장됨: {path}")
+      QMessageBox.information(self, "새 파일로 저장", f"저장됨: {path}")
     except Exception as exc:
-      QMessageBox.critical(self, "보내기 오류", str(exc))
+      QMessageBox.critical(self, "새 파일로 저장", str(exc))
 
   def _on_export_images(self, indices: list[int]) -> None:
-    folder = QFileDialog.getExistingDirectory(self, "이미지 저장 폴더 선택")
+    if not indices:
+      QMessageBox.information(self, "이미지로 저장", "저장할 페이지를 선택하세요.")
+      return
+    folder = QFileDialog.getExistingDirectory(self, "이미지로 저장")
     if not folder:
       return
-    fmt, ok = QInputDialog.getItem(
-      self, "이미지 형식", "형식 선택:", ["PNG", "JPEG"], 0, False
-    )
-    if not ok:
-      return
     try:
-      saved = self.document.export_pages_as_images(
-        indices, folder, "png" if fmt == "PNG" else "jpg"
+      saved = self.document.export_pages_as_images(indices, folder)
+      QMessageBox.information(
+        self, "이미지로 저장", f"{len(saved)}개 이미지 저장됨\n{folder}"
       )
-      QMessageBox.information(self, "보내기 완료", f"{len(saved)}개 이미지 저장됨\n{folder}")
     except Exception as exc:
-      QMessageBox.critical(self, "보내기 오류", str(exc))
+      QMessageBox.critical(self, "이미지로 저장", str(exc))
 
 
 class MainWindow(QMainWindow):
@@ -905,6 +911,7 @@ class MainWindow(QMainWindow):
     QShortcut(QKeySequence("Shift+F3"), self, self._search_prev)
 
     self._pending_launch_paths = list(launch_paths or [])
+    self._optimize_new_running = False
     if self._pending_launch_paths:
       QTimer.singleShot(0, self._open_pending_launch_paths)
     else:
@@ -1095,6 +1102,15 @@ class MainWindow(QMainWindow):
     reduce_btn.clicked.connect(self._open_reduce_size_dialog)
     act_reduce.setDefaultWidget(reduce_btn)
     edit_menu.addAction(act_reduce)
+
+    act_reduce_new = QWidgetAction(self)
+    reduce_new_btn = QPushButton("용량 줄이기(신규)...")
+    reduce_new_btn.setFlat(True)
+    reduce_new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    reduce_new_btn.setStyleSheet(_REDUCE_MENU_BTN_STYLE)
+    reduce_new_btn.clicked.connect(self._open_reduce_size_new_dialog)
+    act_reduce_new.setDefaultWidget(reduce_new_btn)
+    edit_menu.addAction(act_reduce_new)
 
     act_find = QAction("텍스트 검색...", self)
     act_find.setShortcut(QKeySequence.StandardKey.Find)
@@ -1566,6 +1582,77 @@ class MainWindow(QMainWindow):
       f"용량 줄이기 완료: {format_file_size(dialog.result_before)}"
       f" → {format_file_size(dialog.result_after)}"
     )
+
+  def _open_reduce_size_new_dialog(self) -> None:
+    tab = self._current_tab()
+    if tab is None or tab.document.page_count == 0:
+      QMessageBox.information(self, "용량 줄이기(신규)", "페이지가 있는 문서를 열어주세요.")
+      return
+    if self._optimize_new_running:
+      QMessageBox.information(
+        self,
+        "용량 줄이기(신규)",
+        "이미 용량 줄이기 작업이 진행 중입니다.",
+      )
+      return
+    dialog = ReduceSizeNewDialog(tab.document, parent=self)
+    if dialog.exec() != QDialog.DialogCode.Accepted:
+      return
+    options = dialog.selected_options()
+    source_bytes = tab.document.save_to_bytes()
+
+    tab.document.pause_rendering()
+    tab.viewer.show_log_panel()
+    tab.viewer.append_log_line("> 용량 줄이기(신규) 작업을 시작합니다...")
+    tab.viewer.show_busy_message("용량 줄이기(신규) 진행 중...")
+    self._optimize_new_running = True
+    QTimer.singleShot(
+      0,
+      lambda: self._run_optimize_new(tab, options, source_bytes),
+    )
+
+  def _run_optimize_new(self, tab: DocumentTab, options, source_bytes: bytes) -> None:
+    before = len(source_bytes)
+    last_image_log = {"text": ""}
+    applied = False
+
+    def on_status(message: str) -> None:
+      tab.viewer.append_log_line(message)
+
+    def on_image_progress(current: int, total: int) -> None:
+      text = f"  이미지 재압축 중... {current}/{total}"
+      if text != last_image_log["text"]:
+        last_image_log["text"] = text
+        tab.viewer.append_log_line(text)
+
+    try:
+      payload = PdfDocument.build_optimized_payload(
+        source_bytes,
+        options,
+        status_callback=on_status,
+        image_progress=on_image_progress,
+      )
+      after = len(payload)
+      tab.document.apply_reduced_payload(payload)
+      applied = True
+      tab.viewer.append_log_line(
+        f"완료: {format_file_size(before)} → {format_file_size(after)}"
+      )
+      self.statusBar().showMessage(
+        f"용량 줄이기(신규) 완료: {format_file_size(before)}"
+        f" → {format_file_size(after)}"
+      )
+    except Exception as exc:
+      tab.viewer.append_log_line(f"오류: {exc}")
+      QMessageBox.critical(self, "용량 줄이기(신규) 오류", str(exc))
+    finally:
+      self._optimize_new_running = False
+      tab.document.resume_rendering()
+      tab.viewer.hide_busy_message()
+      if applied:
+        index = tab.thumbnails.current_index()
+        tab.refresh_all(keep_index=index)
+        self._update_edit_actions()
 
   def _delete_selected(self) -> None:
     tab = self._current_tab()

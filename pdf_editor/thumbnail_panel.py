@@ -38,8 +38,8 @@ from pdf_editor.pixmap_utils import pixmap_from_fitz
 
 THUMB_ROLE = Qt.ItemDataRole.UserRole + 1
 THUMB_EMPTY_HINT = "Drag & Drop files here."
-THUMB_SCALE_LEVELS = (55, 70, 82, 95, 112, 135, 165)
-DEFAULT_THUMB_SCALE_LEVEL = 1
+THUMB_SCALE_LEVELS = (55, 95, 135, 165)
+DEFAULT_THUMB_SCALE_LEVEL = (len(THUMB_SCALE_LEVELS) + 1) // 2
 DEFAULT_THUMB_SCALE = THUMB_SCALE_LEVELS[DEFAULT_THUMB_SCALE_LEVEL - 1]
 THUMB_CACHE_MAX = 50
 THUMB_KEEP_BUFFER = 3
@@ -57,7 +57,7 @@ DROP_INDICATOR_TICK = 7
 
 
 def thumb_scale_for_level(level: int) -> int:
-    """Return pixel width for 1-based level (1..7)."""
+    """Return pixel width for 1-based level (1..4)."""
     index = max(1, min(len(THUMB_SCALE_LEVELS), level)) - 1
     return THUMB_SCALE_LEVELS[index]
 
@@ -94,6 +94,7 @@ class ThumbnailItemWidget(QWidget):
         self._press_pos: QPoint | None = None
         self._drag_started = False
         self._selected = False
+        self._list_row = 0
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
         self.setStyleSheet(_CHILD_STYLE)
 
@@ -191,6 +192,12 @@ class ThumbnailItemWidget(QWidget):
 
     def set_page_number(self, page_number: int) -> None:
         self._page_label.setText(str(page_number))
+
+    def list_row(self) -> int:
+        return self._list_row
+
+    def set_list_row(self, row: int) -> None:
+        self._list_row = row
 
     def set_selected(self, selected: bool) -> None:
         self._selected = selected
@@ -386,11 +393,16 @@ class ThumbnailListWidget(QListWidget):
             return
 
         widget = ThumbnailItemWidget(pixmap, page_number, self._thumb_scale)
+        widget.set_list_row(row)
         widget.thumb_pressed.connect(
-            lambda modifiers, r=row: self._on_thumb_pressed(r, modifiers)
+            lambda modifiers, w=widget: self._on_thumb_pressed(w.list_row(), modifiers)
         )
-        widget.thumb_released.connect(lambda r=row: self._on_thumb_released(r))
-        widget.drag_started.connect(lambda r=row: self._start_page_drag_from_row(r))
+        widget.thumb_released.connect(
+            lambda w=widget: self._on_thumb_released(w.list_row())
+        )
+        widget.drag_started.connect(
+            lambda w=widget: self._start_page_drag_from_row(w.list_row())
+        )
         self.setItemWidget(item, widget)
         size = widget.sizeHint()
         widget.setFixedSize(size)
@@ -852,6 +864,8 @@ class ThumbnailListWidget(QListWidget):
         act_paste.setShortcut(QKeySequence.StandardKey.Paste)
         act_paste.setEnabled(PageClipboard.has_pages())
         act_paste.triggered.connect(lambda: self.paste_at_index.emit(insert_index))
+        menu.addAction("이미지로 저장", lambda: self.context_action.emit("export_images"))
+        menu.addAction("새 파일로 저장", lambda: self.context_action.emit("export_pdf"))
         menu.addSeparator()
         menu.addAction("페이지 삭제", lambda: self.context_action.emit("delete"))
         menu.addAction("시계 방향 회전", lambda: self.context_action.emit("rotate_cw"))
@@ -1144,6 +1158,7 @@ class ThumbnailPanel(QWidget):
             item = self.list_widget.item(row)
             widget = self.list_widget.itemWidget(item)
             if item and isinstance(widget, ThumbnailItemWidget):
+                widget.set_list_row(row)
                 widget.set_page_number(row + 1)
                 item.setData(THUMB_ROLE, row)
 

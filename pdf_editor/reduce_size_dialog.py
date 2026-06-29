@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QThread, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices, QFont, QTextCursor
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QFont, QTextCursor
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -23,14 +23,18 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from pdf_editor.app_settings import REDUCE_USAGE_GUIDE_URL
 from pdf_editor.document import (
+    COMPRESS_MODE_DATA_ONLY,
+    COMPRESS_MODE_STANDARD,
     DocumentReduceProfile,
     GEOMETRY_MODE_BOTH,
     GEOMETRY_MODE_CONTENT_ONLY,
     GEOMETRY_MODE_PAGE_ONLY,
     PRESET_OPTIONS,
     PdfDocument,
+    RASTER_FORMAT_AUTO,
+    RASTER_FORMAT_GRAY_JPEG,
+    RASTER_FORMAT_JPEG,
     ReduceSizeOptions,
     format_file_size,
 )
@@ -47,9 +51,8 @@ _STEP_REGION_GAP = 14  # equal whitespace above each [N단계] header
 _STEP_LABEL_HEIGHT = 14
 _SETTINGS_HEADER_HEIGHT = 44
 _STEP1_BTN_RELOCATE_SAVED_HEIGHT = 14  # root spacing removed when btn joins step1 section
-_STEP0_SECTION_SAVED_HEIGHT = (
-    _STEP_LABEL_HEIGHT + _STEP_BLOCK_SPACING + 40
-)
+# Progress log height offset kept after [0단계] guide section removal (avoids refilling that space).
+_REMOVED_STEP0_SAVED_HEIGHT = _STEP_LABEL_HEIGHT + _STEP_BLOCK_SPACING + 40
 _DESIRED_PANEL_VERTICAL_MARGIN = 6  # original loose panel grid top/bottom margin (each side)
 _DESIRED_PANEL_INNER_MARGIN = 4  # compact panel top/bottom padding (each side)
 _DESIRED_PANEL_COMPACT_SAVED_HEIGHT = (
@@ -67,7 +70,7 @@ _PROGRESS_LOG_MIN_HEIGHT = (
     + _STEP1_BTN_RELOCATE_SAVED_HEIGHT
     + _EXTRA_TERMINAL_HEIGHT
     + _DESIRED_PANEL_SAVED_HEIGHT
-    - _STEP0_SECTION_SAVED_HEIGHT
+    - _REMOVED_STEP0_SAVED_HEIGHT
 )
 _PROGRESS_LOG_MAX_HEIGHT = (
     150
@@ -75,7 +78,7 @@ _PROGRESS_LOG_MAX_HEIGHT = (
     + _STEP1_BTN_RELOCATE_SAVED_HEIGHT
     + _EXTRA_TERMINAL_HEIGHT
     + _DESIRED_PANEL_SAVED_HEIGHT
-    - _STEP0_SECTION_SAVED_HEIGHT
+    - _REMOVED_STEP0_SAVED_HEIGHT
 )
 _PRIMARY_BTN_STYLE = """
     QPushButton {
@@ -105,10 +108,22 @@ _DESIRED_SLIDER_STEPS = int(
 )
 _MAX_TARGET_FIT_PASSES = 15
 _TARGET_UNDERSHOOT = 0.96
+_RASTERIZE_DEFAULT_DPI = 72
+_RASTERIZE_DEFAULT_QUALITY = 30
+_RASTERIZE_DEFAULT_SIZE = 50
+_DATA_ONLY_DEFAULT_DPI = 72
+_DATA_ONLY_DEFAULT_QUALITY = 45
+_NO_RASTERIZE_WARNING_MESSAGE = "경고 메시지 없음\n "
+_NO_PROFILE_INFO_MESSAGE = "안내 메시지 없음"
+_WARNING_BOX_LINE_HEIGHT = 20
+_WARNING_BOX_PADDING_V = 16
+_RASTERIZE_WARNING_LINES = 2
+_RASTERIZE_WARNING_BOX_HEIGHT = (
+    _WARNING_BOX_LINE_HEIGHT * _RASTERIZE_WARNING_LINES + _WARNING_BOX_PADDING_V
+)
 _ESTIMATE_REQUIRED_MESSAGE = (
     "먼저 [예상 최종 크기 산정]을 실행해 주세요."
 )
-_REDUCE_GUIDE_TEXT = "용량 줄이기 사용 방법"
 
 
 def _make_step_label(text: str) -> QLabel:
@@ -140,6 +155,28 @@ def _make_percent_spinbox(minimum: int, maximum: int) -> QSpinBox:
     spin.setSuffix(" %")
     spin.setFixedWidth(_ADVANCED_RIGHT_WIDTH)
     return spin
+
+
+def _make_rasterize_warning_label() -> QLabel:
+    label = QLabel(_NO_RASTERIZE_WARNING_MESSAGE)
+    label.setWordWrap(True)
+    label.setFixedHeight(_RASTERIZE_WARNING_BOX_HEIGHT)
+    label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    label.setStyleSheet(
+        "color: #b71c1c; font-size: 12px; background: #ffebee;"
+        "border: 1px solid #ef9a9a; border-radius: 6px; padding: 8px 10px;"
+    )
+    return label
+
+
+def _rasterize_warning_text(*, active: bool, raster_format: str) -> str:
+    if not active:
+        return _NO_RASTERIZE_WARNING_MESSAGE
+    return (
+        "픽셀 이미지화가 켜져 있습니다. 텍스트 검색·복사·선택이 불가능해집니다.\n"
+        f"저장 포맷: {raster_format}. 용량이 늘면 사이즈·DPI·품질을 낮추거나 "
+        "회색 JPEG를 사용해 보세요."
+    )
 
 
 def _mb_to_slider(mb: float) -> int:
@@ -260,6 +297,9 @@ class ReduceSizeDialog(QDialog):
 
         self._advanced_panel = QFrame()
         self._advanced_panel.setStyleSheet(_PANEL_FRAME_STYLE)
+        self._advanced_panel.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
         advanced_layout = QVBoxLayout(self._advanced_panel)
         advanced_layout.setContentsMargins(14, 12, 14, 12)
         advanced_layout.setSpacing(12)
@@ -317,26 +357,56 @@ class ReduceSizeDialog(QDialog):
             label.setFixedHeight(control_row_height)
 
         self._reduce_profile = document.reduce_profile()
-        self._embedded_scale_warning = QLabel()
+        self._embedded_scale_warning = QLabel(_NO_PROFILE_INFO_MESSAGE)
         self._embedded_scale_warning.setWordWrap(True)
+        self._embedded_scale_warning.setMinimumHeight(36)
         self._embedded_scale_warning.setStyleSheet(
             "color: #8a6d00; font-size: 12px; background: #fff8e1;"
             "border: 1px solid #ffe082; border-radius: 6px; padding: 8px 10px;"
         )
         advanced_layout.addWidget(self._embedded_scale_warning)
 
-        color_row = QHBoxLayout()
-        color_row.setSpacing(16)
         self._grayscale_check = QCheckBox("회색조로 변환 (Grayscale)")
         self._grayscale_check.toggled.connect(self._on_grayscale_toggled)
         self._monochrome_check = QCheckBox("단색조로 변환 (Monochrome)")
         self._monochrome_check.toggled.connect(self._on_monochrome_toggled)
+        self._rasterize_check = QCheckBox("픽셀 이미지화 변환 (Rasterize)")
+        self._rasterize_check.toggled.connect(self._on_rasterize_toggled)
+
+        color_row = QHBoxLayout()
+        color_row.setSpacing(16)
         color_row.addWidget(self._grayscale_check)
         color_row.addWidget(self._monochrome_check)
+        color_row.addWidget(self._rasterize_check)
         color_row.addStretch(1)
+
+        self._data_only_check = QCheckBox("데이터만 압축 (72dpi, Acrobat식)")
+        self._data_only_check.setToolTip(
+            "레이아웃·검색은 유지하고 임베디드 이미지(미세 조각 포함)만 재압축합니다."
+        )
+        self._data_only_check.toggled.connect(self._on_data_only_toggled)
+        data_only_row = QHBoxLayout()
+        data_only_row.setSpacing(16)
+        data_only_row.addWidget(self._data_only_check)
+        data_only_row.addStretch(1)
+
+        raster_format_label = _make_advanced_label("픽셀 포맷")
+        self._raster_format_combo = QComboBox()
+        self._raster_format_combo.addItem("자동", RASTER_FORMAT_AUTO)
+        self._raster_format_combo.addItem("JPEG (컬러)", RASTER_FORMAT_JPEG)
+        self._raster_format_combo.addItem("회색 JPEG", RASTER_FORMAT_GRAY_JPEG)
+        self._raster_format_combo.currentIndexChanged.connect(self._on_advanced_changed)
+        self._raster_format_combo.setEnabled(False)
+        advanced_grid.addWidget(raster_format_label, 4, 0)
+        advanced_grid.addWidget(self._raster_format_combo, 4, 1, 1, 2)
+        raster_format_label.setFixedHeight(control_row_height)
+
+        self._rasterize_warning = _make_rasterize_warning_label()
 
         advanced_layout.addLayout(advanced_grid)
         advanced_layout.addLayout(color_row)
+        advanced_layout.addLayout(data_only_row)
+        advanced_layout.addWidget(self._rasterize_warning)
 
         outline_btn_style = """
             QPushButton {
@@ -351,25 +421,6 @@ class ReduceSizeDialog(QDialog):
             QPushButton:hover { background: #eef4ff; }
             QPushButton:disabled { color: #a8c7f5; border-color: #a8c7f5; }
             """
-
-        step0_section = QWidget()
-        step0_layout = QVBoxLayout(step0_section)
-        _configure_step_layout(step0_layout)
-        step0_layout.addWidget(_make_step_label("[0단계] 용량 줄이기 사용 방법"))
-        step0_btn_row = QHBoxLayout()
-        step0_btn_row.setContentsMargins(0, 0, 0, 0)
-        step0_btn_row.setSpacing(0)
-        self._guide_btn = QPushButton(_REDUCE_GUIDE_TEXT)
-        self._guide_btn.setMinimumHeight(40)
-        self._guide_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._guide_btn.setStyleSheet(outline_btn_style)
-        self._guide_btn.clicked.connect(
-            lambda: QDesktopServices.openUrl(QUrl(REDUCE_USAGE_GUIDE_URL))
-        )
-        step0_btn_row.addWidget(self._guide_btn)
-        step0_btn_row.addStretch(1)
-        step0_layout.addLayout(step0_btn_row)
-        root.addWidget(step0_section)
 
         step1_section = QWidget()
         step1_section_layout = QVBoxLayout(step1_section)
@@ -505,18 +556,17 @@ class ReduceSizeDialog(QDialog):
         root.addWidget(step3_section)
 
         action_btn_width = max(
-            self._guide_btn.sizeHint().width(),
             self._estimate_btn.sizeHint().width(),
             self._apply_btn.sizeHint().width(),
             self._final_apply_btn.sizeHint().width(),
         )
-        self._guide_btn.setFixedWidth(action_btn_width)
         self._estimate_btn.setFixedWidth(action_btn_width)
         self._apply_btn.setFixedWidth(action_btn_width)
         self._final_apply_btn.setFixedWidth(action_btn_width)
 
         self._apply_default_options()
         self._apply_profile_defaults()
+        self._sync_profile_control_locks()
         self._fit_dialog_size()
 
     def _fit_dialog_size(self) -> None:
@@ -529,6 +579,10 @@ class ReduceSizeDialog(QDialog):
         height = layout.sizeHint().height() + margins.top() + margins.bottom()
         height -= _DESIRED_PANEL_SIZEHINT_OVERHEAD
         self.setFixedSize(_DIALOG_WIDTH, height)
+
+    def _schedule_fit_dialog_size(self) -> None:
+        """Re-measure after visibility or wrapped-label text changes."""
+        QTimer.singleShot(0, self._fit_dialog_size)
 
     def _invalidate_estimate(self) -> None:
         self._estimated_size_bytes = None
@@ -599,6 +653,37 @@ class ReduceSizeDialog(QDialog):
             self._block_advanced_signals(False)
         self._update_reduce_profile_warning()
 
+    def _target_fit_mode_label(self) -> str:
+        if self._data_only_check.isChecked():
+            return "데이터만 압축"
+        return "화면 보호"
+
+    def _uses_safe_compression_only(self) -> bool:
+        if self._rasterize_check.isChecked():
+            return False
+        if self._data_only_check.isChecked():
+            return True
+        return self._reduce_profile.prefers_compression_only
+
+    def _sync_profile_control_locks(self) -> None:
+        """Keep image size at 100% for Distiller/micro-image PDFs (geometry breaks if lowered)."""
+        lock_size = self._uses_safe_compression_only()
+        rasterize = self._rasterize_check.isChecked()
+        data_only = self._data_only_check.isChecked()
+        for widget in (self._size_slider, self._size_spin):
+            widget.setEnabled(not lock_size)
+        self._geometry_mode_combo.setEnabled(not rasterize and not data_only)
+        self._raster_format_combo.setEnabled(rasterize)
+        self._data_only_check.setEnabled(not rasterize)
+        self._rasterize_check.setEnabled(not data_only)
+        if lock_size:
+            self._size_slider.blockSignals(True)
+            self._size_spin.blockSignals(True)
+            self._size_slider.setValue(100)
+            self._size_spin.setValue(100)
+            self._size_slider.blockSignals(False)
+            self._size_spin.blockSignals(False)
+
     def _block_advanced_signals(self, block: bool) -> None:
         for widget in (
             self._size_slider,
@@ -610,8 +695,102 @@ class ReduceSizeDialog(QDialog):
             self._geometry_mode_combo,
             self._grayscale_check,
             self._monochrome_check,
+            self._raster_format_combo,
+            self._data_only_check,
         ):
             widget.blockSignals(block)
+
+    def _apply_data_only_defaults(self) -> None:
+        self._block_advanced_signals(True)
+        self._size_slider.setValue(100)
+        self._size_spin.setValue(100)
+        self._quality_slider.setValue(_DATA_ONLY_DEFAULT_QUALITY)
+        self._quality_spin.setValue(_DATA_ONLY_DEFAULT_QUALITY)
+        self._dpi_slider.setValue(_DATA_ONLY_DEFAULT_DPI)
+        self._dpi_spin.setValue(_DATA_ONLY_DEFAULT_DPI)
+        self._geometry_mode_combo.blockSignals(True)
+        for index in range(self._geometry_mode_combo.count()):
+            if self._geometry_mode_combo.itemData(index) == GEOMETRY_MODE_PAGE_ONLY:
+                self._geometry_mode_combo.setCurrentIndex(index)
+                break
+        self._geometry_mode_combo.blockSignals(False)
+        self._block_advanced_signals(False)
+        self._active_preset = "data_only"
+
+    def _on_data_only_toggled(self, checked: bool) -> None:
+        if checked:
+            if self._rasterize_check.isChecked():
+                self._rasterize_check.blockSignals(True)
+                self._rasterize_check.setChecked(False)
+                self._rasterize_check.blockSignals(False)
+                self._update_rasterize_warning(False)
+            reply = QMessageBox.question(
+                self,
+                "데이터만 압축",
+                "미세 이미지 조각을 포함해 모든 임베디드 이미지를 "
+                "화면 크기 기준으로 재압축합니다.\n\n"
+                "레이아웃·텍스트 검색은 유지되지만, "
+                "일부 PDF에서는 글자 주변이 흐릿해질 수 있습니다.\n\n"
+                "계속하시겠습니까?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self._data_only_check.blockSignals(True)
+                self._data_only_check.setChecked(False)
+                self._data_only_check.blockSignals(False)
+                checked = False
+            else:
+                self._apply_data_only_defaults()
+        self._sync_profile_control_locks()
+        self._on_advanced_changed()
+
+    def _apply_rasterize_defaults(self) -> None:
+        self._block_advanced_signals(True)
+        self._size_slider.setValue(_RASTERIZE_DEFAULT_SIZE)
+        self._size_spin.setValue(_RASTERIZE_DEFAULT_SIZE)
+        self._quality_slider.setValue(_RASTERIZE_DEFAULT_QUALITY)
+        self._quality_spin.setValue(_RASTERIZE_DEFAULT_QUALITY)
+        self._dpi_slider.setValue(_RASTERIZE_DEFAULT_DPI)
+        self._dpi_spin.setValue(_RASTERIZE_DEFAULT_DPI)
+        self._block_advanced_signals(False)
+        self._active_preset = "custom"
+
+    def _on_rasterize_toggled(self, checked: bool) -> None:
+        if checked:
+            if self._data_only_check.isChecked():
+                self._data_only_check.blockSignals(True)
+                self._data_only_check.setChecked(False)
+                self._data_only_check.blockSignals(False)
+            reply = QMessageBox.question(
+                self,
+                "픽셀 이미지화 변환",
+                "픽셀 이미지화 변환을 사용하면 페이지가 이미지로 저장됩니다.\n\n"
+                "텍스트 검색·텍스트 복사·텍스트 선택이 불가능해집니다.\n\n"
+                "이 옵션을 사용하시겠습니까?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self._rasterize_check.blockSignals(True)
+                self._rasterize_check.setChecked(False)
+                self._rasterize_check.blockSignals(False)
+                checked = False
+            else:
+                self._apply_rasterize_defaults()
+        self._update_rasterize_warning(checked)
+        self._sync_profile_control_locks()
+        self._on_advanced_changed()
+
+    def _update_rasterize_warning(self, active: bool | None = None) -> None:
+        if active is None:
+            active = self._rasterize_check.isChecked()
+        self._rasterize_warning.setText(
+            _rasterize_warning_text(
+                active=active,
+                raster_format=self._raster_format_combo.currentText(),
+            )
+        )
 
     def _on_grayscale_toggled(self, checked: bool) -> None:
         if checked and self._monochrome_check.isChecked():
@@ -666,7 +845,7 @@ class ReduceSizeDialog(QDialog):
     def _update_reduce_profile_warning(self) -> None:
         profile = self._reduce_profile
         if not profile.prefers_page_only:
-            self._embedded_scale_warning.hide()
+            self._embedded_scale_warning.setText(_NO_PROFILE_INFO_MESSAGE)
             return
 
         parts: list[str] = []
@@ -690,10 +869,23 @@ class ReduceSizeDialog(QDialog):
 
         detail = ", ".join(parts) if parts else "특수 페이지 변환"
         if profile.prefers_compression_only:
+            extra = (
+                " [데이터만 압축]을 켜면 Acrobat과 유사한 용량 절감이 가능할 수 있습니다."
+                if profile.recommends_data_only_compress
+                else ""
+            )
             self._embedded_scale_warning.setText(
                 f"인쇄/혼합 레이아웃 PDF로 보입니다 ({detail}). "
                 "글자 주변 미세 이미지 보호를 위해 [이미지 사이즈 100%]와 "
-                "[페이지 크기만]으로 설정했습니다. 이미지 압축은 유지됩니다."
+                "[페이지 크기만]으로 설정했습니다. 이미지 압축은 유지됩니다. "
+                "자동 반복 시에는 품질·DPI만 조정합니다. "
+                f"화면이 깨지면 [픽셀 이미지화 변환]을 검토해 보세요.{extra}"
+            )
+        elif profile.recommends_data_only_compress:
+            self._embedded_scale_warning.setText(
+                f"인쇄용 Distiller PDF로 보입니다 ({detail}). "
+                "용량을 크게 줄이려면 [데이터만 압축]을 사용해 보세요. "
+                "레이아웃·검색은 유지됩니다."
             )
         else:
             self._embedded_scale_warning.setText(
@@ -701,15 +893,28 @@ class ReduceSizeDialog(QDialog):
                 "기본값을 [페이지 크기만]으로 설정했습니다. "
                 "이미지 압축은 유지되며, 필요하면 [크기 조정] 방식을 바꿔 주세요."
             )
-        self._embedded_scale_warning.show()
 
     def _current_geometry_mode(self) -> str:
+        if self._rasterize_check.isChecked() or self._data_only_check.isChecked():
+            return GEOMETRY_MODE_PAGE_ONLY
         value = self._geometry_mode_combo.currentData()
         if isinstance(value, str):
             return value
         return GEOMETRY_MODE_BOTH
 
+    def _current_raster_format(self) -> str:
+        value = self._raster_format_combo.currentData()
+        if isinstance(value, str):
+            return value
+        return RASTER_FORMAT_AUTO
+
+    def _current_compress_mode(self) -> str:
+        if self._data_only_check.isChecked():
+            return COMPRESS_MODE_DATA_ONLY
+        return COMPRESS_MODE_STANDARD
+
     def _on_advanced_changed(self) -> None:
+        self._update_rasterize_warning()
         self._active_preset = "custom"
         self._invalidate_estimate()
 
@@ -722,6 +927,9 @@ class ReduceSizeDialog(QDialog):
             geometry_mode=self._current_geometry_mode(),
             grayscale=self._grayscale_check.isChecked(),
             monochrome=self._monochrome_check.isChecked(),
+            rasterize=self._rasterize_check.isChecked(),
+            raster_format=self._current_raster_format(),
+            compress_mode=self._current_compress_mode(),
         )
 
     def _is_worker_busy(self) -> bool:
@@ -736,6 +944,8 @@ class ReduceSizeDialog(QDialog):
         grayscale: bool | None = None,
         monochrome: bool | None = None,
     ) -> None:
+        if self._uses_safe_compression_only():
+            image_size_percent = 100
         self._block_advanced_signals(True)
         self._size_slider.setValue(image_size_percent)
         self._size_spin.setValue(image_size_percent)
@@ -775,29 +985,43 @@ class ReduceSizeDialog(QDialog):
         if _is_below_target(current, target_bytes):
             return False
 
+        lock_size = self._uses_safe_compression_only()
         size = self._size_slider.value()
         quality = self._quality_slider.value()
         dpi = self._dpi_spin.value()
 
         ratio = (target_bytes / current) * _TARGET_UNDERSHOOT
         factor = ratio ** 0.35
-        new_size = max(1, min(100, round(size * factor)))
+        new_size = 100 if lock_size else max(1, min(100, round(size * factor)))
         new_quality = max(_MIN_QUALITY, min(_MAX_QUALITY, round(quality * factor)))
         new_dpi = max(_MIN_DPI, min(_MAX_DPI, round(dpi * factor)))
 
         if ratio < 1.0:
-            if new_size == size and size > 1:
+            if not lock_size and new_size == size and size > 1:
                 new_size = size - 1
             if new_quality == quality and quality > _MIN_QUALITY:
                 new_quality = quality - 1
             if new_dpi == dpi and dpi > _MIN_DPI:
                 new_dpi = dpi - 1
 
-        if new_size == size and new_quality == quality and new_dpi == dpi:
-            self._append_progress(
-                f"  이미지 사이즈·품질·DPI를 더 낮출 수 없습니다 "
-                f"({format_file_size(current)})."
-            )
+        if lock_size:
+            new_size = 100
+
+        if lock_size:
+            stuck = new_quality == quality and new_dpi == dpi
+        else:
+            stuck = new_size == size and new_quality == quality and new_dpi == dpi
+        if stuck:
+            if lock_size:
+                self._append_progress(
+                    f"  {self._target_fit_mode_label()} 모드: 품질·DPI를 더 낮출 수 없습니다 "
+                    f"({format_file_size(current)})."
+                )
+            else:
+                self._append_progress(
+                    f"  이미지 사이즈·품질·DPI를 더 낮출 수 없습니다 "
+                    f"({format_file_size(current)})."
+                )
             return False
 
         self._set_advanced_values(
@@ -805,11 +1029,18 @@ class ReduceSizeDialog(QDialog):
             jpeg_quality=new_quality,
             max_dpi=new_dpi,
         )
-        self._append_progress(
-            f"  설정 조정 ({self._target_fit_pass + 1}차): "
-            f"이미지 사이즈 {size}% → {new_size}%, "
-            f"품질 {quality}% → {new_quality}%, DPI {dpi} → {new_dpi}"
-        )
+        if lock_size:
+            self._append_progress(
+                f"  설정 조정 ({self._target_fit_pass + 1}차, {self._target_fit_mode_label()}): "
+                f"품질 {quality}% → {new_quality}%, DPI {dpi} → {new_dpi} "
+                "(이미지 사이즈 100% 유지)"
+            )
+        else:
+            self._append_progress(
+                f"  설정 조정 ({self._target_fit_pass + 1}차): "
+                f"이미지 사이즈 {size}% → {new_size}%, "
+                f"품질 {quality}% → {new_quality}%, DPI {dpi} → {new_dpi}"
+            )
         return True
 
     def _adjust_settings_up_to_target(self, target_bytes: int, label: str) -> bool:
@@ -824,29 +1055,44 @@ class ReduceSizeDialog(QDialog):
         if _is_close_enough_below(current, target_bytes):
             return False
 
+        lock_size = self._uses_safe_compression_only()
         size = self._size_slider.value()
         quality = self._quality_slider.value()
         dpi = self._dpi_spin.value()
 
         ratio = (target_bytes / current) * _TARGET_UNDERSHOOT
         factor = ratio ** 0.35
-        new_size = max(1, min(100, round(size * factor)))
+        new_size = 100 if lock_size else max(1, min(100, round(size * factor)))
         new_quality = max(_MIN_QUALITY, min(_MAX_QUALITY, round(quality * factor)))
         new_dpi = max(_MIN_DPI, min(_MAX_DPI, round(dpi * factor)))
 
         if ratio > 1.0:
-            if new_size == size and size < 100:
+            if not lock_size and new_size == size and size < 100:
                 new_size = size + 1
             if new_quality == quality and quality < _MAX_QUALITY:
                 new_quality = quality + 1
             if new_dpi == dpi and dpi < _MAX_DPI:
                 new_dpi = dpi + 1
 
-        if new_size == size and new_quality == quality and new_dpi == dpi:
-            self._append_progress(
-                f"  이미지 사이즈·품질·DPI를 더 높일 수 없습니다 "
-                f"({format_file_size(current)})."
-            )
+        if lock_size:
+            new_size = 100
+
+        if lock_size:
+            stuck = new_quality == quality and new_dpi == dpi
+        else:
+            stuck = new_size == size and new_quality == quality and new_dpi == dpi
+        if stuck:
+            if lock_size:
+                mode_label = self._target_fit_mode_label()
+                self._append_progress(
+                    f"  {mode_label} 모드: 품질·DPI를 더 높일 수 없습니다 "
+                    f"({format_file_size(current)})."
+                )
+            else:
+                self._append_progress(
+                    f"  이미지 사이즈·품질·DPI를 더 높일 수 없습니다 "
+                    f"({format_file_size(current)})."
+                )
             return False
 
         self._set_advanced_values(
@@ -854,11 +1100,18 @@ class ReduceSizeDialog(QDialog):
             jpeg_quality=new_quality,
             max_dpi=new_dpi,
         )
-        self._append_progress(
-            f"  설정 상향 ({self._target_fit_pass + 1}차): "
-            f"이미지 사이즈 {size}% → {new_size}%, "
-            f"품질 {quality}% → {new_quality}%, DPI {dpi} → {new_dpi}"
-        )
+        if lock_size:
+            self._append_progress(
+                f"  설정 상향 ({self._target_fit_pass + 1}차, {self._target_fit_mode_label()}): "
+                f"품질 {quality}% → {new_quality}%, DPI {dpi} → {new_dpi} "
+                "(이미지 사이즈 100% 유지)"
+            )
+        else:
+            self._append_progress(
+                f"  설정 상향 ({self._target_fit_pass + 1}차): "
+                f"이미지 사이즈 {size}% → {new_size}%, "
+                f"품질 {quality}% → {new_quality}%, DPI {dpi} → {new_dpi}"
+            )
         return True
 
     def _prompt_color_mode_for_target(self) -> str | None:
@@ -1000,17 +1253,23 @@ class ReduceSizeDialog(QDialog):
             )
         elif self._has_valid_estimate() and self._last_reduced_payload is not None:
             self._final_apply_ready = True
-            self._append_progress(
+            note = (
                 f"참고: 예상 크기 {format_file_size(size)}로 "
                 f"{label} 목표({format_file_size(target)}) 미만에 도달하지 못했습니다. "
                 "현재 설정으로 [최종 적용 하기]를 사용할 수 있습니다."
             )
+            if self._uses_safe_compression_only():
+                note += " (화면 보호 모드: 이미지 사이즈는 변경하지 않았습니다.)"
+            self._append_progress(note)
         else:
             self._final_apply_ready = False
-            self._append_progress(
+            note = (
                 f"참고: 예상 크기 {format_file_size(size)}로 "
                 f"{label} 목표({format_file_size(target)}) 미만에 도달하지 못했습니다."
             )
+            if self._uses_safe_compression_only():
+                note += " (화면 보호 모드: 이미지 사이즈는 변경하지 않았습니다.)"
+            self._append_progress(note)
 
         self._set_controls_enabled(True)
         self._update_final_apply_btn()
@@ -1183,10 +1442,20 @@ class ReduceSizeDialog(QDialog):
         self._set_controls_enabled(True)
         QTimer.singleShot(0, self._update_final_apply_btn)
 
-    def _append_progress(self, message: str) -> None:
-        self._progress_log.appendPlainText(message)
+    def _log_follows_tail(self) -> bool:
+        """True when the user has not scrolled up to read earlier log lines."""
+        scrollbar = self._progress_log.verticalScrollBar()
+        return scrollbar.maximum() - scrollbar.value() <= 4
+
+    def _scroll_log_to_end_if_following(self) -> None:
+        if not self._log_follows_tail():
+            return
         scrollbar = self._progress_log.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+    def _append_progress(self, message: str) -> None:
+        self._progress_log.appendPlainText(message)
+        self._scroll_log_to_end_if_following()
 
     def _update_or_append_progress(self, prefix: str, suffix: str) -> None:
         text = f"{prefix}{suffix}"
@@ -1201,9 +1470,8 @@ class ReduceSizeDialog(QDialog):
             )
             cursor.insertText(text)
         else:
-            self._append_progress(text)
-        scrollbar = self._progress_log.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+            self._progress_log.appendPlainText(text)
+        self._scroll_log_to_end_if_following()
 
     def _clear_progress_log(self) -> None:
         self._progress_log.clear()
@@ -1231,10 +1499,14 @@ class ReduceSizeDialog(QDialog):
             self._geometry_mode_combo,
             self._grayscale_check,
             self._monochrome_check,
+            self._rasterize_check,
+            self._raster_format_combo,
+            self._data_only_check,
         ):
             widget.setEnabled(enabled)
         if enabled:
             self._update_final_apply_btn()
+            self._sync_profile_control_locks()
         else:
             self._final_apply_btn.setEnabled(False)
 
@@ -1266,6 +1538,17 @@ class ReduceSizeDialog(QDialog):
                 "먼저 [예상 최종 크기 산정]을 실행해 주세요.",
             )
             return
+        if self._rasterize_check.isChecked():
+            reply = QMessageBox.question(
+                self,
+                "픽셀 이미지화 변환",
+                "픽셀 이미지화 변환으로 저장하면 텍스트 검색·복사·선택이 "
+                "불가능해집니다.\n\n최종 적용하시겠습니까?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
         self._run_apply_reduction()
 
     def _run_apply_reduction(self) -> None:

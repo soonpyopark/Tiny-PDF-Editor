@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import re
@@ -38,11 +39,42 @@ class ReduceSizeOptions:
     geometry_mode: str = "both"
     grayscale: bool = False
     monochrome: bool = False
+    rasterize: bool = False
+    raster_format: str = "auto"
+    compress_mode: str = "standard"
+
+
+COMPRESS_MODE_STANDARD = "standard"
+COMPRESS_MODE_DATA_ONLY = "data_only"
+
+OPTIMIZE_DPI_CHOICES = (36, 48, 72, 96, 120, 150, 200, 300)
+OPTIMIZE_DEFAULT_JPEG_QUALITY = 25
+# Distiller PDFs use tiny FlateDecode tiles; JPEG is ~30x larger — preserve them.
+OPTIMIZE_PRESERVE_FLATE_MAX_BYTES = 4096
+
+
+@dataclass(frozen=True)
+class OptimizeSizeOptions:
+    """Acrobat-style optimize settings (data-only image recompress + cleanup)."""
+
+    image_dpi: int = 72
+    jpeg_quality: int = OPTIMIZE_DEFAULT_JPEG_QUALITY
+    remove_duplicate_resources: bool = True
+    compress_streams: bool = True
+    compress_fonts: bool = True
+    delete_bookmarks: bool = False
+    delete_attachments: bool = False
+    delete_metadata: bool = True
+    delete_annotations_and_forms: bool = False
 
 
 GEOMETRY_MODE_BOTH = "both"
 GEOMETRY_MODE_PAGE_ONLY = "page_only"
 GEOMETRY_MODE_CONTENT_ONLY = "content_only"
+
+RASTER_FORMAT_AUTO = "auto"
+RASTER_FORMAT_JPEG = "jpeg"
+RASTER_FORMAT_GRAY_JPEG = "gray_jpeg"
 
 _PDF_NUMBER = rb"-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?"
 
@@ -102,6 +134,15 @@ PRESET_OPTIONS: dict[str, ReduceSizeOptions] = {
         preset="high",
         jpeg_quality=92,
         max_dpi=300,
+        grayscale=False,
+    ),
+    "data_only": ReduceSizeOptions(
+        preset="data_only",
+        compress_mode=COMPRESS_MODE_DATA_ONLY,
+        jpeg_quality=45,
+        max_dpi=72,
+        image_size_percent=100,
+        geometry_mode=GEOMETRY_MODE_PAGE_ONLY,
         grayscale=False,
     ),
 }
@@ -206,6 +247,14 @@ class DocumentReduceProfile:
     def prefers_individual_image_recompress(self) -> bool:
         """Use per-image recompress so micro-image skips can be applied."""
         return self.prefers_compression_only or self.micro_image_ratio >= 0.15
+
+    @property
+    def recommends_data_only_compress(self) -> bool:
+        """True when Acrobat-style data-only compression is likely effective."""
+        return (
+            self.distiller_print_pdf
+            and self.micro_image_ratio >= _DISTILLER_MICRO_RATIO_THRESHOLD
+        )
 
 
 class PdfDocument:
@@ -486,10 +535,11 @@ class PdfDocument:
         quality = max(1, min(100, options.jpeg_quality))
         processed: set[int] = set()
         micro_xrefs: set[int] = set()
+        include_micro = PdfDocument._include_micro_images_in_recompress(options)
         for xref, (display_rect, _page_index, _smask) in PdfDocument._collect_image_resize_targets(
             doc
         ).items():
-            if PdfDocument._is_micro_image_rect(display_rect):
+            if not include_micro and PdfDocument._is_micro_image_rect(display_rect):
                 micro_xrefs.add(xref)
         for page in doc:
             for img in page.get_images(full=True):
@@ -520,6 +570,14 @@ class PdfDocument:
                 finally:
                     converted = None
                     pix = None
+
+    @staticmethod
+    def _uses_data_only_compress(options: ReduceSizeOptions) -> bool:
+        return options.compress_mode == COMPRESS_MODE_DATA_ONLY
+
+    @staticmethod
+    def _include_micro_images_in_recompress(options: ReduceSizeOptions) -> bool:
+        return PdfDocument._uses_data_only_compress(options)
 
     @staticmethod
     def _is_micro_image_rect(display_rect: fitz.Rect) -> bool:
@@ -561,6 +619,36 @@ class PdfDocument:
         return micro / total
 
     @staticmethod
+    def _pixmap_for_jpeg_export(pix: fitz.Pixmap) -> fitz.Pixmap:
+        """Prepare a pixmap for JPEG export (CMYK/alpha JPEG often renders as black)."""
+        if pix.colorspace is None:
+            return pix
+        if pix.alpha or pix.colorspace.n not in (1, 3):
+            return fitz.Pixmap(fitz.csRGB, pix)
+        return pix
+
+    @staticmethod
+    def _jpeg_smaller_than(
+        pix: fitz.Pixmap,
+        old_size: int,
+        jpeg_quality: int,
+    ) -> bytes | None:
+        """Return JPEG bytes smaller than old_size, trying lower qualities if needed."""
+        if old_size <= 0:
+            return pix.tobytes("jpeg", jpg_quality=jpeg_quality)
+        qualities: list[int] = []
+        for q in range(max(5, jpeg_quality), 4, -5):
+            if q not in qualities:
+                qualities.append(q)
+        if 5 not in qualities:
+            qualities.append(5)
+        for q in qualities:
+            stream = pix.tobytes("jpeg", jpg_quality=q)
+            if len(stream) < old_size:
+                return stream
+        return None
+
+    @staticmethod
     def _resample_single_image(
         doc: fitz.Document,
         xref: int,
@@ -571,10 +659,26 @@ class PdfDocument:
         jpeg_quality: int,
         min_effective_dpi: float | None = None,
         skip_if_display_dpi_met: bool = True,
+        include_micro: bool = False,
+        preserve_small_flate_max_bytes: int | None = None,
+        require_smaller_stream: bool = False,
+        smask_xref: int = 0,
     ) -> bool:
         """Downsample one embedded image to its on-page display size; return True if updated."""
-        if display_rect.is_empty or PdfDocument._is_micro_image_rect(display_rect):
+        if display_rect.is_empty:
             return False
+        if not include_micro and PdfDocument._is_micro_image_rect(display_rect):
+            return False
+
+        old_stream = doc.xref_stream_raw(xref) or b""
+        old_size = len(old_stream)
+        if preserve_small_flate_max_bytes is not None and old_size > 0:
+            _, flt = doc.xref_get_key(xref, "Filter")
+            if (
+                "FlateDecode" in str(flt)
+                and old_size <= preserve_small_flate_max_bytes
+            ):
+                return False
 
         target_w = max(1, int(display_rect.width * target_dpi / 72))
         target_h = max(1, int(display_rect.height * target_dpi / 72))
@@ -600,8 +704,29 @@ class PdfDocument:
                 and effective_dpi <= target_dpi
             ):
                 return False
-            stream = scaled.tobytes("jpeg", jpg_quality=jpeg_quality)
-            doc[page_index].replace_image(xref, stream=stream)
+            jpeg_pix = PdfDocument._pixmap_for_jpeg_export(scaled)
+            if require_smaller_stream:
+                stream = PdfDocument._jpeg_smaller_than(
+                    jpeg_pix,
+                    old_size,
+                    jpeg_quality,
+                )
+                if stream is None:
+                    return False
+            else:
+                stream = jpeg_pix.tobytes("jpeg", jpg_quality=jpeg_quality)
+            if smask_xref > 0:
+                PdfDocument._replace_image_stream_preserving_mask(
+                    doc,
+                    xref,
+                    stream=stream,
+                    width=jpeg_pix.width,
+                    height=jpeg_pix.height,
+                    mask_xref=smask_xref,
+                    colorspace=PdfDocument._pixmap_colorspace_name(jpeg_pix),
+                )
+            else:
+                doc[page_index].replace_image(xref, stream=stream)
             return True
         except Exception:
             return False
@@ -616,12 +741,25 @@ class PdfDocument:
         *,
         target_dpi: int,
         dpi_threshold: int | None,
+        image_progress: Callable[[int, int], None] | None = None,
+        preserve_small_flate_max_bytes: int | None = None,
+        require_smaller_stream: bool = False,
+        skip_if_display_dpi_met: bool = False,
     ) -> None:
         """Recompress each embedded image; skip images that cannot be decoded."""
         quality = max(1, min(100, options.jpeg_quality))
         targets = PdfDocument._collect_image_resize_targets(doc)
+        include_micro = PdfDocument._include_micro_images_in_recompress(options)
+        total = len(targets)
+        progress_stride = max(1, total // 50) if total else 1
 
-        for xref, (display_rect, page_index, smask) in targets.items():
+        for index, (xref, (display_rect, page_index, smask)) in enumerate(
+            targets.items(), start=1
+        ):
+            if image_progress is not None and (
+                index == 1 or index == total or index % progress_stride == 0
+            ):
+                image_progress(index, total)
             PdfDocument._resample_single_image(
                 doc,
                 xref,
@@ -632,7 +770,11 @@ class PdfDocument:
                 min_effective_dpi=float(dpi_threshold)
                 if dpi_threshold is not None
                 else None,
-                skip_if_display_dpi_met=False,
+                skip_if_display_dpi_met=skip_if_display_dpi_met,
+                include_micro=include_micro,
+                preserve_small_flate_max_bytes=preserve_small_flate_max_bytes,
+                require_smaller_stream=require_smaller_stream,
+                smask_xref=smask,
             )
 
     @staticmethod
@@ -643,12 +785,17 @@ class PdfDocument:
         target_dpi: int,
         dpi_threshold: int | None,
         profile: DocumentReduceProfile | None = None,
+        image_progress: Callable[[int, int], None] | None = None,
+        preserve_small_flate_max_bytes: int | None = None,
+        require_smaller_stream: bool = False,
+        skip_if_display_dpi_met: bool = False,
     ) -> None:
         """Recompress embedded images only; do not recolor or outline text."""
         if profile is None:
             profile = PdfDocument.analyze_reduce_profile(doc)
+        data_only = PdfDocument._uses_data_only_compress(options)
         bulk_ok = False
-        if not profile.prefers_individual_image_recompress:
+        if not data_only and not profile.prefers_individual_image_recompress:
             try:
                 doc.rewrite_images(
                     dpi_threshold=dpi_threshold,
@@ -665,6 +812,10 @@ class PdfDocument:
                 options,
                 target_dpi=target_dpi,
                 dpi_threshold=dpi_threshold,
+                image_progress=image_progress,
+                preserve_small_flate_max_bytes=preserve_small_flate_max_bytes,
+                require_smaller_stream=require_smaller_stream,
+                skip_if_display_dpi_met=skip_if_display_dpi_met,
             )
         PdfDocument._convert_embedded_images_color_mode(doc, options)
 
@@ -677,6 +828,328 @@ class PdfDocument:
             doc.subset_fonts()
         except Exception:
             pass
+
+    _DEDUP_DICT_KEYS = (
+        "Width",
+        "Height",
+        "ColorSpace",
+        "BitsPerComponent",
+        "Filter",
+        "Decode",
+        "DecodeParms",
+        "Intent",
+        "OC",
+        "Interpolate",
+    )
+
+    @staticmethod
+    def _embedded_image_fingerprint(
+        doc: fitz.Document,
+        xref: int,
+        *,
+        smask_xref: int = 0,
+    ) -> bytes | None:
+        """Return a stable fingerprint for identical embedded image objects."""
+        if not doc.xref_is_image(xref):
+            return None
+
+        hasher = hashlib.sha256()
+        hasher.update(doc.xref_stream_raw(xref) or b"")
+        for key in PdfDocument._DEDUP_DICT_KEYS:
+            kind, value = doc.xref_get_key(xref, key)
+            if kind != "null":
+                hasher.update(key.encode("ascii"))
+                hasher.update(value.encode("ascii", errors="replace"))
+
+        if smask_xref <= 0:
+            for mask_key in ("SMask", "Mask"):
+                kind, value = doc.xref_get_key(xref, mask_key)
+                if kind == "xref":
+                    smask_xref = int(value.split()[0])
+                    break
+                if kind != "null" and mask_key == "Mask":
+                    hasher.update(b"Mask:")
+                    hasher.update(value.encode("ascii", errors="replace"))
+                    smask_xref = 0
+                    break
+
+        if smask_xref > 0 and doc.xref_is_image(smask_xref):
+            smask_fp = PdfDocument._embedded_image_fingerprint(doc, smask_xref)
+            if smask_fp is not None:
+                hasher.update(b"|SMask|")
+                hasher.update(smask_fp)
+        return hasher.digest()
+
+    @staticmethod
+    def _collect_image_resource_refs(
+        doc: fitz.Document,
+    ) -> list[tuple[int, str, int]]:
+        """Return (container_xref, resource_name, image_xref) triples."""
+        refs: list[tuple[int, str, int]] = []
+        for page_index in range(len(doc)):
+            try:
+                images = doc.get_page_images(page_index, full=True)
+                page_xref = doc.page_xref(page_index)
+            except Exception:
+                continue
+            for img in images:
+                xref = int(img[0])
+                name = str(img[7]) if len(img) > 7 else ""
+                referencer = int(img[9]) if len(img) > 9 else 0
+                container = referencer if referencer else page_xref
+                if name and xref:
+                    refs.append((container, name, xref))
+        return refs
+
+    @staticmethod
+    def _build_image_dedup_redirect(
+        doc: fitz.Document,
+        *,
+        smask_by_xref: dict[int, int] | None = None,
+    ) -> dict[int, int]:
+        """Map duplicate image xrefs to a canonical xref with identical content."""
+        fingerprint_to_canonical: dict[bytes, int] = {}
+        redirect: dict[int, int] = {}
+        seen_xrefs: set[int] = set()
+
+        for page_index in range(len(doc)):
+            try:
+                images = doc.get_page_images(page_index, full=True)
+            except Exception:
+                continue
+            for img in images:
+                seen_xrefs.add(int(img[0]))
+                if len(img) > 1 and img[1]:
+                    seen_xrefs.add(int(img[1]))
+
+        for xref in range(1, doc.xref_length()):
+            try:
+                if doc.xref_is_image(xref):
+                    seen_xrefs.add(xref)
+            except Exception:
+                continue
+
+        for xref in sorted(seen_xrefs):
+            if xref in redirect:
+                continue
+            smask = smask_by_xref.get(xref, 0) if smask_by_xref else 0
+            fingerprint = PdfDocument._embedded_image_fingerprint(
+                doc,
+                xref,
+                smask_xref=smask,
+            )
+            if fingerprint is None:
+                continue
+            canonical = fingerprint_to_canonical.get(fingerprint)
+            if canonical is None:
+                fingerprint_to_canonical[fingerprint] = xref
+            elif canonical != xref:
+                redirect[xref] = canonical
+        return redirect
+
+    @staticmethod
+    def _apply_image_dedup_redirect(
+        doc: fitz.Document,
+        redirect: dict[int, int],
+    ) -> int:
+        """Retarget duplicate image xrefs; orphaned objects are dropped on compact."""
+        if not redirect:
+            return 0
+
+        resolved: dict[int, int] = {}
+        for duplicate in redirect:
+            target = duplicate
+            while target in redirect:
+                target = redirect[target]
+            resolved[duplicate] = target
+
+        for container, name, xref in PdfDocument._collect_image_resource_refs(doc):
+            target = resolved.get(xref)
+            if target is None:
+                continue
+            try:
+                if not doc.xref_is_image(target):
+                    continue
+            except Exception:
+                continue
+            try:
+                doc.xref_set_key(
+                    container,
+                    f"Resources/XObject/{name}",
+                    f"{target} 0 R",
+                )
+            except Exception:
+                continue
+
+        for xref in range(1, doc.xref_length()):
+            try:
+                if not doc.xref_is_image(xref):
+                    continue
+            except Exception:
+                continue
+            for key in ("SMask", "Mask"):
+                kind, value = doc.xref_get_key(xref, key)
+                if kind != "xref":
+                    continue
+                ref_xref = int(value.split()[0])
+                target = resolved.get(ref_xref)
+                if target is None:
+                    continue
+                try:
+                    doc.xref_set_key(xref, key, f"{target} 0 R")
+                except Exception:
+                    continue
+        return len(resolved)
+
+    @staticmethod
+    def _deduplicate_embedded_images(doc: fitz.Document) -> int:
+        """Merge identical embedded image xrefs without changing layout."""
+        smask_map = PdfDocument._collect_image_smask_map(doc)
+        redirect = PdfDocument._build_image_dedup_redirect(doc, smask_by_xref=smask_map)
+        return PdfDocument._apply_image_dedup_redirect(doc, redirect)
+
+    @staticmethod
+    def _delete_pdf_annotations_and_forms(doc: fitz.Document) -> int:
+        removed = 0
+        for page in doc:
+            for annot in list(page.annots() or []):
+                try:
+                    page.delete_annot(annot)
+                    removed += 1
+                except Exception:
+                    continue
+            for widget in list(page.widgets() or []):
+                try:
+                    page.delete_widget(widget)
+                    removed += 1
+                except Exception:
+                    continue
+        return removed
+
+    @staticmethod
+    def _delete_pdf_attachments(doc: fitz.Document) -> int:
+        names = list(doc.embfile_names())
+        for name in names:
+            try:
+                doc.embfile_del(name)
+            except Exception:
+                continue
+        return len(names)
+
+    @staticmethod
+    def _optimize_save_kwargs(options: OptimizeSizeOptions) -> dict[str, object]:
+        if options.compress_streams:
+            return dict(PDF_SAVE_KWARGS)
+        return {"garbage": 4, "deflate": False, "use_objstms": False}
+
+    @staticmethod
+    def build_optimized_payload(
+        source_bytes: bytes,
+        options: OptimizeSizeOptions,
+        *,
+        status_callback: Callable[[str], None] | None = None,
+        image_progress: Callable[[int, int], None] | None = None,
+    ) -> bytes:
+        """Acrobat-style optimize: recompress images at DPI, dedup, optional cleanup."""
+        source = fitz.open(stream=source_bytes, filetype="pdf")
+        try:
+            return PdfDocument._optimize_document(
+                source,
+                options,
+                status_callback=status_callback,
+                image_progress=image_progress,
+            )
+        finally:
+            source.close()
+
+    @staticmethod
+    def _optimize_document(
+        source: fitz.Document,
+        options: OptimizeSizeOptions,
+        *,
+        status_callback: Callable[[str], None] | None = None,
+        image_progress: Callable[[int, int], None] | None = None,
+    ) -> bytes:
+        working = fitz.open(stream=source.tobytes(), filetype="pdf")
+        dedup_merged = 0
+        try:
+            if status_callback is not None:
+                status_callback(
+                    f"이미지를 {options.image_dpi}dpi로 재압축하는 중... "
+                    "(레이아웃·검색 유지)"
+                )
+            reduce_opts = ReduceSizeOptions(
+                preset="optimize",
+                compress_mode=COMPRESS_MODE_DATA_ONLY,
+                max_dpi=max(MIN_IMAGE_DPI, options.image_dpi),
+                jpeg_quality=options.jpeg_quality,
+                image_size_percent=100,
+                geometry_mode=GEOMETRY_MODE_PAGE_ONLY,
+            )
+            target_dpi = max(MIN_IMAGE_DPI, options.image_dpi)
+            dpi_threshold = target_dpi + 1
+            try:
+                PdfDocument._rewrite_images_preserve_text(
+                    working,
+                    reduce_opts,
+                    target_dpi=target_dpi,
+                    dpi_threshold=dpi_threshold,
+                    image_progress=image_progress,
+                    preserve_small_flate_max_bytes=OPTIMIZE_PRESERVE_FLATE_MAX_BYTES,
+                    require_smaller_stream=True,
+                    skip_if_display_dpi_met=True,
+                )
+            except Exception:
+                if status_callback is not None:
+                    status_callback("일부 이미지 재압축을 건너뛰고 계속합니다...")
+
+            if options.remove_duplicate_resources:
+                if status_callback is not None:
+                    status_callback("중복 리소스 제거 중...")
+                dedup_merged = PdfDocument._deduplicate_embedded_images(working)
+                if status_callback is not None and dedup_merged > 0:
+                    status_callback(f"중복 리소스 {dedup_merged}개 병합됨")
+
+            if options.delete_bookmarks:
+                if status_callback is not None:
+                    status_callback("북마크 삭제 중...")
+                try:
+                    working.set_toc([])
+                except Exception:
+                    pass
+
+            if options.delete_attachments:
+                removed = PdfDocument._delete_pdf_attachments(working)
+                if status_callback is not None and removed:
+                    status_callback(f"첨부 파일 {removed}개 삭제됨")
+
+            if options.delete_annotations_and_forms:
+                if status_callback is not None:
+                    status_callback("메모 및 양식 삭제 중...")
+                removed = PdfDocument._delete_pdf_annotations_and_forms(working)
+                if status_callback is not None and removed:
+                    status_callback(f"주석·양식 {removed}개 삭제됨")
+
+            if options.delete_metadata:
+                if status_callback is not None:
+                    status_callback("문서 정보 및 메타데이터 삭제 중...")
+                working.set_metadata({})
+                if hasattr(working, "del_xml_metadata"):
+                    working.del_xml_metadata()
+
+            if options.compress_fonts:
+                if status_callback is not None:
+                    status_callback("내장 글꼴 압축 중...")
+                try:
+                    working.subset_fonts()
+                except Exception:
+                    pass
+
+            if status_callback is not None:
+                status_callback("문서를 저장하는 중...")
+            return working.tobytes(**PdfDocument._optimize_save_kwargs(options))
+        finally:
+            working.close()
 
     @staticmethod
     def _collect_image_resize_targets(
@@ -1227,9 +1700,13 @@ class PdfDocument:
         status_callback: Callable[[str], None] | None = None,
         image_progress: Callable[[int, int], None] | None = None,
     ) -> fitz.Document:
-        if options.image_size_percent >= 100:
-            return doc
         profile = PdfDocument.analyze_reduce_profile(doc)
+        if (
+            PdfDocument._uses_data_only_compress(options)
+            or options.image_size_percent >= 100
+            or profile.prefers_compression_only
+        ):
+            return doc
         if status_callback is not None:
             status_callback(
                 f"페이지 크기를 {options.image_size_percent}%로 조정하는 중..."
@@ -1252,6 +1729,174 @@ class PdfDocument:
         return doc
 
     @staticmethod
+    def _page_max_content_dpi(doc: fitz.Document, page_index: int) -> float | None:
+        """Highest effective DPI among non-micro embedded images on a page."""
+        if page_index < 0 or page_index >= len(doc):
+            return None
+        page = doc[page_index]
+        try:
+            images = page.get_images(full=True)
+        except Exception:
+            return None
+
+        max_dpi = 0.0
+        found = False
+        for img in images:
+            xref = img[0]
+            pix = PdfDocument._safe_pixmap_from_xref(doc, xref)
+            if pix is None:
+                continue
+            try:
+                try:
+                    rects = page.get_image_rects(xref)
+                except Exception:
+                    continue
+                for rect in rects:
+                    if PdfDocument._is_micro_image_rect(rect):
+                        continue
+                    dpi = PdfDocument._image_effective_dpi(pix, rect)
+                    if dpi > 0:
+                        found = True
+                        max_dpi = max(max_dpi, dpi)
+            finally:
+                pix = None
+        return max_dpi if found else None
+
+    @staticmethod
+    def _rasterize_target_rect(page: fitz.Page, options: ReduceSizeOptions) -> fitz.Rect:
+        scale = max(0.01, min(1.0, options.image_size_percent / 100.0))
+        mediabox = page.mediabox
+        return fitz.Rect(
+            0,
+            0,
+            max(1.0, mediabox.width * scale),
+            max(1.0, mediabox.height * scale),
+        )
+
+    @staticmethod
+    def _rasterize_render_dpi(
+        doc: fitz.Document,
+        page_index: int,
+        options: ReduceSizeOptions,
+    ) -> int:
+        cap = max(
+            MIN_IMAGE_DPI,
+            PdfDocument._resample_effective_dpi(options.max_dpi, options.jpeg_quality),
+        )
+        native = PdfDocument._page_max_content_dpi(doc, page_index)
+        if native is not None and native > 0:
+            cap = min(cap, max(MIN_IMAGE_DPI, int(round(native))))
+        return cap
+
+    @staticmethod
+    def _resolve_raster_format(options: ReduceSizeOptions) -> str:
+        if options.raster_format != RASTER_FORMAT_AUTO:
+            return options.raster_format
+        if options.monochrome or options.grayscale:
+            return RASTER_FORMAT_GRAY_JPEG
+        return RASTER_FORMAT_JPEG
+
+    @staticmethod
+    def _raster_format_label(options: ReduceSizeOptions) -> str:
+        resolved = PdfDocument._resolve_raster_format(options)
+        if resolved == RASTER_FORMAT_GRAY_JPEG:
+            return "회색 JPEG"
+        return "JPEG"
+
+    @staticmethod
+    def _encode_raster_pixmap(pix: fitz.Pixmap, options: ReduceSizeOptions) -> bytes:
+        quality = max(1, min(100, options.jpeg_quality))
+        fmt = PdfDocument._resolve_raster_format(options)
+        converted: fitz.Pixmap | None = None
+        try:
+            if fmt == RASTER_FORMAT_GRAY_JPEG:
+                if options.monochrome:
+                    converted = PdfDocument._to_monochrome_pixmap(pix)
+                    source = converted
+                elif pix.colorspace.n == 1:
+                    source = pix
+                else:
+                    converted = fitz.Pixmap(fitz.csGRAY, pix)
+                    source = converted
+                return source.tobytes("jpeg", jpg_quality=quality)
+
+            source = pix
+            if pix.colorspace.n == 1:
+                converted = fitz.Pixmap(fitz.csRGB, pix)
+                source = converted
+            elif pix.alpha:
+                converted = fitz.Pixmap(fitz.csRGB, pix)
+                source = converted
+            return source.tobytes("jpeg", jpg_quality=quality)
+        finally:
+            converted = None
+
+    @staticmethod
+    def _page_pixmap_for_rasterize(
+        page: fitz.Page,
+        target_rect: fitz.Rect,
+        render_dpi: int,
+    ) -> fitz.Pixmap | None:
+        page_rect = page.rect
+        if page_rect.width <= 0 or page_rect.height <= 0:
+            return None
+        scale_x = (target_rect.width / page_rect.width) * (render_dpi / 72.0)
+        scale_y = (target_rect.height / page_rect.height) * (render_dpi / 72.0)
+        matrix = fitz.Matrix(scale_x, scale_y)
+        try:
+            return page.get_pixmap(matrix=matrix, alpha=False)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _rasterize_single_page(
+        doc: fitz.Document,
+        page_index: int,
+        options: ReduceSizeOptions,
+    ) -> None:
+        page = doc[page_index]
+        target_rect = PdfDocument._rasterize_target_rect(page, options)
+        render_dpi = PdfDocument._rasterize_render_dpi(doc, page_index, options)
+        pix = PdfDocument._page_pixmap_for_rasterize(page, target_rect, render_dpi)
+        if pix is None:
+            return
+        try:
+            stream = PdfDocument._encode_raster_pixmap(pix, options)
+        finally:
+            pix = None
+
+        for annot in list(page.annots() or []):
+            try:
+                page.delete_annot(annot)
+            except Exception:
+                continue
+        page.add_redact_annot(page.rect)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+        page.set_mediabox(target_rect)
+        page.insert_image(
+            target_rect,
+            stream=stream,
+            keep_proportion=False,
+            overlay=False,
+        )
+
+    @staticmethod
+    def _rasterize_document(
+        doc: fitz.Document,
+        options: ReduceSizeOptions,
+        *,
+        page_progress: Callable[[int, int], None] | None = None,
+    ) -> None:
+        total = len(doc)
+        for index in range(total):
+            if page_progress is not None:
+                page_progress(index + 1, total)
+            try:
+                PdfDocument._rasterize_single_page(doc, index, options)
+            except Exception:
+                continue
+
+    @staticmethod
     def _compress_document(
         source: fitz.Document,
         options: ReduceSizeOptions,
@@ -1263,16 +1908,45 @@ class PdfDocument:
         """Build a reduced copy: recompress → post-process → geometry → resample → compact."""
         target_dpi = max(MIN_IMAGE_DPI, options.max_dpi)
         working = fitz.open(stream=source.tobytes(), filetype="pdf")
+
+        if options.rasterize:
+            try:
+                if status_callback is not None:
+                    fmt_label = PdfDocument._raster_format_label(options)
+                    status_callback(
+                        f"페이지를 픽셀 이미지({fmt_label})로 변환하는 중... "
+                        "(텍스트 검색·복사·선택은 유지되지 않습니다)"
+                    )
+                PdfDocument._rasterize_document(
+                    working,
+                    options,
+                    page_progress=page_progress,
+                )
+                if status_callback is not None:
+                    status_callback("마무리 처리 중...")
+                PdfDocument._apply_post_processing(working)
+                return PdfDocument._compact_document(working)
+            finally:
+                working.close()
+
         profile = PdfDocument.analyze_reduce_profile(working)
 
         if status_callback is not None:
-            if options.grayscale or options.monochrome:
+            if PdfDocument._uses_data_only_compress(options):
+                status_callback(
+                    "데이터만 압축 중... (미세 이미지 포함, 레이아웃·검색 유지)"
+                )
+            elif options.grayscale or options.monochrome:
                 mode = "단색조" if options.monochrome else "회색조"
                 status_callback(
                     f"이미지 재압축 및 {mode} 변환 중... (텍스트는 유지됩니다)"
                 )
             else:
                 status_callback("이미지 재압축하는 중... (텍스트는 유지됩니다)")
+        if status_callback is not None:
+            status_callback("중복 이미지 정리 중...")
+        dedup_merged = PdfDocument._deduplicate_embedded_images(working)
+
         if options.preset == "high":
             dpi_threshold: int | None = max(target_dpi + 1, 450)
         else:
@@ -1291,6 +1965,10 @@ class PdfDocument:
                 status_callback(
                     "일부 이미지 재압축을 건너뛰고 나머지 처리를 진행합니다..."
                 )
+
+        dedup_merged += PdfDocument._deduplicate_embedded_images(working)
+        if status_callback is not None and dedup_merged > 0:
+            status_callback(f"중복 이미지 {dedup_merged}개 병합됨")
 
         if status_callback is not None:
             status_callback("마무리 처리 중...")
@@ -1407,6 +2085,33 @@ class PdfDocument:
             after = len(after_bytes)
         finally:
             reduced.close()
+        self._touch()
+        if status_callback is not None:
+            status_callback(
+                f"완료: {format_file_size(before)} → {format_file_size(after)}"
+            )
+        return before, after
+
+    def apply_optimize_size(
+        self,
+        options: OptimizeSizeOptions,
+        *,
+        status_callback: Callable[[str], None] | None = None,
+    ) -> tuple[int, int]:
+        if len(self._doc) == 0:
+            raise ValueError("페이지가 없습니다.")
+        if status_callback is not None:
+            status_callback("용량 줄이기(신규)를 시작합니다...")
+        before = len(self.save_to_bytes())
+        self._record_undo_checkpoint()
+        payload = PdfDocument.build_optimized_payload(
+            self.save_to_bytes(),
+            options,
+            status_callback=status_callback,
+        )
+        after = len(payload)
+        self._doc.close()
+        self._doc = fitz.open(stream=payload, filetype="pdf")
         self._touch()
         if status_callback is not None:
             status_callback(
@@ -1704,26 +2409,34 @@ class PdfDocument:
         finally:
             out.close()
 
+    @staticmethod
+    def _sanitize_export_basename(name: str) -> str:
+        for ch in '<>:"/\\|?*':
+            name = name.replace(ch, "_")
+        cleaned = name.strip(" .")
+        return cleaned or "document"
+
     def export_pages_as_images(
         self,
         indices: list[int],
         folder: str,
-        image_format: str = "png",
-        dpi: int = 150,
+        *,
+        base_name: str | None = None,
     ) -> list[str]:
         if not indices:
             raise ValueError("보낼 페이지를 선택하세요.")
         folder_path = Path(folder)
         folder_path.mkdir(parents=True, exist_ok=True)
-        ext = image_format.lower().lstrip(".")
+        stem = self._sanitize_export_basename(
+            base_name if base_name is not None else Path(self.display_name).stem
+        )
         saved: list[str] = []
-        zoom = dpi / 72
-        matrix = fitz.Matrix(zoom, zoom)
+        matrix = fitz.Identity
         for index in sorted(indices):
             if 0 <= index < len(self._doc):
                 page = self._doc[index]
-                pix = page.get_pixmap(matrix=matrix, alpha=False)
-                filename = folder_path / f"page_{index + 1:04d}.{ext}"
+                pix = page.get_pixmap(matrix=matrix, alpha=False, annots=True)
+                filename = folder_path / f"{stem}_{index + 1}.png"
                 pix.save(str(filename))
                 saved.append(str(filename))
         return saved
