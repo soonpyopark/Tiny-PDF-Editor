@@ -56,6 +56,12 @@ DROP_INDICATOR_WIDTH = 2
 DROP_INDICATOR_TICK = 7
 
 
+def _menu_action_text(label: str, standard_key: QKeySequence.StandardKey) -> str:
+    """Show shortcut in menu label without registering a duplicate QAction shortcut."""
+    seq = QKeySequence(standard_key)
+    return f"{label}\t{seq.toString(QKeySequence.SequenceFormat.NativeText)}"
+
+
 def thumb_scale_for_level(level: int) -> int:
     """Return pixel width for 1-based level (1..4)."""
     index = max(1, min(len(THUMB_SCALE_LEVELS), level)) - 1
@@ -845,23 +851,18 @@ class ThumbnailListWidget(QListWidget):
 
         menu = QMenu(self)
         can_undo, can_redo = self._history_state()
-        act_undo = menu.addAction("되돌리기")
-        act_undo.setShortcut(QKeySequence.StandardKey.Undo)
+        act_undo = menu.addAction(_menu_action_text("되돌리기", QKeySequence.StandardKey.Undo))
         act_undo.setEnabled(can_undo)
         act_undo.triggered.connect(lambda: self.context_action.emit("undo"))
-        act_redo = menu.addAction("재실행")
-        act_redo.setShortcut(QKeySequence.StandardKey.Redo)
+        act_redo = menu.addAction(_menu_action_text("재실행", QKeySequence.StandardKey.Redo))
         act_redo.setEnabled(can_redo)
         act_redo.triggered.connect(lambda: self.context_action.emit("redo"))
         menu.addSeparator()
-        act_copy = menu.addAction("복사")
-        act_copy.setShortcut(QKeySequence.StandardKey.Copy)
+        act_copy = menu.addAction(_menu_action_text("복사", QKeySequence.StandardKey.Copy))
         act_copy.triggered.connect(lambda: self.context_action.emit("copy"))
-        act_cut = menu.addAction("잘라내기")
-        act_cut.setShortcut(QKeySequence.StandardKey.Cut)
+        act_cut = menu.addAction(_menu_action_text("잘라내기", QKeySequence.StandardKey.Cut))
         act_cut.triggered.connect(lambda: self.context_action.emit("cut"))
-        act_paste = menu.addAction("붙여넣기")
-        act_paste.setShortcut(QKeySequence.StandardKey.Paste)
+        act_paste = menu.addAction(_menu_action_text("붙여넣기", QKeySequence.StandardKey.Paste))
         act_paste.setEnabled(PageClipboard.has_pages())
         act_paste.triggered.connect(lambda: self.paste_at_index.emit(insert_index))
         menu.addAction("이미지로 저장", lambda: self.context_action.emit("export_images"))

@@ -59,7 +59,6 @@ from pdf_editor.version import (
   APP_NAME,
   AUTHOR_LINK_TEXT,
   AUTHOR_URL,
-  THUMB_FOOTER_LINK_TEXT,
   __version__,
   titled_name,
   version_label,
@@ -387,26 +386,6 @@ class DocumentTab(QWidget):
     self.thumbnails.set_document(document)
     left_layout.addWidget(self.thumbnails, 1)
 
-    guide_footer = QWidget()
-    guide_footer.setObjectName("thumbGuideFooter")
-    guide_footer.setFixedHeight(28)
-    guide_layout = QHBoxLayout(guide_footer)
-    guide_layout.setContentsMargins(6, 0, 4, 0)
-    guide_layout.setSpacing(0)
-    guide_link = QLabel(f'<a href="{AUTHOR_URL}">{THUMB_FOOTER_LINK_TEXT}</a>')
-    guide_link.setObjectName("thumbGuideLink")
-    guide_link.setTextFormat(Qt.TextFormat.RichText)
-    guide_link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-    guide_link.setOpenExternalLinks(False)
-    guide_link.linkActivated.connect(
-      lambda href: QDesktopServices.openUrl(QUrl(href))
-    )
-    guide_link.setCursor(Qt.CursorShape.PointingHandCursor)
-    guide_layout.addStretch(1)
-    guide_layout.addWidget(guide_link)
-    guide_layout.addStretch(1)
-    left_layout.addWidget(guide_footer)
-
     self.viewer = PageViewer()
     self.viewer.set_document(document)
 
@@ -463,19 +442,7 @@ class DocumentTab(QWidget):
     )
 
     self._setup_page_navigation_shortcuts()
-    self._setup_history_shortcuts()
-    self._setup_clipboard_shortcuts()
     self._sync_thumb_zoom_buttons()
-
-  def _setup_clipboard_shortcuts(self) -> None:
-    for sequence, slot in (
-      (QKeySequence.StandardKey.Copy, self._on_copy_pages_shortcut),
-      (QKeySequence.StandardKey.Cut, self._on_cut_pages_shortcut),
-      (QKeySequence.StandardKey.Paste, self._on_paste_pages_shortcut),
-    ):
-      shortcut = QShortcut(sequence, self)
-      shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-      shortcut.activated.connect(slot)
 
   def _page_indices_for_clipboard(self) -> list[int]:
     return self.thumbnails.copy_indices()
@@ -589,16 +556,6 @@ class DocumentTab(QWidget):
     window = self.window()
     if isinstance(window, MainWindow):
       window._update_edit_actions()
-
-  def _setup_history_shortcuts(self) -> None:
-    for sequence, slot in (
-      (QKeySequence.StandardKey.Undo, self._on_undo),
-      (QKeySequence.StandardKey.Redo, self._on_redo),
-      (QKeySequence("Ctrl+Y"), self._on_redo),
-    ):
-      shortcut = QShortcut(sequence, self)
-      shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-      shortcut.activated.connect(slot)
 
   def _on_undo(self) -> None:
     if not self.document.undo():
@@ -911,7 +868,6 @@ class MainWindow(QMainWindow):
     self.statusBar().setSizeGripEnabled(True)
     self.statusBar().showMessage("준비")
 
-    QShortcut(QKeySequence.StandardKey.Find, self, self._focus_search)
     QShortcut(QKeySequence("F3"), self, self._search_next)
     QShortcut(QKeySequence("Shift+F3"), self, self._search_prev)
 
@@ -1076,9 +1032,7 @@ class MainWindow(QMainWindow):
     edit_menu.addAction(self._act_undo)
 
     self._act_redo = QAction("재실행(&R)", self)
-    self._act_redo.setShortcuts(
-      [QKeySequence.StandardKey.Redo, QKeySequence("Ctrl+Y")]
-    )
+    self._act_redo.setShortcut(QKeySequence.StandardKey.Redo)
     self._act_redo.triggered.connect(self._redo_current_tab)
     edit_menu.addAction(self._act_redo)
 
@@ -1187,22 +1141,6 @@ class MainWindow(QMainWindow):
         text-decoration: none;
       }}
       #statusCredit a:hover {{
-        color: #1a73e8;
-        text-decoration: underline;
-      }}
-      #thumbGuideFooter {{
-        background-color: #f0f0f0;
-        border-top: 1px solid #d6d6d6;
-      }}
-      #thumbGuideLink {{
-        color: #666666;
-        font-size: 11px;
-      }}
-      #thumbGuideLink a {{
-        color: #666666;
-        text-decoration: none;
-      }}
-      #thumbGuideLink a:hover {{
         color: #1a73e8;
         text-decoration: underline;
       }}

@@ -10,7 +10,6 @@ AUTHOR_URL = (
     "TIny%20PDF%20Editor"
 )
 AUTHOR_LINK_TEXT = "https://note4all.tistory.com"
-THUMB_FOOTER_LINK_TEXT = "모두의 노트 소프트웨어 연구소"
 
 
 def version_label() -> str:
