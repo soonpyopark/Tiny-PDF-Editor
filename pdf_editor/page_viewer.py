@@ -58,6 +58,23 @@ _LOG_TAB_STYLE = """
         color: #ffffff;
     }
 """
+_LOG_CLOSE_STYLE = """
+    QPushButton {
+        color: #aaaaaa;
+        background: transparent;
+        border: none;
+        border-radius: 4px;
+        padding: 2px 6px;
+        font-size: 14px;
+        font-weight: 600;
+        min-width: 24px;
+        max-width: 24px;
+    }
+    QPushButton:hover {
+        background-color: #5a2020;
+        color: #ffcccc;
+    }
+"""
 
 
 def _edge_nav_icon(to_first: bool) -> QIcon:
@@ -359,6 +376,14 @@ class PageViewer(QWidget):
         self._log_tab_btn.clicked.connect(self._toggle_log_panel)
         log_header_layout.addWidget(self._log_tab_btn, 0, Qt.AlignmentFlag.AlignLeft)
         log_header_layout.addStretch(1)
+
+        self._log_close_btn = QPushButton("×")
+        self._log_close_btn.setFlat(True)
+        self._log_close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._log_close_btn.setToolTip("터미널 닫기")
+        self._log_close_btn.setStyleSheet(_LOG_CLOSE_STYLE)
+        self._log_close_btn.clicked.connect(self.hide_log_panel)
+        log_header_layout.addWidget(self._log_close_btn, 0, Qt.AlignmentFlag.AlignRight)
 
         self.log_panel = QPlainTextEdit()
         self.log_panel.setReadOnly(True)

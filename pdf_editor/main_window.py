@@ -37,7 +37,6 @@ from pdf_editor.document import PdfDocument, SearchHit, SUPPORTED_FILE_FILTER, f
 from pdf_editor.page_clipboard import PageClipboard
 from pdf_editor.page_viewer import PageViewer
 from pdf_editor.reduce_size_dialog import ReduceSizeDialog
-from pdf_editor.reduce_size_new_dialog import ReduceSizeNewDialog
 from pdf_editor.resources import (
   apply_windows_window_icon,
   init_platform,
@@ -911,7 +910,7 @@ class MainWindow(QMainWindow):
     QShortcut(QKeySequence("Shift+F3"), self, self._search_prev)
 
     self._pending_launch_paths = list(launch_paths or [])
-    self._optimize_new_running = False
+    self._optimize_running = False
     if self._pending_launch_paths:
       QTimer.singleShot(0, self._open_pending_launch_paths)
     else:
@@ -1102,15 +1101,6 @@ class MainWindow(QMainWindow):
     reduce_btn.clicked.connect(self._open_reduce_size_dialog)
     act_reduce.setDefaultWidget(reduce_btn)
     edit_menu.addAction(act_reduce)
-
-    act_reduce_new = QWidgetAction(self)
-    reduce_new_btn = QPushButton("용량 줄이기(신규)...")
-    reduce_new_btn.setFlat(True)
-    reduce_new_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    reduce_new_btn.setStyleSheet(_REDUCE_MENU_BTN_STYLE)
-    reduce_new_btn.clicked.connect(self._open_reduce_size_new_dialog)
-    act_reduce_new.setDefaultWidget(reduce_new_btn)
-    edit_menu.addAction(act_reduce_new)
 
     act_find = QAction("텍스트 검색...", self)
     act_find.setShortcut(QKeySequence.StandardKey.Find)
@@ -1565,37 +1555,14 @@ class MainWindow(QMainWindow):
     if tab is None or tab.document.page_count == 0:
       QMessageBox.information(self, "용량 줄이기", "페이지가 있는 문서를 열어주세요.")
       return
-    tab.document.pause_rendering()
-    accepted = False
-    dialog: ReduceSizeDialog | None = None
-    try:
-      dialog = ReduceSizeDialog(tab.document, parent=self)
-      accepted = dialog.exec() == QDialog.DialogCode.Accepted
-    finally:
-      tab.document.resume_rendering()
-    if not accepted or dialog is None:
-      return
-    tab.thumbnails.refresh()
-    tab.viewer.refresh()
-    self._update_edit_actions()
-    self.statusBar().showMessage(
-      f"용량 줄이기 완료: {format_file_size(dialog.result_before)}"
-      f" → {format_file_size(dialog.result_after)}"
-    )
-
-  def _open_reduce_size_new_dialog(self) -> None:
-    tab = self._current_tab()
-    if tab is None or tab.document.page_count == 0:
-      QMessageBox.information(self, "용량 줄이기(신규)", "페이지가 있는 문서를 열어주세요.")
-      return
-    if self._optimize_new_running:
+    if self._optimize_running:
       QMessageBox.information(
         self,
-        "용량 줄이기(신규)",
+        "용량 줄이기",
         "이미 용량 줄이기 작업이 진행 중입니다.",
       )
       return
-    dialog = ReduceSizeNewDialog(tab.document, parent=self)
+    dialog = ReduceSizeDialog(tab.document, parent=self)
     if dialog.exec() != QDialog.DialogCode.Accepted:
       return
     options = dialog.selected_options()
@@ -1603,15 +1570,15 @@ class MainWindow(QMainWindow):
 
     tab.document.pause_rendering()
     tab.viewer.show_log_panel()
-    tab.viewer.append_log_line("> 용량 줄이기(신규) 작업을 시작합니다...")
-    tab.viewer.show_busy_message("용량 줄이기(신규) 진행 중...")
-    self._optimize_new_running = True
+    tab.viewer.append_log_line("> 용량 줄이기 작업을 시작합니다...")
+    tab.viewer.show_busy_message("용량 줄이기 진행 중...")
+    self._optimize_running = True
     QTimer.singleShot(
       0,
-      lambda: self._run_optimize_new(tab, options, source_bytes),
+      lambda: self._run_optimize(tab, options, source_bytes),
     )
 
-  def _run_optimize_new(self, tab: DocumentTab, options, source_bytes: bytes) -> None:
+  def _run_optimize(self, tab: DocumentTab, options, source_bytes: bytes) -> None:
     before = len(source_bytes)
     last_image_log = {"text": ""}
     applied = False
@@ -1639,14 +1606,14 @@ class MainWindow(QMainWindow):
         f"완료: {format_file_size(before)} → {format_file_size(after)}"
       )
       self.statusBar().showMessage(
-        f"용량 줄이기(신규) 완료: {format_file_size(before)}"
+        f"용량 줄이기 완료: {format_file_size(before)}"
         f" → {format_file_size(after)}"
       )
     except Exception as exc:
       tab.viewer.append_log_line(f"오류: {exc}")
-      QMessageBox.critical(self, "용량 줄이기(신규) 오류", str(exc))
+      QMessageBox.critical(self, "용량 줄이기 오류", str(exc))
     finally:
-      self._optimize_new_running = False
+      self._optimize_running = False
       tab.document.resume_rendering()
       tab.viewer.hide_busy_message()
       if applied:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import io
 import os
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,24 +29,14 @@ class SearchHit:
 
 @dataclass(frozen=True)
 class ReduceSizeOptions:
-    """Settings for PDF size reduction."""
+    """Internal image recompress settings used by optimize."""
 
-    preset: str = "balanced"
     jpeg_quality: int = 50
     max_dpi: int = 150
-    image_size_percent: int = 50
-    geometry_mode: str = "both"
-    grayscale: bool = False
-    monochrome: bool = False
-    rasterize: bool = False
-    raster_format: str = "auto"
-    compress_mode: str = "standard"
+    image_size_percent: int = 100
 
 
-COMPRESS_MODE_STANDARD = "standard"
-COMPRESS_MODE_DATA_ONLY = "data_only"
-
-OPTIMIZE_DPI_CHOICES = (36, 48, 72, 96, 120, 150, 200, 300)
+OPTIMIZE_DPI_CHOICES = (36, 48, 72, 96, 120, 150, 200, 300, 400, 600)
 OPTIMIZE_DEFAULT_JPEG_QUALITY = 25
 # Distiller PDFs use tiny FlateDecode tiles; JPEG is ~30x larger — preserve them.
 OPTIMIZE_PRESERVE_FLATE_MAX_BYTES = 4096
@@ -58,52 +47,14 @@ class OptimizeSizeOptions:
     """Acrobat-style optimize settings (data-only image recompress + cleanup)."""
 
     image_dpi: int = 72
-    jpeg_quality: int = OPTIMIZE_DEFAULT_JPEG_QUALITY
+    image_quality_percent: int = 100
+    image_size_percent: int = 100
     remove_duplicate_resources: bool = True
     compress_streams: bool = True
     compress_fonts: bool = True
-    delete_bookmarks: bool = False
-    delete_attachments: bool = False
-    delete_metadata: bool = True
-    delete_annotations_and_forms: bool = False
 
 
-GEOMETRY_MODE_BOTH = "both"
-GEOMETRY_MODE_PAGE_ONLY = "page_only"
-GEOMETRY_MODE_CONTENT_ONLY = "content_only"
-
-RASTER_FORMAT_AUTO = "auto"
-RASTER_FORMAT_JPEG = "jpeg"
-RASTER_FORMAT_GRAY_JPEG = "gray_jpeg"
-
-_PDF_NUMBER = rb"-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?"
-
-_LEADING_UNIFORM_SCALE_RE = re.compile(
-    rb"^\s*q\s+(" + _PDF_NUMBER + rb")\s+0\s+0\s+"
-    rb"(" + _PDF_NUMBER + rb")\s+0\s+0\s+cm\s*",
-    re.DOTALL,
-)
-_LEADING_PUBLISHER_FLIP_RE = re.compile(
-    rb"^\s*(" + _PDF_NUMBER + rb")\s+0\s+0\s+"
-    rb"(" + _PDF_NUMBER + rb")\s+0\s+(" + _PDF_NUMBER + rb")\s+cm\s*",
-    re.DOTALL,
-)
-_LEADING_RASTER_STRETCH_RE = re.compile(
-    rb"^\s*q\s+(" + _PDF_NUMBER + rb")\s+(" + _PDF_NUMBER + rb")\s+("
-    + _PDF_NUMBER + rb")\s+(" + _PDF_NUMBER + rb")\s+("
-    + _PDF_NUMBER + rb")\s+(" + _PDF_NUMBER + rb")\s+cm(\s*.*)$",
-    re.DOTALL,
-)
-_IMAGE_DO_CM_RE = re.compile(
-    rb"(" + _PDF_NUMBER + rb")\s+(" + _PDF_NUMBER + rb")\s+("
-    + _PDF_NUMBER + rb")\s+(" + _PDF_NUMBER + rb")\s+("
-    + _PDF_NUMBER + rb")\s+(" + _PDF_NUMBER + rb")\s+cm\s*/(\w+)\s+Do",
-)
-_FULLPAGE_RASTER_COVERAGE = 0.65
-_PROFILE_SAMPLE_PAGES = 20
 _MICRO_IMAGE_MAX_PT = 12.0
-_MICRO_IMAGE_RATIO_THRESHOLD = 0.35
-_DISTILLER_MICRO_RATIO_THRESHOLD = 0.20
 _MAX_UNDO_LEVELS = 50
 
 
@@ -116,145 +67,11 @@ PDF_SAVE_KWARGS: dict[str, object] = {
 }
 
 
-PRESET_OPTIONS: dict[str, ReduceSizeOptions] = {
-    "maximum": ReduceSizeOptions(
-        preset="maximum",
-        jpeg_quality=55,
-        max_dpi=72,
-        grayscale=True,
-    ),
-    "balanced": ReduceSizeOptions(
-        preset="balanced",
-        jpeg_quality=50,
-        max_dpi=150,
-        image_size_percent=50,
-        grayscale=False,
-    ),
-    "high": ReduceSizeOptions(
-        preset="high",
-        jpeg_quality=92,
-        max_dpi=300,
-        grayscale=False,
-    ),
-    "data_only": ReduceSizeOptions(
-        preset="data_only",
-        compress_mode=COMPRESS_MODE_DATA_ONLY,
-        jpeg_quality=45,
-        max_dpi=72,
-        image_size_percent=100,
-        geometry_mode=GEOMETRY_MODE_PAGE_ONLY,
-        grayscale=False,
-    ),
-}
-
-
 def format_file_size(num_bytes: int) -> str:
     mb = num_bytes / (1024 * 1024)
     if mb >= 0.1:
         return f"{mb:.1f} MB"
     return f"{num_bytes / 1024:.0f} KB"
-
-
-CONTENT_KIND_EMPTY = "empty"
-CONTENT_KIND_PUBLISHER_FLIP = "publisher_flip"
-CONTENT_KIND_RASTER_STRETCH = "raster_stretch"
-CONTENT_KIND_UNIFORM = "uniform"
-CONTENT_KIND_PLAIN = "plain"
-
-# Reduce-time geometry cases handled in ``scale_content_stream_for_reduce``:
-# - publisher_flip: ``sx 0 0 -sy 0 ty cm`` (출판/교과서 Y축 뒤집기) → scale + ty together
-# - raster_stretch: ``q sx 0 0 sy e f cm /Img Do`` (풀페이지·다중 레이어 래스터) → scale all cm/Do
-# - uniform: ``q s 0 0 s 0 0 cm`` (인쇄용 내장 배율) → replace leading scale, no nest
-# - plain: vector/text or unknown → wrap once in BOTH/CONTENT_ONLY; PAGE_ONLY mediabox only
-# - empty: ``q`` / ``Q`` wrappers → never modify (multi-stream pages stay intact)
-#
-# Image cases handled in resample/recompress:
-# - /SMask soft masks → always ``replace_image`` (never manual /Mask rewrite)
-# - skip when effective DPI already <= target and dimensions unchanged
-# - JBIG2 / undecodable images → skip safely via ``_safe_pixmap_from_xref``
-
-_CONTENT_KIND_PRIORITY = (
-    CONTENT_KIND_PUBLISHER_FLIP,
-    CONTENT_KIND_RASTER_STRETCH,
-    CONTENT_KIND_UNIFORM,
-    CONTENT_KIND_PLAIN,
-    CONTENT_KIND_EMPTY,
-)
-
-
-@dataclass(frozen=True)
-class PageReduceGeometry:
-    """Per-page geometry hints collected before scaling."""
-
-    is_fullpage_raster: bool
-    content_kinds: tuple[str, ...]
-
-    @property
-    def dominant_kind(self) -> str:
-        for kind in _CONTENT_KIND_PRIORITY:
-            if kind in self.content_kinds:
-                return kind
-        return CONTENT_KIND_PLAIN
-
-    @property
-    def has_transform_stream(self) -> bool:
-        return any(
-            kind
-            for kind in self.content_kinds
-            if kind
-            not in (
-                CONTENT_KIND_EMPTY,
-                CONTENT_KIND_PLAIN,
-            )
-        )
-
-
-@dataclass(frozen=True)
-class DocumentReduceProfile:
-    """Heuristics for publisher / raster PDFs that need careful geometry scaling."""
-
-    embedded_uniform_scale: float | None = None
-    publisher_flip_scale: float | None = None
-    fullpage_raster_ratio: float = 0.0
-    distiller_print_pdf: bool = False
-    micro_image_ratio: float = 0.0
-
-    @property
-    def prefers_compression_only(self) -> bool:
-        """True when geometry downscale is likely to break mixed text/raster layouts."""
-        if self.micro_image_ratio >= _MICRO_IMAGE_RATIO_THRESHOLD:
-            return True
-        if (
-            self.distiller_print_pdf
-            and self.micro_image_ratio >= _DISTILLER_MICRO_RATIO_THRESHOLD
-        ):
-            return True
-        return False
-
-    @property
-    def prefers_page_only(self) -> bool:
-        if self.prefers_compression_only:
-            return True
-        if self.fullpage_raster_ratio >= 0.5:
-            return True
-        if self.publisher_flip_scale is not None:
-            return True
-        if self.embedded_uniform_scale is not None:
-            return True
-        return False
-
-    @property
-    def prefers_individual_image_recompress(self) -> bool:
-        """Use per-image recompress so micro-image skips can be applied."""
-        return self.prefers_compression_only or self.micro_image_ratio >= 0.15
-
-    @property
-    def recommends_data_only_compress(self) -> bool:
-        """True when Acrobat-style data-only compression is likely effective."""
-        return (
-            self.distiller_print_pdf
-            and self.micro_image_ratio >= _DISTILLER_MICRO_RATIO_THRESHOLD
-        )
 
 
 class PdfDocument:
@@ -426,10 +243,6 @@ class PdfDocument:
         doc.save(buffer, **PDF_SAVE_KWARGS)
         return buffer.getvalue()
 
-    @staticmethod
-    def _measure_doc_bytes(doc: fitz.Document) -> int:
-        return len(PdfDocument._serialize_doc_bytes(doc))
-
     def current_file_size(self) -> int:
         return len(self.save_to_bytes())
 
@@ -446,14 +259,6 @@ class PdfDocument:
         if pix.colorspace is None:
             return None
         return pix
-
-    @staticmethod
-    def _to_monochrome_pixmap(pix: fitz.Pixmap, threshold: int = 128) -> fitz.Pixmap:
-        gray = fitz.Pixmap(fitz.csGRAY, pix)
-        samples = bytearray(gray.samples)
-        for index in range(len(samples)):
-            samples[index] = 255 if samples[index] >= threshold else 0
-        return fitz.Pixmap(fitz.csGRAY, gray.width, gray.height, bytes(samples), False)
 
     @staticmethod
     def _collect_image_smask_map(doc: fitz.Document) -> dict[int, int]:
@@ -503,120 +308,10 @@ class PdfDocument:
         doc.update_stream(xref, stream)
 
     @staticmethod
-    def _replace_image_jpeg_preserving_mask(
-        doc: fitz.Document,
-        xref: int,
-        *,
-        stream: bytes,
-        width: int,
-        height: int,
-        mask_xref: int,
-    ) -> None:
-        """Replace an image with gray JPEG while keeping its PDF /Mask reference."""
-        PdfDocument._replace_image_stream_preserving_mask(
-            doc,
-            xref,
-            stream=stream,
-            width=width,
-            height=height,
-            mask_xref=mask_xref,
-            colorspace="DeviceGray",
-        )
-
-    @staticmethod
-    def _convert_embedded_images_color_mode(
-        doc: fitz.Document,
-        options: ReduceSizeOptions,
-    ) -> None:
-        """Convert embedded color images to gray or monochrome; text is untouched."""
-        if not (options.grayscale or options.monochrome):
-            return
-
-        quality = max(1, min(100, options.jpeg_quality))
-        processed: set[int] = set()
-        micro_xrefs: set[int] = set()
-        include_micro = PdfDocument._include_micro_images_in_recompress(options)
-        for xref, (display_rect, _page_index, _smask) in PdfDocument._collect_image_resize_targets(
-            doc
-        ).items():
-            if not include_micro and PdfDocument._is_micro_image_rect(display_rect):
-                micro_xrefs.add(xref)
-        for page in doc:
-            for img in page.get_images(full=True):
-                xref = img[0]
-                if xref in processed or xref in micro_xrefs:
-                    continue
-                processed.add(xref)
-                pix = PdfDocument._safe_pixmap_from_xref(doc, xref)
-                if pix is None:
-                    continue
-
-                converted: fitz.Pixmap | None = None
-                try:
-                    if options.monochrome:
-                        if pix.colorspace.n == 1 and pix.samples:
-                            converted = pix
-                        else:
-                            converted = PdfDocument._to_monochrome_pixmap(pix)
-                    elif pix.colorspace.n == 1:
-                        continue
-                    else:
-                        converted = fitz.Pixmap(fitz.csGRAY, pix)
-
-                    stream = converted.tobytes("jpeg", jpg_quality=quality)
-                    page.replace_image(xref, stream=stream)
-                except Exception:
-                    continue
-                finally:
-                    converted = None
-                    pix = None
-
-    @staticmethod
-    def _uses_data_only_compress(options: ReduceSizeOptions) -> bool:
-        return options.compress_mode == COMPRESS_MODE_DATA_ONLY
-
-    @staticmethod
-    def _include_micro_images_in_recompress(options: ReduceSizeOptions) -> bool:
-        return PdfDocument._uses_data_only_compress(options)
-
-    @staticmethod
     def _is_micro_image_rect(display_rect: fitz.Rect) -> bool:
         if display_rect.is_empty:
             return True
         return max(display_rect.width, display_rect.height) < _MICRO_IMAGE_MAX_PT
-
-    @staticmethod
-    def _is_distiller_print_pdf(doc: fitz.Document) -> bool:
-        meta = doc.metadata or {}
-        creator = (meta.get("creator") or "").lower()
-        producer = (meta.get("producer") or "").lower()
-        return "pscript" in creator or "distiller" in producer
-
-    @staticmethod
-    def _sample_micro_image_ratio(doc: fitz.Document, page_indices: list[int]) -> float:
-        total = 0
-        micro = 0
-        for page_index in page_indices:
-            if page_index < 0 or page_index >= len(doc):
-                continue
-            page = doc[page_index]
-            try:
-                images = page.get_images(full=True)
-            except Exception:
-                continue
-            for img in images:
-                xref = img[0]
-                try:
-                    rects = page.get_image_rects(xref)
-                except Exception:
-                    continue
-                for rect in rects:
-                    total += 1
-                    if PdfDocument._is_micro_image_rect(rect):
-                        micro += 1
-        if total == 0:
-            return 0.0
-        return micro / total
 
     @staticmethod
     def _pixmap_for_jpeg_export(pix: fitz.Pixmap) -> fitz.Pixmap:
@@ -663,6 +358,7 @@ class PdfDocument:
         preserve_small_flate_max_bytes: int | None = None,
         require_smaller_stream: bool = False,
         smask_xref: int = 0,
+        image_size_percent: int = 100,
     ) -> bool:
         """Downsample one embedded image to its on-page display size; return True if updated."""
         if display_rect.is_empty:
@@ -682,6 +378,11 @@ class PdfDocument:
 
         target_w = max(1, int(display_rect.width * target_dpi / 72))
         target_h = max(1, int(display_rect.height * target_dpi / 72))
+        size_scale = max(1, min(100, image_size_percent)) / 100.0
+        if size_scale < 1.0:
+            target_w = max(1, int(target_w * size_scale))
+            target_h = max(1, int(target_h * size_scale))
+        effective_target_dpi = target_dpi * size_scale
 
         pix = PdfDocument._safe_pixmap_from_xref(doc, xref)
         if pix is None:
@@ -701,7 +402,7 @@ class PdfDocument:
             if (
                 skip_if_display_dpi_met
                 and not resized
-                and effective_dpi <= target_dpi
+                and effective_dpi <= effective_target_dpi
             ):
                 return False
             jpeg_pix = PdfDocument._pixmap_for_jpeg_export(scaled)
@@ -749,7 +450,6 @@ class PdfDocument:
         """Recompress each embedded image; skip images that cannot be decoded."""
         quality = max(1, min(100, options.jpeg_quality))
         targets = PdfDocument._collect_image_resize_targets(doc)
-        include_micro = PdfDocument._include_micro_images_in_recompress(options)
         total = len(targets)
         progress_stride = max(1, total // 50) if total else 1
 
@@ -771,10 +471,11 @@ class PdfDocument:
                 if dpi_threshold is not None
                 else None,
                 skip_if_display_dpi_met=skip_if_display_dpi_met,
-                include_micro=include_micro,
+                include_micro=True,
                 preserve_small_flate_max_bytes=preserve_small_flate_max_bytes,
                 require_smaller_stream=require_smaller_stream,
                 smask_xref=smask,
+                image_size_percent=options.image_size_percent,
             )
 
     @staticmethod
@@ -784,50 +485,22 @@ class PdfDocument:
         *,
         target_dpi: int,
         dpi_threshold: int | None,
-        profile: DocumentReduceProfile | None = None,
         image_progress: Callable[[int, int], None] | None = None,
         preserve_small_flate_max_bytes: int | None = None,
         require_smaller_stream: bool = False,
         skip_if_display_dpi_met: bool = False,
     ) -> None:
         """Recompress embedded images only; do not recolor or outline text."""
-        if profile is None:
-            profile = PdfDocument.analyze_reduce_profile(doc)
-        data_only = PdfDocument._uses_data_only_compress(options)
-        bulk_ok = False
-        if not data_only and not profile.prefers_individual_image_recompress:
-            try:
-                doc.rewrite_images(
-                    dpi_threshold=dpi_threshold,
-                    dpi_target=target_dpi,
-                    quality=options.jpeg_quality,
-                    set_to_gray=False,
-                )
-                bulk_ok = True
-            except Exception:
-                bulk_ok = False
-        if not bulk_ok:
-            PdfDocument._recompress_images_individually(
-                doc,
-                options,
-                target_dpi=target_dpi,
-                dpi_threshold=dpi_threshold,
-                image_progress=image_progress,
-                preserve_small_flate_max_bytes=preserve_small_flate_max_bytes,
-                require_smaller_stream=require_smaller_stream,
-                skip_if_display_dpi_met=skip_if_display_dpi_met,
-            )
-        PdfDocument._convert_embedded_images_color_mode(doc, options)
-
-    @staticmethod
-    def _apply_post_processing(doc: fitz.Document) -> None:
-        doc.set_metadata({})
-        if hasattr(doc, "del_xml_metadata"):
-            doc.del_xml_metadata()
-        try:
-            doc.subset_fonts()
-        except Exception:
-            pass
+        PdfDocument._recompress_images_individually(
+            doc,
+            options,
+            target_dpi=target_dpi,
+            dpi_threshold=dpi_threshold,
+            image_progress=image_progress,
+            preserve_small_flate_max_bytes=preserve_small_flate_max_bytes,
+            require_smaller_stream=require_smaller_stream,
+            skip_if_display_dpi_met=skip_if_display_dpi_met,
+        )
 
     _DEDUP_DICT_KEYS = (
         "Width",
@@ -1009,32 +682,13 @@ class PdfDocument:
         return PdfDocument._apply_image_dedup_redirect(doc, redirect)
 
     @staticmethod
-    def _delete_pdf_annotations_and_forms(doc: fitz.Document) -> int:
-        removed = 0
-        for page in doc:
-            for annot in list(page.annots() or []):
-                try:
-                    page.delete_annot(annot)
-                    removed += 1
-                except Exception:
-                    continue
-            for widget in list(page.widgets() or []):
-                try:
-                    page.delete_widget(widget)
-                    removed += 1
-                except Exception:
-                    continue
-        return removed
-
-    @staticmethod
-    def _delete_pdf_attachments(doc: fitz.Document) -> int:
-        names = list(doc.embfile_names())
-        for name in names:
-            try:
-                doc.embfile_del(name)
-            except Exception:
-                continue
-        return len(names)
+    def _optimize_jpeg_quality(quality_percent: int) -> int:
+        """Map UI quality % (100 = default optimize baseline) to JPEG quality."""
+        pct = max(1, min(100, quality_percent))
+        return max(
+            5,
+            min(95, round(OPTIMIZE_DEFAULT_JPEG_QUALITY * pct / 100)),
+        )
 
     @staticmethod
     def _optimize_save_kwargs(options: OptimizeSizeOptions) -> dict[str, object]:
@@ -1079,12 +733,11 @@ class PdfDocument:
                     "(레이아웃·검색 유지)"
                 )
             reduce_opts = ReduceSizeOptions(
-                preset="optimize",
-                compress_mode=COMPRESS_MODE_DATA_ONLY,
                 max_dpi=max(MIN_IMAGE_DPI, options.image_dpi),
-                jpeg_quality=options.jpeg_quality,
-                image_size_percent=100,
-                geometry_mode=GEOMETRY_MODE_PAGE_ONLY,
+                jpeg_quality=PdfDocument._optimize_jpeg_quality(
+                    options.image_quality_percent
+                ),
+                image_size_percent=max(1, min(100, options.image_size_percent)),
             )
             target_dpi = max(MIN_IMAGE_DPI, options.image_dpi)
             dpi_threshold = target_dpi + 1
@@ -1109,33 +762,6 @@ class PdfDocument:
                 dedup_merged = PdfDocument._deduplicate_embedded_images(working)
                 if status_callback is not None and dedup_merged > 0:
                     status_callback(f"중복 리소스 {dedup_merged}개 병합됨")
-
-            if options.delete_bookmarks:
-                if status_callback is not None:
-                    status_callback("북마크 삭제 중...")
-                try:
-                    working.set_toc([])
-                except Exception:
-                    pass
-
-            if options.delete_attachments:
-                removed = PdfDocument._delete_pdf_attachments(working)
-                if status_callback is not None and removed:
-                    status_callback(f"첨부 파일 {removed}개 삭제됨")
-
-            if options.delete_annotations_and_forms:
-                if status_callback is not None:
-                    status_callback("메모 및 양식 삭제 중...")
-                removed = PdfDocument._delete_pdf_annotations_and_forms(working)
-                if status_callback is not None and removed:
-                    status_callback(f"주석·양식 {removed}개 삭제됨")
-
-            if options.delete_metadata:
-                if status_callback is not None:
-                    status_callback("문서 정보 및 메타데이터 삭제 중...")
-                working.set_metadata({})
-                if hasattr(working, "del_xml_metadata"):
-                    working.del_xml_metadata()
 
             if options.compress_fonts:
                 if status_callback is not None:
@@ -1199,853 +825,8 @@ class PdfDocument:
             return fitz.Pixmap(rgb, new_w, new_h)
         return fitz.Pixmap(pix, new_w, new_h)
 
-    @staticmethod
-    def _compact_document(doc: fitz.Document) -> fitz.Document:
-        """Drop orphaned objects and return a clean in-memory copy."""
-        payload = doc.tobytes(**PDF_SAVE_KWARGS)
-        return fitz.open(stream=payload, filetype="pdf")
-
-    @staticmethod
-    def _resample_effective_dpi(max_dpi: int, jpeg_quality: int) -> int:
-        target_dpi = max(MIN_IMAGE_DPI, max_dpi)
-        if jpeg_quality <= 10:
-            return max(MIN_IMAGE_DPI, int(target_dpi * 0.8))
-        if jpeg_quality <= 20:
-            return max(MIN_IMAGE_DPI, int(target_dpi * 0.9))
-        return target_dpi
-
-    @staticmethod
-    def _resample_embedded_images_to_display_size(
-        doc: fitz.Document,
-        *,
-        max_dpi: int,
-        jpeg_quality: int,
-        image_progress: Callable[[int, int], None] | None = None,
-    ) -> None:
-        """Downsample images to match on-page display size; never upscale."""
-        target_dpi = PdfDocument._resample_effective_dpi(max_dpi, jpeg_quality)
-        quality = max(1, min(100, jpeg_quality))
-        targets = PdfDocument._collect_image_resize_targets(doc)
-        total = len(targets)
-        if total == 0:
-            return
-
-        progress_stride = max(1, total // 50)
-        for index, (xref, (display_rect, page_index, smask)) in enumerate(
-            targets.items(), start=1
-        ):
-            if image_progress is not None and (
-                index == 1 or index == total or index % progress_stride == 0
-            ):
-                image_progress(index, total)
-
-            PdfDocument._resample_single_image(
-                doc,
-                xref,
-                display_rect,
-                page_index,
-                target_dpi=target_dpi,
-                jpeg_quality=quality,
-            )
-
-    @staticmethod
-    def _parse_leading_uniform_scale(content: bytes) -> tuple[float | None, bytes]:
-        match = _LEADING_UNIFORM_SCALE_RE.match(content)
-        if not match:
-            return None, content
-        sx = float(match.group(1))
-        sy = float(match.group(2))
-        if abs(sx - sy) > 1e-4:
-            return None, content
-        return sx, content[match.end() :]
-
-    @staticmethod
-    def _format_uniform_scale_prefix(scale: float) -> bytes:
-        return f"q {scale:g} 0 0 {scale:g} 0 0 cm\n".encode("ascii")
-
-    @staticmethod
-    def _parse_leading_publisher_flip(content: bytes) -> tuple[float, float, bytes] | None:
-        """Parse ``sx 0 0 -sy 0 ty cm`` (Y-flip publisher export)."""
-        match = _LEADING_PUBLISHER_FLIP_RE.match(content)
-        if not match:
-            return None
-        sx = float(match.group(1))
-        sy = float(match.group(2))
-        ty = float(match.group(3))
-        if sx <= 0 or sy >= 0:
-            return None
-        if abs(abs(sx) - abs(sy)) > 1e-3:
-            return None
-        return abs(sx), ty, content[match.end() :]
-
-    @staticmethod
-    def _parse_leading_raster_stretch(content: bytes) -> tuple[float, float, bytes] | None:
-        """Parse ``q sx 0 0 sy e f cm ...`` used by full-page raster exports."""
-        match = _LEADING_RASTER_STRETCH_RE.match(content)
-        if not match:
-            return None
-        sx = float(match.group(1))
-        sy = float(match.group(4))
-        b = float(match.group(2))
-        c = float(match.group(3))
-        if sx <= 0 or sy <= 0:
-            return None
-        if abs(b) > 1e-4 or abs(c) > 1e-4:
-            return None
-        return sx, sy, match.group(7)
-
-    @staticmethod
-    def _format_raster_stretch_prefix(sx: float, sy: float) -> bytes:
-        return f"q {sx:g} 0 0 {sy:g} 0 0 cm".encode("ascii")
-
-    @staticmethod
-    def _scale_image_do_matrices(content: bytes, factor: float) -> bytes | None:
-        """Scale every ``a b c d e f cm /Name Do`` matrix (multi-layer raster exports)."""
-        if abs(factor - 1.0) < 1e-6:
-            return None
-        if not _IMAGE_DO_CM_RE.search(content):
-            return None
-
-        def repl(match: re.Match[bytes]) -> bytes:
-            nums = [float(match.group(index)) * factor for index in range(1, 7)]
-            matrix = " ".join(f"{value:g}" for value in nums).encode("ascii")
-            name = match.group(7).decode("ascii")
-            return matrix + f" cm /{name} Do".encode("ascii")
-
-        return _IMAGE_DO_CM_RE.sub(repl, content)
-
-    @staticmethod
-    def _stream_is_image_do_overlay(content: bytes) -> bool:
-        """True when the stream only places images via ``cm /X Do`` (Canon overlay PDFs)."""
-        if PdfDocument._is_auxiliary_content(content):
-            return False
-        stripped = re.sub(rb"%[^\n]*", b"", content)
-        if not _IMAGE_DO_CM_RE.search(stripped):
-            return False
-        if re.search(rb"\b(Tj|TJ|'|\")", stripped):
-            return False
-        return True
-
-    @staticmethod
-    def _apply_raster_stretch_scale(content: bytes, factor: float) -> bytes | None:
-        scaled = PdfDocument._scale_image_do_matrices(content, factor)
-        if scaled is not None:
-            return scaled
-        parsed = PdfDocument._parse_leading_raster_stretch(content)
-        if parsed is None:
-            return None
-        sx, sy, rest = parsed
-        return PdfDocument._format_raster_stretch_prefix(sx * factor, sy * factor) + rest
-
-    @staticmethod
-    def _parse_content_transforms(
-        content: bytes,
-    ) -> tuple[float | None, float | None, float | None, bytes]:
-        """Return optional ``q``-scale, flip-scale, flip-ty, and remainder."""
-        rest = content
-        uniform: float | None = None
-        leading_uniform, after_uniform = PdfDocument._parse_leading_uniform_scale(rest)
-        if leading_uniform is not None:
-            uniform = leading_uniform
-            rest = after_uniform
-        flip = PdfDocument._parse_leading_publisher_flip(rest)
-        if flip is not None:
-            flip_scale, flip_ty, rest = flip
-            return uniform, flip_scale, flip_ty, rest
-        return uniform, None, None, content
-
-    @staticmethod
-    def _format_publisher_flip_prefix(scale: float, ty: float) -> bytes:
-        return f"{scale:g} 0 0 {-scale:g} 0 {ty:g} cm\n".encode("ascii")
-
-    @staticmethod
-    def _format_content_transforms(
-        *,
-        uniform: float | None,
-        flip_scale: float | None,
-        flip_ty: float | None,
-        rest: bytes,
-    ) -> bytes:
-        parts: list[bytes] = []
-        if uniform is not None and abs(uniform - 1.0) > 1e-6:
-            parts.append(PdfDocument._format_uniform_scale_prefix(uniform))
-        if flip_scale is not None and flip_ty is not None:
-            parts.append(PdfDocument._format_publisher_flip_prefix(flip_scale, flip_ty))
-        parts.append(rest)
-        return b"".join(parts)
-
-    @staticmethod
-    def _apply_content_scale_to_stream(
-        content: bytes,
-        factor: float,
-        *,
-        flip_ty_only: bool = False,
-    ) -> bytes:
-        """Apply *factor* once without nesting duplicate ``cm`` transforms."""
-        if abs(factor - 1.0) < 1e-6:
-            return content
-
-        uniform, flip_scale, flip_ty, rest = PdfDocument._parse_content_transforms(content)
-        if flip_scale is not None and flip_ty is not None:
-            if flip_ty_only:
-                return PdfDocument._format_content_transforms(
-                    uniform=uniform,
-                    flip_scale=flip_scale,
-                    flip_ty=flip_ty * factor,
-                    rest=rest,
-                )
-            return PdfDocument._format_content_transforms(
-                uniform=uniform * factor if uniform is not None else None,
-                flip_scale=flip_scale * factor,
-                flip_ty=flip_ty * factor,
-                rest=rest,
-            )
-
-        if uniform is not None:
-            return PdfDocument._format_uniform_scale_prefix(uniform * factor) + rest
-        prefix = PdfDocument._format_uniform_scale_prefix(factor)
-        return prefix + content + b"\nQ"
-
-    @staticmethod
-    def _page_is_fullpage_raster(doc: fitz.Document, page_index: int) -> bool:
-        page = doc[page_index]
-        images = page.get_images(full=True)
-        if len(images) != 1:
-            return False
-        xref = images[0][0]
-        try:
-            rects = page.get_image_rects(xref)
-        except Exception:
-            return False
-        if not rects:
-            return False
-        page_area = page.mediabox.width * page.mediabox.height
-        if page_area <= 0:
-            return False
-        largest = max(rects, key=lambda rect: rect.width * rect.height)
-        if (largest.width * largest.height) / page_area >= _FULLPAGE_RASTER_COVERAGE:
-            return True
-
-        try:
-            info = doc.extract_image(xref)
-        except Exception:
-            return False
-        native_w = int(info.get("width", 0))
-        native_h = int(info.get("height", 0))
-        if native_w < 640 or native_h < 640:
-            return False
-        page_ratio = page.mediabox.width / page.mediabox.height
-        native_ratio = native_w / native_h
-        if abs(page_ratio - native_ratio) > 0.12:
-            return False
-        return native_w * native_h >= 900_000
-
-    @staticmethod
-    def _profile_sample_page_indices(doc: fitz.Document) -> list[int]:
-        page_count = len(doc)
-        if page_count <= _PROFILE_SAMPLE_PAGES:
-            return list(range(page_count))
-        step = max(1, page_count // _PROFILE_SAMPLE_PAGES)
-        indices = list(range(0, page_count, step))
-        if page_count - 1 not in indices:
-            indices.append(page_count - 1)
-        return indices[:_PROFILE_SAMPLE_PAGES]
-
-    @staticmethod
-    def analyze_reduce_profile(doc: fitz.Document) -> DocumentReduceProfile:
-        uniform_counts: dict[float, int] = {}
-        flip_counts: dict[float, int] = {}
-        raster_hits = 0
-        samples = 0
-        page_indices = PdfDocument._profile_sample_page_indices(doc)
-
-        for page_index in page_indices:
-            samples += 1
-            page_geometry = PdfDocument.analyze_page_reduce_geometry(doc, page_index)
-            if page_geometry.is_fullpage_raster:
-                raster_hits += 1
-
-            for xref in PdfDocument._page_content_xrefs(doc, page_index):
-                try:
-                    content = doc.xref_stream(xref)
-                except Exception:
-                    continue
-                kind = PdfDocument.classify_content_stream(content)
-                if kind == CONTENT_KIND_UNIFORM:
-                    leading, _ = PdfDocument._parse_leading_uniform_scale(content)
-                    if leading is not None and abs(leading - 1.0) >= 0.01:
-                        key = round(leading, 4)
-                        uniform_counts[key] = uniform_counts.get(key, 0) + 1
-                elif kind == CONTENT_KIND_PUBLISHER_FLIP:
-                    _, flip_scale, _, _ = PdfDocument._parse_content_transforms(content)
-                    if flip_scale is not None:
-                        key = round(flip_scale, 4)
-                        flip_counts[key] = flip_counts.get(key, 0) + 1
-
-        embedded_uniform = (
-            max(uniform_counts, key=uniform_counts.get) if uniform_counts else None
-        )
-        publisher_flip = max(flip_counts, key=flip_counts.get) if flip_counts else None
-        raster_ratio = raster_hits / samples if samples else 0.0
-        return DocumentReduceProfile(
-            embedded_uniform_scale=embedded_uniform,
-            publisher_flip_scale=publisher_flip,
-            fullpage_raster_ratio=raster_ratio,
-            distiller_print_pdf=PdfDocument._is_distiller_print_pdf(doc),
-            micro_image_ratio=PdfDocument._sample_micro_image_ratio(doc, page_indices),
-        )
-
-    def reduce_profile(self) -> DocumentReduceProfile:
-        return PdfDocument.analyze_reduce_profile(self._doc)
-
-    @staticmethod
-    def sample_embedded_uniform_scale(doc: fitz.Document) -> float | None:
-        return PdfDocument.analyze_reduce_profile(doc).embedded_uniform_scale
-
-    def embedded_uniform_scale(self) -> float | None:
-        return self.reduce_profile().embedded_uniform_scale
-
-    @staticmethod
-    def _page_content_xrefs(doc: fitz.Document, page_index: int) -> list[int]:
-        xrefs = doc[page_index].get_contents()
-        if not xrefs:
-            return []
-        if isinstance(xrefs, int):
-            return [xrefs]
-        return list(dict.fromkeys(xrefs))
-
-    @staticmethod
-    def _is_auxiliary_content(content: bytes) -> bool:
-        stripped = content.strip()
-        if not stripped:
-            return True
-        if stripped in (b"q", b"Q"):
-            return True
-        compact = stripped.replace(b"\n", b"").replace(b" ", b"")
-        return compact in (b"q", b"Q", b"qQ", b"Qq")
-
-    @staticmethod
-    def classify_content_stream(content: bytes) -> str:
-        """Classify a single content stream for reduce-time geometry handling."""
-        if PdfDocument._is_auxiliary_content(content):
-            return CONTENT_KIND_EMPTY
-        if PdfDocument._parse_leading_raster_stretch(content) is not None:
-            return CONTENT_KIND_RASTER_STRETCH
-        if PdfDocument._stream_is_image_do_overlay(content):
-            return CONTENT_KIND_RASTER_STRETCH
-        _, flip_scale, flip_ty, _ = PdfDocument._parse_content_transforms(content)
-        if flip_scale is not None and flip_ty is not None:
-            return CONTENT_KIND_PUBLISHER_FLIP
-        leading_uniform, _ = PdfDocument._parse_leading_uniform_scale(content)
-        if leading_uniform is not None:
-            return CONTENT_KIND_UNIFORM
-        return CONTENT_KIND_PLAIN
-
-    @staticmethod
-    def analyze_page_reduce_geometry(
-        doc: fitz.Document,
-        page_index: int,
-    ) -> PageReduceGeometry:
-        kinds: list[str] = []
-        for xref in PdfDocument._page_content_xrefs(doc, page_index):
-            try:
-                content = doc.xref_stream(xref)
-            except Exception:
-                continue
-            kinds.append(PdfDocument.classify_content_stream(content))
-        if not kinds:
-            kinds = [CONTENT_KIND_PLAIN]
-        return PageReduceGeometry(
-            is_fullpage_raster=PdfDocument._page_is_fullpage_raster(doc, page_index),
-            content_kinds=tuple(dict.fromkeys(kinds)),
-        )
-
-    @staticmethod
-    def scale_content_stream_for_reduce(
-        content: bytes,
-        factor: float,
-        *,
-        geometry_mode: str,
-    ) -> bytes | None:
-        """Return scaled stream bytes, or ``None`` when the stream should be left unchanged."""
-        if abs(factor - 1.0) < 1e-6:
-            return None
-
-        kind = PdfDocument.classify_content_stream(content)
-        if kind == CONTENT_KIND_EMPTY:
-            return None
-        if kind == CONTENT_KIND_PUBLISHER_FLIP:
-            return PdfDocument._apply_content_scale_to_stream(
-                content,
-                factor,
-                flip_ty_only=False,
-            )
-        if kind == CONTENT_KIND_RASTER_STRETCH:
-            return PdfDocument._apply_raster_stretch_scale(content, factor)
-        if kind == CONTENT_KIND_UNIFORM:
-            leading_uniform, rest = PdfDocument._parse_leading_uniform_scale(content)
-            if leading_uniform is None:
-                return None
-            return (
-                PdfDocument._format_uniform_scale_prefix(leading_uniform * factor) + rest
-            )
-        if kind == CONTENT_KIND_PLAIN:
-            if geometry_mode == GEOMETRY_MODE_PAGE_ONLY:
-                if PdfDocument._stream_is_image_do_overlay(content):
-                    return PdfDocument._scale_image_do_matrices(content, factor)
-                return None
-            if geometry_mode in (
-                GEOMETRY_MODE_BOTH,
-                GEOMETRY_MODE_CONTENT_ONLY,
-            ):
-                if PdfDocument._stream_is_image_do_overlay(content):
-                    return PdfDocument._scale_image_do_matrices(content, factor)
-                return PdfDocument._apply_content_scale_to_stream(
-                    content,
-                    factor,
-                    flip_ty_only=False,
-                )
-            return None
-        return None
-
-    @staticmethod
-    def _scale_single_page_in_place(
-        doc: fitz.Document,
-        page_index: int,
-        scale: float,
-        *,
-        geometry_mode: str = GEOMETRY_MODE_BOTH,
-        profile: DocumentReduceProfile | None = None,
-    ) -> None:
-        """Scale page geometry and/or content without nesting duplicate transforms."""
-        if abs(scale - 1.0) < 1e-6:
-            return
-        if geometry_mode not in (
-            GEOMETRY_MODE_BOTH,
-            GEOMETRY_MODE_PAGE_ONLY,
-            GEOMETRY_MODE_CONTENT_ONLY,
-        ):
-            geometry_mode = GEOMETRY_MODE_BOTH
-
-        page = doc[page_index]
-        page_geometry = PdfDocument.analyze_page_reduce_geometry(doc, page_index)
-
-        effective_mode = geometry_mode
-        if page_geometry.is_fullpage_raster and geometry_mode == GEOMETRY_MODE_BOTH:
-            effective_mode = GEOMETRY_MODE_PAGE_ONLY
-
-        new_rect = fitz.Rect(
-            0,
-            0,
-            max(1.0, round(page.mediabox.width * scale, 4)),
-            max(1.0, round(page.mediabox.height * scale, 4)),
-        )
-        resize_page = effective_mode in (
-            GEOMETRY_MODE_BOTH,
-            GEOMETRY_MODE_PAGE_ONLY,
-        )
-
-        if page.get_contents():
-            if not page_geometry.has_transform_stream:
-                page.wrap_contents()
-            for xref in PdfDocument._page_content_xrefs(doc, page_index):
-                try:
-                    content = doc.xref_stream(xref)
-                except Exception:
-                    continue
-                updated = PdfDocument.scale_content_stream_for_reduce(
-                    content,
-                    scale,
-                    geometry_mode=effective_mode,
-                )
-                if updated is not None:
-                    doc.update_stream(xref, updated)
-
-        if resize_page:
-            page.set_mediabox(new_rect)
-
-    @staticmethod
-    def _scale_document_geometry(
-        doc: fitz.Document,
-        percent: int,
-        *,
-        geometry_mode: str = GEOMETRY_MODE_BOTH,
-        profile: DocumentReduceProfile | None = None,
-        page_progress: Callable[[int, int], None] | None = None,
-    ) -> None:
-        """Scale each page in place by *percent* (aspect ratio kept, text preserved)."""
-        if percent >= 100:
-            return
-        if profile is None:
-            profile = PdfDocument.analyze_reduce_profile(doc)
-        scale = percent / 100.0
-        page_count = len(doc)
-        for index in range(page_count):
-            PdfDocument._scale_single_page_in_place(
-                doc,
-                index,
-                scale,
-                geometry_mode=geometry_mode,
-                profile=profile,
-            )
-            if page_progress is not None:
-                page_progress(index + 1, page_count)
-
-    @staticmethod
-    def _apply_geometry_scale(
-        doc: fitz.Document,
-        options: ReduceSizeOptions,
-        *,
-        page_progress: Callable[[int, int], None] | None = None,
-        status_callback: Callable[[str], None] | None = None,
-        image_progress: Callable[[int, int], None] | None = None,
-    ) -> fitz.Document:
-        profile = PdfDocument.analyze_reduce_profile(doc)
-        if (
-            PdfDocument._uses_data_only_compress(options)
-            or options.image_size_percent >= 100
-            or profile.prefers_compression_only
-        ):
-            return doc
-        if status_callback is not None:
-            status_callback(
-                f"페이지 크기를 {options.image_size_percent}%로 조정하는 중..."
-            )
-        PdfDocument._scale_document_geometry(
-            doc,
-            options.image_size_percent,
-            geometry_mode=options.geometry_mode,
-            profile=profile,
-            page_progress=page_progress,
-        )
-        if status_callback is not None:
-            status_callback("이미지를 표시 크기에 맞게 조정하는 중...")
-        PdfDocument._resample_embedded_images_to_display_size(
-            doc,
-            max_dpi=options.max_dpi,
-            jpeg_quality=options.jpeg_quality,
-            image_progress=image_progress,
-        )
-        return doc
-
-    @staticmethod
-    def _page_max_content_dpi(doc: fitz.Document, page_index: int) -> float | None:
-        """Highest effective DPI among non-micro embedded images on a page."""
-        if page_index < 0 or page_index >= len(doc):
-            return None
-        page = doc[page_index]
-        try:
-            images = page.get_images(full=True)
-        except Exception:
-            return None
-
-        max_dpi = 0.0
-        found = False
-        for img in images:
-            xref = img[0]
-            pix = PdfDocument._safe_pixmap_from_xref(doc, xref)
-            if pix is None:
-                continue
-            try:
-                try:
-                    rects = page.get_image_rects(xref)
-                except Exception:
-                    continue
-                for rect in rects:
-                    if PdfDocument._is_micro_image_rect(rect):
-                        continue
-                    dpi = PdfDocument._image_effective_dpi(pix, rect)
-                    if dpi > 0:
-                        found = True
-                        max_dpi = max(max_dpi, dpi)
-            finally:
-                pix = None
-        return max_dpi if found else None
-
-    @staticmethod
-    def _rasterize_target_rect(page: fitz.Page, options: ReduceSizeOptions) -> fitz.Rect:
-        scale = max(0.01, min(1.0, options.image_size_percent / 100.0))
-        mediabox = page.mediabox
-        return fitz.Rect(
-            0,
-            0,
-            max(1.0, mediabox.width * scale),
-            max(1.0, mediabox.height * scale),
-        )
-
-    @staticmethod
-    def _rasterize_render_dpi(
-        doc: fitz.Document,
-        page_index: int,
-        options: ReduceSizeOptions,
-    ) -> int:
-        cap = max(
-            MIN_IMAGE_DPI,
-            PdfDocument._resample_effective_dpi(options.max_dpi, options.jpeg_quality),
-        )
-        native = PdfDocument._page_max_content_dpi(doc, page_index)
-        if native is not None and native > 0:
-            cap = min(cap, max(MIN_IMAGE_DPI, int(round(native))))
-        return cap
-
-    @staticmethod
-    def _resolve_raster_format(options: ReduceSizeOptions) -> str:
-        if options.raster_format != RASTER_FORMAT_AUTO:
-            return options.raster_format
-        if options.monochrome or options.grayscale:
-            return RASTER_FORMAT_GRAY_JPEG
-        return RASTER_FORMAT_JPEG
-
-    @staticmethod
-    def _raster_format_label(options: ReduceSizeOptions) -> str:
-        resolved = PdfDocument._resolve_raster_format(options)
-        if resolved == RASTER_FORMAT_GRAY_JPEG:
-            return "회색 JPEG"
-        return "JPEG"
-
-    @staticmethod
-    def _encode_raster_pixmap(pix: fitz.Pixmap, options: ReduceSizeOptions) -> bytes:
-        quality = max(1, min(100, options.jpeg_quality))
-        fmt = PdfDocument._resolve_raster_format(options)
-        converted: fitz.Pixmap | None = None
-        try:
-            if fmt == RASTER_FORMAT_GRAY_JPEG:
-                if options.monochrome:
-                    converted = PdfDocument._to_monochrome_pixmap(pix)
-                    source = converted
-                elif pix.colorspace.n == 1:
-                    source = pix
-                else:
-                    converted = fitz.Pixmap(fitz.csGRAY, pix)
-                    source = converted
-                return source.tobytes("jpeg", jpg_quality=quality)
-
-            source = pix
-            if pix.colorspace.n == 1:
-                converted = fitz.Pixmap(fitz.csRGB, pix)
-                source = converted
-            elif pix.alpha:
-                converted = fitz.Pixmap(fitz.csRGB, pix)
-                source = converted
-            return source.tobytes("jpeg", jpg_quality=quality)
-        finally:
-            converted = None
-
-    @staticmethod
-    def _page_pixmap_for_rasterize(
-        page: fitz.Page,
-        target_rect: fitz.Rect,
-        render_dpi: int,
-    ) -> fitz.Pixmap | None:
-        page_rect = page.rect
-        if page_rect.width <= 0 or page_rect.height <= 0:
-            return None
-        scale_x = (target_rect.width / page_rect.width) * (render_dpi / 72.0)
-        scale_y = (target_rect.height / page_rect.height) * (render_dpi / 72.0)
-        matrix = fitz.Matrix(scale_x, scale_y)
-        try:
-            return page.get_pixmap(matrix=matrix, alpha=False)
-        except Exception:
-            return None
-
-    @staticmethod
-    def _rasterize_single_page(
-        doc: fitz.Document,
-        page_index: int,
-        options: ReduceSizeOptions,
-    ) -> None:
-        page = doc[page_index]
-        target_rect = PdfDocument._rasterize_target_rect(page, options)
-        render_dpi = PdfDocument._rasterize_render_dpi(doc, page_index, options)
-        pix = PdfDocument._page_pixmap_for_rasterize(page, target_rect, render_dpi)
-        if pix is None:
-            return
-        try:
-            stream = PdfDocument._encode_raster_pixmap(pix, options)
-        finally:
-            pix = None
-
-        for annot in list(page.annots() or []):
-            try:
-                page.delete_annot(annot)
-            except Exception:
-                continue
-        page.add_redact_annot(page.rect)
-        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-        page.set_mediabox(target_rect)
-        page.insert_image(
-            target_rect,
-            stream=stream,
-            keep_proportion=False,
-            overlay=False,
-        )
-
-    @staticmethod
-    def _rasterize_document(
-        doc: fitz.Document,
-        options: ReduceSizeOptions,
-        *,
-        page_progress: Callable[[int, int], None] | None = None,
-    ) -> None:
-        total = len(doc)
-        for index in range(total):
-            if page_progress is not None:
-                page_progress(index + 1, total)
-            try:
-                PdfDocument._rasterize_single_page(doc, index, options)
-            except Exception:
-                continue
-
-    @staticmethod
-    def _compress_document(
-        source: fitz.Document,
-        options: ReduceSizeOptions,
-        *,
-        page_progress: Callable[[int, int], None] | None = None,
-        status_callback: Callable[[str], None] | None = None,
-        image_progress: Callable[[int, int], None] | None = None,
-    ) -> fitz.Document:
-        """Build a reduced copy: recompress → post-process → geometry → resample → compact."""
-        target_dpi = max(MIN_IMAGE_DPI, options.max_dpi)
-        working = fitz.open(stream=source.tobytes(), filetype="pdf")
-
-        if options.rasterize:
-            try:
-                if status_callback is not None:
-                    fmt_label = PdfDocument._raster_format_label(options)
-                    status_callback(
-                        f"페이지를 픽셀 이미지({fmt_label})로 변환하는 중... "
-                        "(텍스트 검색·복사·선택은 유지되지 않습니다)"
-                    )
-                PdfDocument._rasterize_document(
-                    working,
-                    options,
-                    page_progress=page_progress,
-                )
-                if status_callback is not None:
-                    status_callback("마무리 처리 중...")
-                PdfDocument._apply_post_processing(working)
-                return PdfDocument._compact_document(working)
-            finally:
-                working.close()
-
-        profile = PdfDocument.analyze_reduce_profile(working)
-
-        if status_callback is not None:
-            if PdfDocument._uses_data_only_compress(options):
-                status_callback(
-                    "데이터만 압축 중... (미세 이미지 포함, 레이아웃·검색 유지)"
-                )
-            elif options.grayscale or options.monochrome:
-                mode = "단색조" if options.monochrome else "회색조"
-                status_callback(
-                    f"이미지 재압축 및 {mode} 변환 중... (텍스트는 유지됩니다)"
-                )
-            else:
-                status_callback("이미지 재압축하는 중... (텍스트는 유지됩니다)")
-        if status_callback is not None:
-            status_callback("중복 이미지 정리 중...")
-        dedup_merged = PdfDocument._deduplicate_embedded_images(working)
-
-        if options.preset == "high":
-            dpi_threshold: int | None = max(target_dpi + 1, 450)
-        else:
-            # Only downsample images above the DPI cap; never upscale low-res art.
-            dpi_threshold = target_dpi + 1
-        try:
-            PdfDocument._rewrite_images_preserve_text(
-                working,
-                options,
-                target_dpi=target_dpi,
-                dpi_threshold=dpi_threshold,
-                profile=profile,
-            )
-        except Exception:
-            if status_callback is not None:
-                status_callback(
-                    "일부 이미지 재압축을 건너뛰고 나머지 처리를 진행합니다..."
-                )
-
-        dedup_merged += PdfDocument._deduplicate_embedded_images(working)
-        if status_callback is not None and dedup_merged > 0:
-            status_callback(f"중복 이미지 {dedup_merged}개 병합됨")
-
-        if status_callback is not None:
-            status_callback("마무리 처리 중...")
-        PdfDocument._apply_post_processing(working)
-        try:
-            result = PdfDocument._apply_geometry_scale(
-                working,
-                options,
-                page_progress=page_progress,
-                status_callback=status_callback,
-                image_progress=image_progress,
-            )
-            return PdfDocument._compact_document(result)
-        finally:
-            working.close()
-
-    @staticmethod
-    def compress_document_bytes(
-        source_bytes: bytes,
-        options: ReduceSizeOptions,
-        *,
-        page_progress: Callable[[int, int], None] | None = None,
-        status_callback: Callable[[str], None] | None = None,
-        image_progress: Callable[[int, int], None] | None = None,
-    ) -> fitz.Document:
-        """Build a reduced document from a PDF byte snapshot (safe for background threads)."""
-        source = fitz.open(stream=source_bytes, filetype="pdf")
-        try:
-            return PdfDocument._compress_document(
-                source,
-                options,
-                page_progress=page_progress,
-                status_callback=status_callback,
-                image_progress=image_progress,
-            )
-        finally:
-            source.close()
-
-    def build_reduced_document(
-        self,
-        options: ReduceSizeOptions,
-        *,
-        page_progress: Callable[[int, int], None] | None = None,
-        status_callback: Callable[[str], None] | None = None,
-        image_progress: Callable[[int, int], None] | None = None,
-    ) -> fitz.Document:
-        if len(self._doc) == 0:
-            raise ValueError("페이지가 없습니다.")
-        return self._compress_document(
-            self._doc,
-            options,
-            page_progress=page_progress,
-            status_callback=status_callback,
-            image_progress=image_progress,
-        )
-
-    def estimate_reduced_size(
-        self,
-        options: ReduceSizeOptions,
-        *,
-        page_progress: Callable[[int, int], None] | None = None,
-        status_callback: Callable[[str], None] | None = None,
-        image_progress: Callable[[int, int], None] | None = None,
-    ) -> int:
-        reduced = self.build_reduced_document(
-            options,
-            page_progress=page_progress,
-            status_callback=status_callback,
-            image_progress=image_progress,
-        )
-        try:
-            return self._measure_doc_bytes(reduced)
-        finally:
-            reduced.close()
-
     def apply_reduced_payload(self, payload: bytes) -> tuple[int, int]:
-        """Replace the open document with a pre-built reduced PDF payload."""
+        """Replace the open document with a pre-built optimized PDF payload."""
         if len(self._doc) == 0:
             raise ValueError("페이지가 없습니다.")
         before = len(self.save_to_bytes())
@@ -2055,101 +836,6 @@ class PdfDocument:
         after = len(payload)
         self._touch()
         return before, after
-
-    def apply_reduce_size(
-        self,
-        options: ReduceSizeOptions,
-        *,
-        page_progress: Callable[[int, int], None] | None = None,
-        status_callback: Callable[[str], None] | None = None,
-        image_progress: Callable[[int, int], None] | None = None,
-    ) -> tuple[int, int]:
-        if len(self._doc) == 0:
-            raise ValueError("페이지가 없습니다.")
-        if status_callback is not None:
-            status_callback("용량 줄이기를 시작합니다...")
-        before = len(self.save_to_bytes())
-        self._record_undo_checkpoint()
-        reduced = self.build_reduced_document(
-            options,
-            page_progress=page_progress,
-            status_callback=status_callback,
-            image_progress=image_progress,
-        )
-        try:
-            if status_callback is not None:
-                status_callback("문서를 저장하는 중...")
-            after_bytes = PdfDocument._serialize_doc_bytes(reduced)
-            self._doc.close()
-            self._doc = fitz.open(stream=after_bytes, filetype="pdf")
-            after = len(after_bytes)
-        finally:
-            reduced.close()
-        self._touch()
-        if status_callback is not None:
-            status_callback(
-                f"완료: {format_file_size(before)} → {format_file_size(after)}"
-            )
-        return before, after
-
-    def apply_optimize_size(
-        self,
-        options: OptimizeSizeOptions,
-        *,
-        status_callback: Callable[[str], None] | None = None,
-    ) -> tuple[int, int]:
-        if len(self._doc) == 0:
-            raise ValueError("페이지가 없습니다.")
-        if status_callback is not None:
-            status_callback("용량 줄이기(신규)를 시작합니다...")
-        before = len(self.save_to_bytes())
-        self._record_undo_checkpoint()
-        payload = PdfDocument.build_optimized_payload(
-            self.save_to_bytes(),
-            options,
-            status_callback=status_callback,
-        )
-        after = len(payload)
-        self._doc.close()
-        self._doc = fitz.open(stream=payload, filetype="pdf")
-        self._touch()
-        if status_callback is not None:
-            status_callback(
-                f"완료: {format_file_size(before)} → {format_file_size(after)}"
-            )
-        return before, after
-
-    def render_page_crop_pixmap(
-        self,
-        doc: fitz.Document,
-        page_index: int,
-        zoom: float = 1.5,
-        *,
-        crop_fraction: float = 0.35,
-    ) -> fitz.Pixmap:
-        page = doc[page_index]
-        clip = fitz.Rect(
-            page.rect.x0,
-            page.rect.y0,
-            page.rect.x1,
-            page.rect.y0 + page.rect.height * crop_fraction,
-        )
-        matrix = fitz.Matrix(zoom, zoom)
-        return page.get_pixmap(matrix=matrix, clip=clip, alpha=False, annots=True)
-
-    def render_page_preview_crop(
-        self,
-        page_index: int,
-        zoom: float = 1.5,
-        *,
-        crop_fraction: float = 0.35,
-    ) -> fitz.Pixmap:
-        return self.render_page_crop_pixmap(
-            self._doc,
-            page_index,
-            zoom=zoom,
-            crop_fraction=crop_fraction,
-        )
 
     def mark_saved(self) -> None:
         self._modified = False
