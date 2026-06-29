@@ -2,6 +2,8 @@
 
 Windows용 **포터블 PDF 편집기**입니다. Python 설치 없이 실행할 수 있는 배포판을 제공하며, 페이지 병합·편집·검색·용량 줄이기 등 일상적인 PDF 작업을 한 프로그램에서 처리할 수 있습니다.
 
+개발자 홈페이지: [https://note4all.tistory.com](https://note4all.tistory.com/category/%EC%86%8C%ED%94%84%ED%8A%B8%EC%9B%A8%EC%96%B4%20%EC%97%B0%EA%B5%AC%EC%86%8C/TIny%20PDF%20Editor)
+
 ## 다운로드 및 실행 (배포판)
 
 1. 블로그 또는 배포 페이지에서 **최신 빌드 폴더 전체**를 받습니다.
