@@ -8,6 +8,7 @@ from PyQt6.QtGui import QColor, QFont, QIcon, QKeyEvent, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
+    QColorDialog,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -24,7 +25,16 @@ from PyQt6.QtWidgets import (
 )
 
 from pdf_editor.document import PdfDocument
+from pdf_editor.highlight_colors import (
+    DEFAULT_HIGHLIGHT_COLOR_ID,
+    HIGHLIGHT_RGB,
+    highlight_qcolor_from_rgb,
+    preferred_highlight_rgb,
+    set_preferred_highlight_color_id,
+    set_preferred_highlight_rgb,
+)
 from pdf_editor.pixmap_utils import pixmap_from_fitz
+from pdf_editor.text_highlight_menu import build_text_selection_context_menu
 
 ZOOM_PRESETS = [25, 50, 75, 100, 125, 150, 200, 250]
 MAX_ZOOM = 2.5
@@ -134,6 +144,8 @@ def _arrow_nav_icon(to_left: bool) -> QIcon:
 class PageCanvas(QLabel):
     """Rendered page with drag-to-select text overlay."""
 
+    text_highlight_added = pyqtSignal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -144,8 +156,10 @@ class PageCanvas(QLabel):
         self._zoom = 1.0
         self._anchor: QPoint | None = None
         self._cursor: QPoint | None = None
-        self._highlights: list[QRect] = []
+        self._selection_highlights: list[QRect] = []
+        self._selection_page_rect: fitz.Rect | None = None
         self._selected_text = ""
+        self._text_highlights: list[tuple[QRect, QColor]] = []
         self._search_highlights: list[QRect] = []
         self._active_search_highlight = -1
 
@@ -169,8 +183,13 @@ class PageCanvas(QLabel):
     def clear_selection(self) -> None:
         self._anchor = None
         self._cursor = None
-        self._highlights = []
+        self._selection_highlights = []
+        self._selection_page_rect = None
         self._selected_text = ""
+        self.update()
+
+    def set_text_highlights(self, highlights: list[tuple[QRect, QColor]]) -> None:
+        self._text_highlights = highlights
         self.update()
 
     def clear_search_highlights(self) -> None:
@@ -194,12 +213,120 @@ class PageCanvas(QLabel):
         if self._selected_text:
             QApplication.clipboard().setText(self._selected_text)
 
-    def contextMenuEvent(self, event) -> None:
-        if not self._selected_text:
+    def _apply_preferred_text_highlight(self) -> None:
+        if not self._document or self._selection_page_rect is None:
             return
-        menu = QMenu(self)
-        copy_action = menu.addAction("복사")
-        copy_action.triggered.connect(self._copy_selection)
+        rgb = preferred_highlight_rgb()
+        if self._document.set_text_highlight_color(
+            self._page_index,
+            self._selection_page_rect,
+            rgb,
+        ):
+            self.text_highlight_added.emit()
+            self.clear_selection()
+
+    def _apply_text_highlight(self, color_id: str) -> None:
+        if not self._document or self._selection_page_rect is None:
+            return
+        rgb = HIGHLIGHT_RGB.get(color_id, HIGHLIGHT_RGB[DEFAULT_HIGHLIGHT_COLOR_ID])
+        if self._document.set_text_highlight_color(
+            self._page_index,
+            self._selection_page_rect,
+            rgb,
+        ):
+            set_preferred_highlight_color_id(color_id)
+            self.text_highlight_added.emit()
+            self.clear_selection()
+
+    def _pick_more_highlight_color(self) -> None:
+        current = preferred_highlight_rgb()
+        default = QColor.fromRgbF(current[0], current[1], current[2])
+        chosen = QColorDialog.getColor(default, self, "하이라이트 색상 선택")
+        if not chosen.isValid():
+            return
+        if not self._document or self._selection_page_rect is None:
+            return
+        rgb = (chosen.redF(), chosen.greenF(), chosen.blueF())
+        if self._document.set_text_highlight_color(
+            self._page_index,
+            self._selection_page_rect,
+            rgb,
+        ):
+            set_preferred_highlight_rgb(rgb)
+            self.text_highlight_added.emit()
+            self.clear_selection()
+
+    def _remove_highlight_selection(self) -> None:
+        if not self._document or self._selection_page_rect is None:
+            return
+        if self._document.remove_text_highlights_in_rect(
+            self._page_index,
+            self._selection_page_rect,
+        ):
+            self.text_highlight_added.emit()
+            self.clear_selection()
+
+    def _page_point_from_viewport(self, pos: QPoint) -> fitz.Point:
+        return fitz.Point(pos.x() / self._zoom, pos.y() / self._zoom)
+
+    def _select_highlight_at(self, pos: QPoint) -> bool:
+        if not self._document:
+            return False
+        selection = self._document.get_text_highlight_selection_at_point(
+            self._page_index,
+            self._page_point_from_viewport(pos),
+        )
+        if selection is None:
+            return False
+        page_rect, quad_rects, selected_text = selection
+        self._selection_page_rect = page_rect
+        zoom = self._zoom
+        self._selection_highlights = [
+            QRect(
+                int(rect.x0 * zoom),
+                int(rect.y0 * zoom),
+                max(1, int((rect.x1 - rect.x0) * zoom)),
+                max(1, int((rect.y1 - rect.y0) * zoom)),
+            )
+            for rect in quad_rects
+        ]
+        self._selected_text = selected_text
+        self.update()
+        return True
+
+    def _can_remove_highlight(self) -> bool:
+        return bool(
+            self._document
+            and self._selection_page_rect is not None
+            and self._document.has_text_highlight_in_rect(
+                self._page_index,
+                self._selection_page_rect,
+            )
+        )
+
+    def remove_selected_highlight(self) -> bool:
+        if not self._can_remove_highlight():
+            return False
+        self._remove_highlight_selection()
+        return True
+
+    def _prepare_context_menu_selection(self, pos: QPoint) -> bool:
+        if self._selected_text.strip():
+            return True
+        return self._select_highlight_at(pos)
+
+    def contextMenuEvent(self, event) -> None:
+        if not self._prepare_context_menu_selection(event.pos()):
+            return
+        menu = build_text_selection_context_menu(
+            self,
+            on_apply_default_highlight=self._apply_preferred_text_highlight,
+            on_color_selected=self._apply_text_highlight,
+            on_more_colors=self._pick_more_highlight_color,
+            on_copy=self._copy_selection,
+            on_remove_highlight=self._remove_highlight_selection,
+            show_remove_highlight=self._can_remove_highlight(),
+        )
         menu.exec(event.globalPos())
         event.accept()
 
@@ -218,16 +345,19 @@ class PageCanvas(QLabel):
             or self._anchor is None
             or self._cursor is None
         ):
-            self._highlights = []
+            self._selection_highlights = []
+            self._selection_page_rect = None
             self._selected_text = ""
             return
         if (self._anchor - self._cursor).manhattanLength() < 4:
-            self._highlights = []
+            self._selection_highlights = []
+            self._selection_page_rect = None
             self._selected_text = ""
             return
 
         page_rect = self._page_rect_from_points(self._anchor, self._cursor)
-        self._highlights = [
+        self._selection_page_rect = page_rect
+        self._selection_highlights = [
             QRect(int(x), int(y), max(1, int(w)), max(1, int(h)))
             for x, y, w, h in self._document.get_word_highlight_rects(
                 self._page_index,
@@ -243,6 +373,11 @@ class PageCanvas(QLabel):
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self.setFocus()
+            if self._select_highlight_at(event.pos()):
+                self._anchor = None
+                self._cursor = None
+                event.accept()
+                return
             self._anchor = event.pos()
             self._cursor = event.pos()
             self._update_selection()
@@ -266,9 +401,18 @@ class PageCanvas(QLabel):
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
-        if not self._search_highlights and not self._highlights:
+        if (
+            not self._text_highlights
+            and not self._search_highlights
+            and not self._selection_highlights
+        ):
             return
         painter = QPainter(self)
+        if self._text_highlights:
+            painter.setPen(Qt.PenStyle.NoPen)
+            for rect, color in self._text_highlights:
+                painter.setBrush(color)
+                painter.drawRect(rect)
         if self._search_highlights:
             painter.setPen(Qt.PenStyle.NoPen)
             for index, rect in enumerate(self._search_highlights):
@@ -277,11 +421,12 @@ class PageCanvas(QLabel):
                 else:
                     painter.setBrush(QColor(255, 235, 59, 110))
                 painter.drawRect(rect)
-        if self._highlights:
+        if self._selection_highlights:
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(51, 153, 255, 90))
-            for rect in self._highlights:
+            for rect in self._selection_highlights:
                 painter.drawRect(rect)
+        painter.end()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if (
@@ -290,6 +435,10 @@ class PageCanvas(QLabel):
             and self._selected_text
         ):
             self._copy_selection()
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Delete and self._can_remove_highlight():
+            self._remove_highlight_selection()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -349,6 +498,7 @@ class PageViewer(QWidget):
         viewport.installEventFilter(self)
 
         self.page_canvas = PageCanvas()
+        self.page_canvas.text_highlight_added.connect(self._apply_text_highlights_overlay)
         self.scroll_area.setWidget(self.page_canvas)
         self.preview_stack.addWidget(self.scroll_area)
         self.preview_stack.setStyleSheet(preview_bg)
@@ -482,6 +632,9 @@ class PageViewer(QWidget):
     def current_index(self) -> int:
         return self._current_index
 
+    def try_remove_selected_highlight(self) -> bool:
+        return self.page_canvas.remove_selected_highlight()
+
     def set_current_index(self, index: int) -> None:
         if not self._document or self._document.page_count == 0:
             return
@@ -595,6 +748,29 @@ class PageViewer(QWidget):
             highlights,
             self._search_active_index,
         )
+
+    def _apply_text_highlights_overlay(self) -> None:
+        if not self._document or self._document.page_count == 0:
+            self.page_canvas.set_text_highlights([])
+            return
+        zoom = self._effective_zoom()
+        overlays: list[tuple[QRect, QColor]] = []
+        for rect, rgb in self._document.get_page_text_highlight_overlays(
+            self._current_index,
+            zoom,
+        ):
+            overlays.append(
+                (
+                    QRect(
+                        int(rect.x0),
+                        int(rect.y0),
+                        max(1, int(rect.x1 - rect.x0)),
+                        max(1, int(rect.y1 - rect.y0)),
+                    ),
+                    highlight_qcolor_from_rgb(rgb),
+                )
+            )
+        self.page_canvas.set_text_highlights(overlays)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -949,4 +1125,5 @@ class PageViewer(QWidget):
             zoom,
         )
         self._apply_search_highlights()
+        self._apply_text_highlights_overlay()
         self._update_preview_stack()

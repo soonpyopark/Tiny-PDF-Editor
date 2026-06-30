@@ -878,6 +878,271 @@ class PdfDocument:
             highlights.append((x0 * zoom, y0 * zoom, (x1 - x0) * zoom, (y1 - y0) * zoom))
         return highlights
 
+    def add_text_highlight(
+        self,
+        page_index: int,
+        page_rect: fitz.Rect,
+        color_rgb: tuple[float, float, float],
+    ) -> bool:
+        """Add PDF highlight annotation for the words intersecting *page_rect*."""
+        if page_rect.is_empty or page_rect.is_infinite:
+            return False
+        if not (0 <= page_index < len(self._doc)):
+            return False
+
+        page = self._doc[page_index]
+        words = page.get_text("words", clip=page_rect)
+        if not words:
+            return False
+
+        quads: list[fitz.Quad] = []
+        for word in words:
+            x0, y0, x1, y1 = word[:4]
+            quads.append(
+                fitz.Quad(
+                    fitz.Point(x0, y1),
+                    fitz.Point(x1, y1),
+                    fitz.Point(x0, y0),
+                    fitz.Point(x1, y0),
+                )
+            )
+
+        self._record_undo_checkpoint()
+        annot = page.add_highlight_annot(quads)
+        annot.set_colors(stroke=color_rgb)
+        annot.set_opacity(0.45)
+        annot.update()
+        self._touch()
+        return True
+
+    def recolor_text_highlights_in_rect(
+        self,
+        page_index: int,
+        page_rect: fitz.Rect,
+        color_rgb: tuple[float, float, float],
+    ) -> bool:
+        if page_rect.is_empty or page_rect.is_infinite:
+            return False
+        if not (0 <= page_index < len(self._doc)):
+            return False
+        page = self._doc[page_index]
+        if not any(
+            annot.type[0] == fitz.PDF_ANNOT_HIGHLIGHT
+            and self._highlight_annot_page_rect(annot).intersects(page_rect)
+            for annot in page.annots()
+        ):
+            return False
+        if not self._restoring_history:
+            self._undo_stack.append(self._snapshot_bytes())
+            if len(self._undo_stack) > _MAX_UNDO_LEVELS:
+                self._undo_stack.pop(0)
+            self._redo_stack.clear()
+        page = self._doc[page_index]
+        for annot in page.annots():
+            if annot.type[0] != fitz.PDF_ANNOT_HIGHLIGHT:
+                continue
+            if not self._highlight_annot_page_rect(annot).intersects(page_rect):
+                continue
+            annot.set_colors(stroke=color_rgb)
+            annot.set_opacity(0.45)
+            annot.update()
+        self._touch()
+        return True
+
+    def set_text_highlight_color(
+        self,
+        page_index: int,
+        page_rect: fitz.Rect,
+        color_rgb: tuple[float, float, float],
+    ) -> bool:
+        """Recolor intersecting highlights, or add a new highlight when none exist."""
+        if self.has_text_highlight_in_rect(page_index, page_rect):
+            return self.recolor_text_highlights_in_rect(page_index, page_rect, color_rgb)
+        return self.add_text_highlight(page_index, page_rect, color_rgb)
+
+    def get_page_text_highlight_overlays(
+        self,
+        page_index: int,
+        zoom: float,
+    ) -> list[tuple[fitz.Rect, tuple[float, float, float]]]:
+        """Return highlight annotation bounds and RGB (0..1) for overlay drawing."""
+        if not (0 <= page_index < len(self._doc)):
+            return []
+        page = self._doc[page_index]
+        overlays: list[tuple[fitz.Rect, tuple[float, float, float]]] = []
+        for annot in page.annots():
+            if annot.type[0] != fitz.PDF_ANNOT_HIGHLIGHT:
+                continue
+            colors = annot.colors or {}
+            stroke = colors.get("stroke") or colors.get("fill") or (1.0, 1.0, 0.0)
+            rgb = tuple(float(value) for value in stroke[:3])
+            vertices = annot.vertices
+            if not vertices:
+                rect = annot.rect
+                if not rect.is_empty:
+                    overlays.append(
+                        (
+                            fitz.Rect(
+                                rect.x0 * zoom,
+                                rect.y0 * zoom,
+                                rect.x1 * zoom,
+                                rect.y1 * zoom,
+                            ),
+                            rgb,
+                        )
+                    )
+                continue
+            for index in range(0, len(vertices), 4):
+                quad_points = vertices[index : index + 4]
+                if len(quad_points) < 4:
+                    continue
+                xs = [point[0] for point in quad_points]
+                ys = [point[1] for point in quad_points]
+                page_rect = fitz.Rect(min(xs), min(ys), max(xs), max(ys))
+                overlays.append(
+                    (
+                        fitz.Rect(
+                            page_rect.x0 * zoom,
+                            page_rect.y0 * zoom,
+                            page_rect.x1 * zoom,
+                            page_rect.y1 * zoom,
+                        ),
+                        rgb,
+                    )
+                )
+        return overlays
+
+    @staticmethod
+    def _highlight_annot_page_rect(annot) -> fitz.Rect:
+        vertices = annot.vertices
+        if vertices:
+            xs = [point[0] for point in vertices]
+            ys = [point[1] for point in vertices]
+            return fitz.Rect(min(xs), min(ys), max(xs), max(ys))
+        return annot.rect
+
+    @staticmethod
+    def _highlight_annot_contains_point(annot, point: fitz.Point) -> bool:
+        if annot.type[0] != fitz.PDF_ANNOT_HIGHLIGHT:
+            return False
+        vertices = annot.vertices
+        if vertices:
+            for index in range(0, len(vertices), 4):
+                quad_points = vertices[index : index + 4]
+                if len(quad_points) < 4:
+                    continue
+                xs = [point_tuple[0] for point_tuple in quad_points]
+                ys = [point_tuple[1] for point_tuple in quad_points]
+                quad_rect = fitz.Rect(min(xs), min(ys), max(xs), max(ys))
+                if quad_rect.contains(point):
+                    return True
+            return False
+        return annot.rect.contains(point)
+
+    @staticmethod
+    def _highlight_annot_quad_rects(annot) -> list[fitz.Rect]:
+        vertices = annot.vertices
+        if not vertices:
+            if annot.rect.is_empty:
+                return []
+            return [annot.rect]
+        quad_rects: list[fitz.Rect] = []
+        for index in range(0, len(vertices), 4):
+            quad_points = vertices[index : index + 4]
+            if len(quad_points) < 4:
+                continue
+            xs = [point[0] for point in quad_points]
+            ys = [point[1] for point in quad_points]
+            quad_rects.append(fitz.Rect(min(xs), min(ys), max(xs), max(ys)))
+        return quad_rects
+
+    def _find_highlight_selection_at_point(
+        self,
+        page_index: int,
+        point: fitz.Point,
+    ) -> tuple[fitz.Rect, list[fitz.Rect], str] | None:
+        """Return page rect, per-quad rects, and text for the highlight at *point*."""
+        if not (0 <= page_index < len(self._doc)):
+            return None
+        page = self._doc[page_index]
+        hit = fitz.Rect(point.x - 2, point.y - 2, point.x + 2, point.y + 2)
+        for annot in page.annots():
+            if annot.type[0] != fitz.PDF_ANNOT_HIGHLIGHT:
+                continue
+            page_rect = self._highlight_annot_page_rect(annot)
+            if not page_rect.intersects(hit):
+                continue
+            quad_rects = self._highlight_annot_quad_rects(annot)
+            if not quad_rects:
+                continue
+            text_parts: list[str] = []
+            for quad_rect in quad_rects:
+                text = page.get_text("text", clip=quad_rect).strip()
+                if text:
+                    text_parts.append(text)
+            selected_text = " ".join(text_parts) or page.get_text("text", clip=page_rect).strip()
+            return page_rect, quad_rects, selected_text
+        return None
+
+    def get_text_highlight_selection_at_point(
+        self,
+        page_index: int,
+        point: fitz.Point,
+    ) -> tuple[fitz.Rect, list[fitz.Rect], str] | None:
+        return self._find_highlight_selection_at_point(page_index, point)
+
+    def find_text_highlight_at_point(
+        self,
+        page_index: int,
+        point: fitz.Point,
+    ) -> fitz.Rect | None:
+        selection = self._find_highlight_selection_at_point(page_index, point)
+        if selection is None:
+            return None
+        return selection[0]
+
+    def has_text_highlight_in_rect(self, page_index: int, page_rect: fitz.Rect) -> bool:
+        if page_rect.is_empty or page_rect.is_infinite:
+            return False
+        if not (0 <= page_index < len(self._doc)):
+            return False
+        page = self._doc[page_index]
+        for annot in page.annots():
+            if annot.type[0] != fitz.PDF_ANNOT_HIGHLIGHT:
+                continue
+            if self._highlight_annot_page_rect(annot).intersects(page_rect):
+                return True
+        return False
+
+    def remove_text_highlights_in_rect(self, page_index: int, page_rect: fitz.Rect) -> bool:
+        if page_rect.is_empty or page_rect.is_infinite:
+            return False
+        if not (0 <= page_index < len(self._doc)):
+            return False
+        page = self._doc[page_index]
+        if not any(
+            annot.type[0] == fitz.PDF_ANNOT_HIGHLIGHT
+            and self._highlight_annot_page_rect(annot).intersects(page_rect)
+            for annot in page.annots()
+        ):
+            return False
+        if not self._restoring_history:
+            self._undo_stack.append(self._snapshot_bytes())
+            if len(self._undo_stack) > _MAX_UNDO_LEVELS:
+                self._undo_stack.pop(0)
+            self._redo_stack.clear()
+        page = self._doc[page_index]
+        to_delete = [
+            annot
+            for annot in page.annots()
+            if annot.type[0] == fitz.PDF_ANNOT_HIGHLIGHT
+            and self._highlight_annot_page_rect(annot).intersects(page_rect)
+        ]
+        for annot in to_delete:
+            page.delete_annot(annot)
+        self._touch()
+        return True
+
     def search_text(self, query: str) -> list[SearchHit]:
         needle = query.strip()
         if not needle:

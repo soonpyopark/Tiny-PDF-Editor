@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QStatusBar,
     QStyle,
     QTabWidget,
@@ -47,8 +48,21 @@ from pdf_editor.splash_screen import (
   show_loading_splash,
   toggle_about_splash,
 )
+from pdf_editor.highlight_panel import HighlightPanel
+from pdf_editor.left_side_nav import (
+  LEFT_SIDE_NAV_WIDTH,
+  SIDE_PANEL_DIVIDER_COLOR,
+  LeftSideNavBar,
+  SideNavTab,
+)
+from pdf_editor.side_panel_header import (
+  PANEL_HEADER_BTN_HEIGHT,
+  PANEL_HEADER_BTN_WIDTH,
+  SidePanelHeaderBar,
+)
 from pdf_editor.thumbnail_panel import (
   DEFAULT_THUMB_SCALE_LEVEL,
+  THUMB_PANEL_EXTRA_WIDTH,
   THUMB_SCALE_LEVELS,
   ThumbnailPanel,
   thumb_scale_for_level,
@@ -74,9 +88,9 @@ from pdf_editor.windows_file_assoc import (
 APP_BORDER_COLOR = "#333333"
 APP_WINDOW_BACKGROUND = "#eeeeee"
 APP_BORDER_WIDTH = 1
-DEFAULT_WINDOW_WIDTH = 1024
+DEFAULT_WINDOW_WIDTH = 1024 + LEFT_SIDE_NAV_WIDTH + THUMB_PANEL_EXTRA_WIDTH
 DEFAULT_WINDOW_HEIGHT = 900
-MIN_WINDOW_WIDTH = 520
+MIN_WINDOW_WIDTH = 520 + LEFT_SIDE_NAV_WIDTH + THUMB_PANEL_EXTRA_WIDTH
 MIN_WINDOW_HEIGHT = 480
 _TAB_BASENAME_MAX_LEN = 24
 _REDUCE_MENU_BTN_STYLE = """
@@ -347,44 +361,62 @@ class DocumentTab(QWidget):
 
     left = QWidget()
     left.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-    left_layout = QVBoxLayout(left)
+    left_layout = QHBoxLayout(left)
     left_layout.setContentsMargins(0, 0, 0, 0)
+    left_layout.setSpacing(0)
 
-    header = QHBoxLayout()
-    header.setSpacing(4)
-    header.setContentsMargins(4, 4, 4, 4)
-    header.addWidget(QLabel("썸네일"))
+    self.side_nav = LeftSideNavBar()
+    self.content_stack = QStackedWidget()
+
+    thumb_page = QWidget()
+    thumb_layout = QVBoxLayout(thumb_page)
+    thumb_layout.setContentsMargins(0, 0, 0, 0)
+    thumb_layout.setSpacing(0)
+
+    header_bar = SidePanelHeaderBar()
+    header = header_bar.row_layout
+    header.addWidget(QLabel("  썸네일"))
     header.addStretch()
 
-    btn_width, btn_height = 28, 26
     self._thumb_level = DEFAULT_THUMB_SCALE_LEVEL
     self._thumb_size = thumb_scale_for_level(self._thumb_level)
     self.btn_thumb_zoom_out = QPushButton("-")
-    self.btn_thumb_zoom_out.setFixedSize(btn_width, btn_height)
+    self.btn_thumb_zoom_out.setFixedSize(PANEL_HEADER_BTN_WIDTH, PANEL_HEADER_BTN_HEIGHT)
     self.btn_thumb_zoom_out.setToolTip("썸네일 축소")
     header.addWidget(self.btn_thumb_zoom_out)
     self.btn_thumb_zoom_in = QPushButton("+")
-    self.btn_thumb_zoom_in.setFixedSize(btn_width, btn_height)
+    self.btn_thumb_zoom_in.setFixedSize(PANEL_HEADER_BTN_WIDTH, PANEL_HEADER_BTN_HEIGHT)
     self.btn_thumb_zoom_in.setToolTip("썸네일 확대")
     header.addWidget(self.btn_thumb_zoom_in)
 
     self.btn_rotate_ccw = QPushButton("↺")
-    self.btn_rotate_ccw.setFixedSize(btn_width, btn_height)
+    self.btn_rotate_ccw.setFixedSize(PANEL_HEADER_BTN_WIDTH, PANEL_HEADER_BTN_HEIGHT)
     self.btn_rotate_ccw.setToolTip("선택 페이지 반시계 회전")
     header.addWidget(self.btn_rotate_ccw)
     self.btn_rotate_cw = QPushButton("↻")
-    self.btn_rotate_cw.setFixedSize(btn_width, btn_height)
+    self.btn_rotate_cw.setFixedSize(PANEL_HEADER_BTN_WIDTH, PANEL_HEADER_BTN_HEIGHT)
     self.btn_rotate_cw.setToolTip("선택 페이지 시계 회전")
     header.addWidget(self.btn_rotate_cw)
     self.btn_delete = QPushButton("🗑")
-    self.btn_delete.setFixedSize(btn_width, btn_height)
+    self.btn_delete.setFixedSize(PANEL_HEADER_BTN_WIDTH, PANEL_HEADER_BTN_HEIGHT)
     self.btn_delete.setToolTip("선택 페이지 삭제")
     header.addWidget(self.btn_delete)
-    left_layout.addLayout(header)
+    thumb_layout.addWidget(header_bar)
 
     self.thumbnails = ThumbnailPanel()
     self.thumbnails.set_document(document)
-    left_layout.addWidget(self.thumbnails, 1)
+    thumb_layout.addWidget(self.thumbnails, 1)
+
+    self.highlight_panel = HighlightPanel()
+    self.highlight_panel.set_document(document)
+
+    self.content_stack.addWidget(thumb_page)
+    self.content_stack.addWidget(self.highlight_panel)
+
+    left_layout.addWidget(self.side_nav)
+    left_layout.addWidget(self.content_stack, 1)
+
+    self.side_nav.tab_changed.connect(self._on_side_nav_tab_changed)
 
     self.viewer = PageViewer()
     self.viewer.set_document(document)
@@ -396,7 +428,7 @@ class DocumentTab(QWidget):
     self.splitter.setChildrenCollapsible(False)
     self.splitter.setHandleWidth(APP_BORDER_WIDTH)
     self.splitter.setStyleSheet(
-      f"QSplitter::handle:horizontal {{ background-color: {APP_WINDOW_BACKGROUND}; }}"
+      f"QSplitter::handle:horizontal {{ background-color: {SIDE_PANEL_DIVIDER_COLOR}; }}"
     )
 
     self._left_panel = left
@@ -410,6 +442,7 @@ class DocumentTab(QWidget):
   def _connect_signals(self) -> None:
     self.thumbnails.page_selected.connect(self._on_thumb_selected)
     self.viewer.page_changed.connect(self._on_viewer_page_changed)
+    self.viewer.page_canvas.text_highlight_added.connect(self._on_text_highlight_added)
     self.thumbnails.insert_requested.connect(self._on_insert)
     self.thumbnails.pages_move_requested.connect(self._on_move_pages)
     self.thumbnails.delete_requested.connect(self._on_delete)
@@ -443,6 +476,11 @@ class DocumentTab(QWidget):
 
     self._setup_page_navigation_shortcuts()
     self._sync_thumb_zoom_buttons()
+
+  def _on_side_nav_tab_changed(self, index: int) -> None:
+    self.content_stack.setCurrentIndex(index)
+    if index == int(SideNavTab.THUMBNAILS):
+      QTimer.singleShot(0, self.thumbnails._restore_after_tab_show)
 
   def _page_indices_for_clipboard(self) -> list[int]:
     return self.thumbnails.copy_indices()
@@ -629,7 +667,8 @@ class DocumentTab(QWidget):
     )
 
   def _apply_panel_width_limits(self, set_default_size: bool = False) -> None:
-    fixed_w, _, _ = self.thumbnails.get_panel_width_range()
+    thumb_w, _, _ = self.thumbnails.get_panel_width_range()
+    fixed_w = LEFT_SIDE_NAV_WIDTH + thumb_w
     if self._left_panel.width() != fixed_w:
       self._left_panel.setFixedWidth(fixed_w)
 
@@ -660,9 +699,14 @@ class DocumentTab(QWidget):
     self.thumbnails.set_current_index(index)
     self.thumbnails.blockSignals(False)
 
+  def _on_text_highlight_added(self) -> None:
+    self.highlight_panel.refresh()
+    self._notify_history_changed()
+
   def refresh_all(self, keep_index: int | None = None, select_indices: list[int] | None = None) -> None:
     index = keep_index if keep_index is not None else self.thumbnails.current_index()
     self.thumbnails.refresh(index, select_indices)
+    self.highlight_panel.refresh()
     self.viewer.set_current_index(index)
     self.viewer.refresh()
 
@@ -1568,8 +1612,11 @@ class MainWindow(QMainWindow):
 
   def _delete_selected(self) -> None:
     tab = self._current_tab()
-    if tab:
-      tab._on_delete(tab.thumbnails.selected_indices())
+    if not tab:
+      return
+    if tab.viewer.try_remove_selected_highlight():
+      return
+    tab._on_delete(tab.thumbnails.selected_indices())
 
   def _close_tab(self, index: int) -> None:
     widget = self.tabs.widget(index)

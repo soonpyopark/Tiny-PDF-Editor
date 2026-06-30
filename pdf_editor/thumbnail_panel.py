@@ -17,6 +17,7 @@ from PyQt6.QtGui import (
     QPainter,
     QPen,
     QPixmap,
+    QShowEvent,
     QWheelEvent,
 )
 from PyQt6.QtWidgets import (
@@ -52,6 +53,7 @@ _THUMB_MARGIN = 6
 _THUMB_SPACING = 4
 _THUMB_LABEL_HEIGHT = 20
 THUMB_ITEM_GAP = 20
+THUMB_PANEL_EXTRA_WIDTH = 50
 _PANEL_HEADER_MIN_WIDTH = 212
 _PANEL_EDGE_PADDING = 12
 DROP_INDICATOR_COLOR = QColor("#f28b82")
@@ -292,6 +294,7 @@ class ThumbnailListWidget(QListWidget):
 
     drop_at_index = pyqtSignal(int, list)
     pages_move_requested = pyqtSignal(int, list)
+    preview_page_changed = pyqtSignal(int)
     context_action = pyqtSignal(str)
     paste_at_index = pyqtSignal(int)
     paste_anchor_changed = pyqtSignal(int)
@@ -308,6 +311,7 @@ class ThumbnailListWidget(QListWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setSpacing(0)
         self.setUniformItemSizes(True)
+        self.setViewportMargins(0, THUMB_ITEM_GAP, 0, THUMB_ITEM_GAP)
         self.setIconSize(self.iconSize())
         self.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
         self.setDefaultDropAction(Qt.DropAction.CopyAction)
@@ -376,6 +380,8 @@ class ThumbnailListWidget(QListWidget):
         self._page_reorder_drag_active = False
         self._page_reorder_drag_vp_pos = QPoint()
         self._page_reorder_drop_index = 0
+        self._preview_row_override: int | None = None
+        self._pending_selection_after_drag: list[int] | None = None
         self._drag_autoscroll_dir = 0
         self._drag_autoscroll_speed = _RANGE_SELECT_SCROLL_STEP
         self._drag_autoscroll_vp_pos = QPoint()
@@ -398,10 +404,14 @@ class ThumbnailListWidget(QListWidget):
     def _column_width(self) -> int:
         cell_w = ThumbnailItemWidget.cell_size(self._thumb_scale).width()
         vp_w = self.viewport().width()
-        return max(cell_w, vp_w) if vp_w > 0 else cell_w
+        if vp_w <= 0:
+            return self._last_column_width if self._last_column_width > 0 else cell_w
+        return max(cell_w, vp_w)
 
     def _apply_column_layout(self) -> None:
         if self._layout_in_progress:
+            return
+        if self.viewport().width() <= 0 and self._last_column_width > 0:
             return
         column_w = self._column_width()
         if column_w == self._last_column_width:
@@ -441,7 +451,13 @@ class ThumbnailListWidget(QListWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._drop_overlay.sync_geometry()
-        self._schedule_column_layout()
+        if self.isVisible():
+            self._schedule_column_layout()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        self._last_column_width = -1
+        QTimer.singleShot(0, self._schedule_column_layout)
 
     def configure_grid(self, thumb_scale: int) -> None:
         self._thumb_scale = thumb_scale
@@ -531,6 +547,27 @@ class ThumbnailListWidget(QListWidget):
         if 0 <= row < self.count():
             self.setCurrentRow(row)
             self._anchor_index = row
+
+    def _apply_multi_selection(
+        self,
+        indices: list[int],
+        *,
+        preview_row: int | None = None,
+    ) -> None:
+        """Select rows without dropping range ends when changing the current row."""
+        if not indices or self.count() == 0:
+            return
+        preview = preview_row if preview_row is not None else indices[0]
+        preview = max(0, min(preview, self.count() - 1))
+        self._block_selection_sync = True
+        self.clearSelection()
+        self.setCurrentRow(preview)
+        self._anchor_index = preview
+        for row in indices:
+            if 0 <= row < self.count():
+                self.item(row).setSelected(True)
+        self._block_selection_sync = False
+        self._sync_selection_visuals()
 
     def set_item_widget(self, row: int, pixmap: QPixmap, page_number: int) -> None:
         item = self.item(row)
@@ -909,13 +946,17 @@ class ThumbnailListWidget(QListWidget):
     def _sync_selection_visuals(self) -> None:
         if self._block_selection_sync:
             return
-        current_row = self.currentRow()
+        display_current = (
+            self._preview_row_override
+            if self._preview_row_override is not None
+            else self.currentRow()
+        )
         for row in range(self.count()):
             item = self.item(row)
             widget = self.itemWidget(item)
             if item and isinstance(widget, ThumbnailItemWidget):
                 widget.set_selected(item.isSelected())
-                widget.set_current(row == current_row)
+                widget.set_current(row == display_current)
 
     def _start_page_drag_from_row(self, row: int) -> None:
         self._finish_range_select()
@@ -934,10 +975,9 @@ class ThumbnailListWidget(QListWidget):
         self._drag_start_indices = sorted(indices)
         preview_row = self._drag_start_indices[0]
         if len(self._drag_start_indices) > 1:
-            self._block_selection_sync = True
-            self.setCurrentRow(preview_row)
+            self._preview_row_override = preview_row
             self._anchor_index = preview_row
-            self._block_selection_sync = False
+            self.preview_page_changed.emit(preview_row)
         self._sync_selection_visuals()
         self._start_page_drag()
 
@@ -992,6 +1032,14 @@ class ThumbnailListWidget(QListWidget):
         mime = QMimeData()
         mime.setData(PAGE_MOVE_MIME, ",".join(str(index) for index in indices).encode())
 
+        self._block_selection_sync = True
+        for row in indices:
+            item = self.item(row)
+            if item:
+                item.setSelected(True)
+        self._block_selection_sync = False
+        self._sync_selection_visuals()
+
         drag = QDrag(self)
         drag.setMimeData(mime)
         drag_pixmap = self._build_drag_pixmap(indices)
@@ -1003,9 +1051,15 @@ class ThumbnailListWidget(QListWidget):
             drag.exec(Qt.DropAction.MoveAction)
         finally:
             self._page_reorder_drag_active = False
+            self._preview_row_override = None
+            if self._pending_selection_after_drag:
+                rows = self._pending_selection_after_drag
+                self._pending_selection_after_drag = None
+                self._apply_multi_selection(rows, preview_row=rows[0])
             self._drag_autoscroll_dir = 0
             self._drag_autoscroll_timer.stop()
             self._show_drop_indicator(None)
+            self._sync_selection_visuals()
 
     def set_history_state(self, provider) -> None:
         self._history_state = provider
@@ -1484,6 +1538,7 @@ class ThumbnailPanel(QWidget):
 
         self.list_widget = ThumbnailListWidget()
         self.list_widget.currentRowChanged.connect(self._on_current_changed)
+        self.list_widget.preview_page_changed.connect(self.page_selected.emit)
         self.list_widget.drop_at_index.connect(self._on_drop)
         self.list_widget.pages_move_requested.connect(self._on_pages_move)
         self.list_widget.context_action.connect(self._on_context_action)
@@ -1587,14 +1642,14 @@ class ThumbnailPanel(QWidget):
             target = keep_index if keep_index is not None else 0
             target = max(0, min(target, lw.count() - 1))
             if select_indices:
-                lw._block_selection_sync = True
-                for row in select_indices:
-                    if 0 <= row < lw.count():
-                        lw.item(row).setSelected(True)
-                lw._block_selection_sync = False
+                lw._pending_selection_after_drag = list(select_indices)
+                lw._apply_multi_selection(
+                    select_indices,
+                    preview_row=select_indices[0],
+                )
                 target = max(0, min(select_indices[0], lw.count() - 1))
-            lw._set_focus_row(target)
-            lw._sync_selection_visuals()
+            else:
+                lw._set_focus_row(target)
             lw.scroll_to_row(target)
         lw.setUpdatesEnabled(True)
         self._block_signals = False
@@ -1642,15 +1697,14 @@ class ThumbnailPanel(QWidget):
 
         target = 0 if keep_index is None else max(0, min(keep_index, count - 1))
         if select_indices:
-            self.list_widget._block_selection_sync = True
-            self.list_widget.clearSelection()
-            for row in select_indices:
-                if 0 <= row < count:
-                    self.list_widget.item(row).setSelected(True)
+            self.list_widget._apply_multi_selection(
+                select_indices,
+                preview_row=select_indices[0],
+            )
             target = max(0, min(select_indices[0], count - 1))
-            self.list_widget._block_selection_sync = False
-        self.list_widget._set_focus_row(target)
-        self.list_widget._sync_selection_visuals()
+        else:
+            self.list_widget._set_focus_row(target)
+            self.list_widget._sync_selection_visuals()
         self.list_widget.scroll_to_row(target)
 
         first_changed = min(deleted[0], count - 1)
@@ -1691,15 +1745,14 @@ class ThumbnailPanel(QWidget):
 
         target = index if keep_index is None else max(0, min(keep_index, self.list_widget.count() - 1))
         if select_indices:
-            self.list_widget._block_selection_sync = True
-            self.list_widget.clearSelection()
-            for row in select_indices:
-                if 0 <= row < self.list_widget.count():
-                    self.list_widget.item(row).setSelected(True)
+            self.list_widget._apply_multi_selection(
+                select_indices,
+                preview_row=select_indices[0],
+            )
             target = max(0, min(select_indices[0], self.list_widget.count() - 1))
-            self.list_widget._block_selection_sync = False
-        self.list_widget._set_focus_row(target)
-        self.list_widget._sync_selection_visuals()
+        else:
+            self.list_widget._set_focus_row(target)
+            self.list_widget._sync_selection_visuals()
         self.list_widget.scroll_to_row(target)
         self._block_signals = False
         self._update_empty_state()
@@ -1781,6 +1834,8 @@ class ThumbnailPanel(QWidget):
             self._pending_rows.add(row)
 
     def _release_offscreen_thumbnails(self) -> None:
+        if not self.isVisible():
+            return
         keep = self._rows_to_keep_loaded()
         for row in list(self._thumb_cache.keys()):
             if row in keep:
@@ -1849,11 +1904,32 @@ class ThumbnailPanel(QWidget):
         self.list_widget.doItemsLayout()
 
     def _on_thumbnail_scroll(self, _value: int) -> None:
-        if self._refresh_in_progress:
+        if self._refresh_in_progress or not self.isVisible():
             return
         self._release_offscreen_thumbnails()
         if self._pending_rows:
             self._schedule_thumbnail_load()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self._restore_after_tab_show)
+
+    def _restore_after_tab_show(self) -> None:
+        if not self.isVisible() or not self._document:
+            return
+        lw = self.list_widget
+        lw._last_column_width = -1
+        lw._sync_item_widget_geometry()
+        lw._apply_column_layout()
+        lw.doItemsLayout()
+        lw.viewport().update()
+
+        for row in lw.visible_rows():
+            self._pending_rows.add(row)
+        current = lw.currentRow()
+        if current >= 0:
+            self._pending_rows.add(current)
+        self._schedule_thumbnail_load()
 
     def _schedule_thumbnail_load(self) -> None:
         if self._thumb_load_scheduled or not self._pending_rows:
@@ -1878,6 +1954,8 @@ class ThumbnailPanel(QWidget):
             current = self.list_widget.currentRow()
             if current >= 0 and current in self._pending_rows:
                 visible_pending = [current]
+            elif not self.list_widget.isVisible():
+                return
             else:
                 self._release_offscreen_thumbnails()
                 return
@@ -1919,7 +1997,7 @@ class ThumbnailPanel(QWidget):
     def get_panel_width_range(self) -> tuple[int, int, int]:
         """Return fixed width for single-column thumbnail sidebar."""
         col = ThumbnailListWidget.column_width_for(self._thumb_scale)
-        fixed_w = max(_PANEL_HEADER_MIN_WIDTH, col)
+        fixed_w = max(_PANEL_HEADER_MIN_WIDTH, col) + THUMB_PANEL_EXTRA_WIDTH
         return fixed_w, fixed_w, fixed_w
 
     def get_width_limits(self) -> tuple[int, int]:
