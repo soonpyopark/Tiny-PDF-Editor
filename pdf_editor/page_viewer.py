@@ -27,11 +27,17 @@ from PyQt6.QtWidgets import (
 from pdf_editor.document import PdfDocument
 from pdf_editor.highlight_colors import (
     DEFAULT_HIGHLIGHT_COLOR_ID,
+    DEFAULT_UNDERLINE_COLOR_ID,
     HIGHLIGHT_RGB,
+    UNDERLINE_RGB,
     highlight_qcolor_from_rgb,
+    markup_qcolor_from_rgb,
     preferred_highlight_rgb,
+    preferred_underline_rgb,
     set_preferred_highlight_color_id,
     set_preferred_highlight_rgb,
+    set_preferred_underline_color_id,
+    set_preferred_underline_rgb,
 )
 from pdf_editor.pixmap_utils import pixmap_from_fitz
 from pdf_editor.text_highlight_menu import build_text_selection_context_menu
@@ -160,6 +166,7 @@ class PageCanvas(QLabel):
         self._selection_page_rect: fitz.Rect | None = None
         self._selected_text = ""
         self._text_highlights: list[tuple[QRect, QColor]] = []
+        self._text_underlines: list[tuple[tuple[float, float, float, float], QColor]] = []
         self._search_highlights: list[QRect] = []
         self._active_search_highlight = -1
 
@@ -190,6 +197,13 @@ class PageCanvas(QLabel):
 
     def set_text_highlights(self, highlights: list[tuple[QRect, QColor]]) -> None:
         self._text_highlights = highlights
+        self.update()
+
+    def set_text_underlines(
+        self,
+        underlines: list[tuple[tuple[float, float, float, float], QColor]],
+    ) -> None:
+        self._text_underlines = underlines
         self.update()
 
     def clear_search_highlights(self) -> None:
@@ -266,6 +280,59 @@ class PageCanvas(QLabel):
             self.text_highlight_added.emit()
             self.clear_selection()
 
+    def _apply_preferred_text_underline(self) -> None:
+        if not self._document or self._selection_page_rect is None:
+            return
+        rgb = preferred_underline_rgb()
+        if self._document.set_text_underline_color(
+            self._page_index,
+            self._selection_page_rect,
+            rgb,
+        ):
+            self.text_highlight_added.emit()
+            self.clear_selection()
+
+    def _apply_text_underline(self, color_id: str) -> None:
+        if not self._document or self._selection_page_rect is None:
+            return
+        rgb = UNDERLINE_RGB.get(color_id, UNDERLINE_RGB[DEFAULT_UNDERLINE_COLOR_ID])
+        if self._document.set_text_underline_color(
+            self._page_index,
+            self._selection_page_rect,
+            rgb,
+        ):
+            set_preferred_underline_color_id(color_id)
+            self.text_highlight_added.emit()
+            self.clear_selection()
+
+    def _pick_more_underline_color(self) -> None:
+        current = preferred_underline_rgb()
+        default = QColor.fromRgbF(current[0], current[1], current[2])
+        chosen = QColorDialog.getColor(default, self, "밑줄 색상 선택")
+        if not chosen.isValid():
+            return
+        if not self._document or self._selection_page_rect is None:
+            return
+        rgb = (chosen.redF(), chosen.greenF(), chosen.blueF())
+        if self._document.set_text_underline_color(
+            self._page_index,
+            self._selection_page_rect,
+            rgb,
+        ):
+            set_preferred_underline_rgb(rgb)
+            self.text_highlight_added.emit()
+            self.clear_selection()
+
+    def _remove_underline_selection(self) -> None:
+        if not self._document or self._selection_page_rect is None:
+            return
+        if self._document.remove_text_underlines_in_rect(
+            self._page_index,
+            self._selection_page_rect,
+        ):
+            self.text_highlight_added.emit()
+            self.clear_selection()
+
     def _page_point_from_viewport(self, pos: QPoint) -> fitz.Point:
         return fitz.Point(pos.x() / self._zoom, pos.y() / self._zoom)
 
@@ -304,16 +371,67 @@ class PageCanvas(QLabel):
             )
         )
 
+    def _select_markup_at(self, pos: QPoint) -> bool:
+        if self._select_highlight_at(pos):
+            return True
+        return self._select_underline_at(pos)
+
+    def _select_underline_at(self, pos: QPoint) -> bool:
+        if not self._document:
+            return False
+        selection = self._document.get_text_underline_selection_at_point(
+            self._page_index,
+            self._page_point_from_viewport(pos),
+        )
+        if selection is None:
+            return False
+        page_rect, quad_rects, selected_text = selection
+        self._selection_page_rect = page_rect
+        zoom = self._zoom
+        self._selection_highlights = [
+            QRect(
+                int(rect.x0 * zoom),
+                int(rect.y0 * zoom),
+                max(1, int((rect.x1 - rect.x0) * zoom)),
+                max(1, int((rect.y1 - rect.y0) * zoom)),
+            )
+            for rect in quad_rects
+        ]
+        self._selected_text = selected_text
+        self.update()
+        return True
+
+    def _can_remove_underline(self) -> bool:
+        return bool(
+            self._document
+            and self._selection_page_rect is not None
+            and self._document.has_text_underline_in_rect(
+                self._page_index,
+                self._selection_page_rect,
+            )
+        )
+
     def remove_selected_highlight(self) -> bool:
         if not self._can_remove_highlight():
             return False
         self._remove_highlight_selection()
         return True
 
+    def remove_selected_underline(self) -> bool:
+        if not self._can_remove_underline():
+            return False
+        self._remove_underline_selection()
+        return True
+
+    def try_remove_selected_markup(self) -> bool:
+        if self.remove_selected_highlight():
+            return True
+        return self.remove_selected_underline()
+
     def _prepare_context_menu_selection(self, pos: QPoint) -> bool:
         if self._selected_text.strip():
             return True
-        return self._select_highlight_at(pos)
+        return self._select_markup_at(pos)
 
     def contextMenuEvent(self, event) -> None:
         if not self._prepare_context_menu_selection(event.pos()):
@@ -323,21 +441,17 @@ class PageCanvas(QLabel):
             on_apply_default_highlight=self._apply_preferred_text_highlight,
             on_color_selected=self._apply_text_highlight,
             on_more_colors=self._pick_more_highlight_color,
+            on_apply_default_underline=self._apply_preferred_text_underline,
+            on_underline_color_selected=self._apply_text_underline,
+            on_more_underline_colors=self._pick_more_underline_color,
             on_copy=self._copy_selection,
             on_remove_highlight=self._remove_highlight_selection,
             show_remove_highlight=self._can_remove_highlight(),
+            on_remove_underline=self._remove_underline_selection,
+            show_remove_underline=self._can_remove_underline(),
         )
         menu.exec(event.globalPos())
         event.accept()
-
-    def _page_rect_from_points(self, start: QPoint, end: QPoint) -> fitz.Rect:
-        zoom = self._zoom
-        return fitz.Rect(
-            min(start.x(), end.x()) / zoom,
-            min(start.y(), end.y()) / zoom,
-            max(start.x(), end.x()) / zoom,
-            max(start.y(), end.y()) / zoom,
-        )
 
     def _update_selection(self) -> None:
         if (
@@ -355,25 +469,28 @@ class PageCanvas(QLabel):
             self._selected_text = ""
             return
 
-        page_rect = self._page_rect_from_points(self._anchor, self._cursor)
+        page_rect, highlight_rects, selected_text = self._document.get_text_block_selection(
+            self._page_index,
+            self._page_point_from_viewport(self._anchor),
+            self._page_point_from_viewport(self._cursor),
+            self._zoom,
+        )
+        if page_rect is None:
+            self._selection_highlights = []
+            self._selection_page_rect = None
+            self._selected_text = ""
+            return
         self._selection_page_rect = page_rect
         self._selection_highlights = [
             QRect(int(x), int(y), max(1, int(w)), max(1, int(h)))
-            for x, y, w, h in self._document.get_word_highlight_rects(
-                self._page_index,
-                page_rect,
-                self._zoom,
-            )
+            for x, y, w, h in highlight_rects
         ]
-        self._selected_text = self._document.get_text_in_rect(
-            self._page_index,
-            page_rect,
-        )
+        self._selected_text = selected_text
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self.setFocus()
-            if self._select_highlight_at(event.pos()):
+            if self._select_markup_at(event.pos()):
                 self._anchor = None
                 self._cursor = None
                 event.accept()
@@ -403,6 +520,7 @@ class PageCanvas(QLabel):
         super().paintEvent(event)
         if (
             not self._text_highlights
+            and not self._text_underlines
             and not self._search_highlights
             and not self._selection_highlights
         ):
@@ -413,6 +531,14 @@ class PageCanvas(QLabel):
             for rect, color in self._text_highlights:
                 painter.setBrush(color)
                 painter.drawRect(rect)
+        if self._text_underlines:
+            for line, color in self._text_underlines:
+                x0, y0, x1, y1 = line
+                pen = QPen(color)
+                pen.setWidth(max(1, int(round(2 * self._zoom))))
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                painter.setPen(pen)
+                painter.drawLine(int(x0), int(y1), int(x1), int(y1))
         if self._search_highlights:
             painter.setPen(Qt.PenStyle.NoPen)
             for index, rect in enumerate(self._search_highlights):
@@ -437,10 +563,15 @@ class PageCanvas(QLabel):
             self._copy_selection()
             event.accept()
             return
-        if event.key() == Qt.Key.Key_Delete and self._can_remove_highlight():
-            self._remove_highlight_selection()
-            event.accept()
-            return
+        if event.key() == Qt.Key.Key_Delete:
+            if self._can_remove_highlight():
+                self._remove_highlight_selection()
+                event.accept()
+                return
+            if self._can_remove_underline():
+                self._remove_underline_selection()
+                event.accept()
+                return
         super().keyPressEvent(event)
 
 
@@ -633,7 +764,7 @@ class PageViewer(QWidget):
         return self._current_index
 
     def try_remove_selected_highlight(self) -> bool:
-        return self.page_canvas.remove_selected_highlight()
+        return self.page_canvas.try_remove_selected_markup()
 
     def set_current_index(self, index: int) -> None:
         if not self._document or self._document.page_count == 0:
@@ -752,14 +883,15 @@ class PageViewer(QWidget):
     def _apply_text_highlights_overlay(self) -> None:
         if not self._document or self._document.page_count == 0:
             self.page_canvas.set_text_highlights([])
+            self.page_canvas.set_text_underlines([])
             return
         zoom = self._effective_zoom()
-        overlays: list[tuple[QRect, QColor]] = []
+        highlight_overlays: list[tuple[QRect, QColor]] = []
         for rect, rgb in self._document.get_page_text_highlight_overlays(
             self._current_index,
             zoom,
         ):
-            overlays.append(
+            highlight_overlays.append(
                 (
                     QRect(
                         int(rect.x0),
@@ -770,7 +902,14 @@ class PageViewer(QWidget):
                     highlight_qcolor_from_rgb(rgb),
                 )
             )
-        self.page_canvas.set_text_highlights(overlays)
+        underline_overlays: list[tuple[tuple[float, float, float, float], QColor]] = []
+        for line, rgb in self._document.get_page_text_underline_overlays(
+            self._current_index,
+            zoom,
+        ):
+            underline_overlays.append((line, markup_qcolor_from_rgb(rgb)))
+        self.page_canvas.set_text_highlights(highlight_overlays)
+        self.page_canvas.set_text_underlines(underline_overlays)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)

@@ -866,6 +866,126 @@ class PdfDocument:
         page = self._doc[index]
         return page.get_text("text", clip=rect).strip()
 
+    @staticmethod
+    def _word_line_id(word) -> tuple[int, int]:
+        return int(word[5]), int(word[6])
+
+    @staticmethod
+    def _word_sort_key(word) -> tuple[int, int, int]:
+        return int(word[5]), int(word[6]), int(word[7])
+
+    @staticmethod
+    def _word_index_at_point(words: list, point: fitz.Point) -> int:
+        containing = [
+            index
+            for index, word in enumerate(words)
+            if fitz.Rect(word[:4]).contains(point)
+        ]
+        if containing:
+            return containing[0]
+        best_index = 0
+        best_distance = float("inf")
+        for index, word in enumerate(words):
+            rect = fitz.Rect(word[:4])
+            center_x = (rect.x0 + rect.x1) / 2
+            center_y = (rect.y0 + rect.y1) / 2
+            distance = (center_x - point.x) ** 2 + (center_y - point.y) ** 2
+            if distance < best_distance:
+                best_distance = distance
+                best_index = index
+        return best_index
+
+    @staticmethod
+    def _selection_text_from_words(words: list) -> str:
+        if not words:
+            return ""
+        lines: list[str] = []
+        current_line: tuple[int, int] | None = None
+        parts: list[str] = []
+        for word in words:
+            line_id = PdfDocument._word_line_id(word)
+            if line_id != current_line:
+                if parts:
+                    lines.append(" ".join(parts))
+                parts = [str(word[4])]
+                current_line = line_id
+            else:
+                parts.append(str(word[4]))
+        if parts:
+            lines.append(" ".join(parts))
+        return "\n".join(lines)
+
+    def get_text_block_selection(
+        self,
+        page_index: int,
+        anchor: fitz.Point,
+        cursor: fitz.Point,
+        zoom: float,
+    ) -> tuple[fitz.Rect | None, list[tuple[float, float, float, float]], str]:
+        """Select words line-wise: dragging down/up includes full intermediate lines."""
+        if not (0 <= page_index < len(self._doc)):
+            return None, [], ""
+        page = self._doc[page_index]
+        words = page.get_text("words")
+        if not words:
+            return None, [], ""
+
+        anchor_idx = self._word_index_at_point(words, anchor)
+        cursor_idx = self._word_index_at_point(words, cursor)
+        anchor_word = words[anchor_idx]
+        cursor_word = words[cursor_idx]
+
+        line_id = self._word_line_id
+        word_key = self._word_sort_key
+        anchor_line = line_id(anchor_word)
+        cursor_line = line_id(cursor_word)
+        selected: list = []
+
+        if anchor_line == cursor_line:
+            lo, hi = sorted((anchor_idx, cursor_idx))
+            selected = words[lo : hi + 1]
+        elif anchor_line < cursor_line:
+            anchor_key = word_key(anchor_word)
+            cursor_key = word_key(cursor_word)
+            for word in words:
+                current_line = line_id(word)
+                current_key = word_key(word)
+                if current_line == anchor_line:
+                    if current_key >= anchor_key:
+                        selected.append(word)
+                elif current_line == cursor_line:
+                    if current_key <= cursor_key:
+                        selected.append(word)
+                elif anchor_line < current_line < cursor_line:
+                    selected.append(word)
+        else:
+            anchor_key = word_key(anchor_word)
+            cursor_key = word_key(cursor_word)
+            for word in words:
+                current_line = line_id(word)
+                current_key = word_key(word)
+                if current_line == cursor_line:
+                    if current_key >= cursor_key:
+                        selected.append(word)
+                elif current_line == anchor_line:
+                    if current_key <= anchor_key:
+                        selected.append(word)
+                elif cursor_line < current_line < anchor_line:
+                    selected.append(word)
+
+        if not selected:
+            return None, [], ""
+
+        page_rect = fitz.Rect(selected[0][:4])
+        highlight_rects: list[tuple[float, float, float, float]] = []
+        for word in selected:
+            x0, y0, x1, y1 = word[:4]
+            page_rect |= fitz.Rect(x0, y0, x1, y1)
+            highlight_rects.append(
+                (x0 * zoom, y0 * zoom, (x1 - x0) * zoom, (y1 - y0) * zoom)
+            )
+        return page_rect, highlight_rects, self._selection_text_from_words(selected)
+
     def get_word_highlight_rects(
         self, index: int, rect: fitz.Rect, zoom: float
     ) -> list[tuple[float, float, float, float]]:
@@ -1136,6 +1256,192 @@ class PdfDocument:
             annot
             for annot in page.annots()
             if annot.type[0] == fitz.PDF_ANNOT_HIGHLIGHT
+            and self._highlight_annot_page_rect(annot).intersects(page_rect)
+        ]
+        for annot in to_delete:
+            page.delete_annot(annot)
+        self._touch()
+        return True
+
+    def _word_quads_in_rect(self, page, page_rect: fitz.Rect) -> list[fitz.Quad]:
+        quads: list[fitz.Quad] = []
+        for word in page.get_text("words", clip=page_rect):
+            x0, y0, x1, y1 = word[:4]
+            quads.append(
+                fitz.Quad(
+                    fitz.Point(x0, y1),
+                    fitz.Point(x1, y1),
+                    fitz.Point(x0, y0),
+                    fitz.Point(x1, y0),
+                )
+            )
+        return quads
+
+    def add_text_underline(
+        self,
+        page_index: int,
+        page_rect: fitz.Rect,
+        color_rgb: tuple[float, float, float],
+    ) -> bool:
+        if page_rect.is_empty or page_rect.is_infinite:
+            return False
+        if not (0 <= page_index < len(self._doc)):
+            return False
+        page = self._doc[page_index]
+        quads = self._word_quads_in_rect(page, page_rect)
+        if not quads:
+            return False
+        self._record_undo_checkpoint()
+        annot = page.add_underline_annot(quads)
+        annot.set_colors(stroke=color_rgb)
+        annot.update()
+        self._touch()
+        return True
+
+    def recolor_text_underlines_in_rect(
+        self,
+        page_index: int,
+        page_rect: fitz.Rect,
+        color_rgb: tuple[float, float, float],
+    ) -> bool:
+        if page_rect.is_empty or page_rect.is_infinite:
+            return False
+        if not (0 <= page_index < len(self._doc)):
+            return False
+        page = self._doc[page_index]
+        if not any(
+            annot.type[0] == fitz.PDF_ANNOT_UNDERLINE
+            and self._highlight_annot_page_rect(annot).intersects(page_rect)
+            for annot in page.annots()
+        ):
+            return False
+        if not self._restoring_history:
+            self._undo_stack.append(self._snapshot_bytes())
+            if len(self._undo_stack) > _MAX_UNDO_LEVELS:
+                self._undo_stack.pop(0)
+            self._redo_stack.clear()
+        page = self._doc[page_index]
+        for annot in page.annots():
+            if annot.type[0] != fitz.PDF_ANNOT_UNDERLINE:
+                continue
+            if not self._highlight_annot_page_rect(annot).intersects(page_rect):
+                continue
+            annot.set_colors(stroke=color_rgb)
+            annot.update()
+        self._touch()
+        return True
+
+    def set_text_underline_color(
+        self,
+        page_index: int,
+        page_rect: fitz.Rect,
+        color_rgb: tuple[float, float, float],
+    ) -> bool:
+        if self.has_text_underline_in_rect(page_index, page_rect):
+            return self.recolor_text_underlines_in_rect(page_index, page_rect, color_rgb)
+        return self.add_text_underline(page_index, page_rect, color_rgb)
+
+    def get_page_text_underline_overlays(
+        self,
+        page_index: int,
+        zoom: float,
+    ) -> list[tuple[tuple[float, float, float, float], tuple[float, float, float]]]:
+        if not (0 <= page_index < len(self._doc)):
+            return []
+        page = self._doc[page_index]
+        overlays: list[
+            tuple[tuple[float, float, float, float], tuple[float, float, float]]
+        ] = []
+        for annot in page.annots():
+            if annot.type[0] != fitz.PDF_ANNOT_UNDERLINE:
+                continue
+            colors = annot.colors or {}
+            stroke = colors.get("stroke") or colors.get("fill") or (1.0, 0.0, 0.0)
+            rgb = tuple(float(value) for value in stroke[:3])
+            for quad_rect in self._highlight_annot_quad_rects(annot):
+                y_bottom = quad_rect.y1 * zoom
+                overlays.append(
+                    (
+                        (
+                            quad_rect.x0 * zoom,
+                            y_bottom,
+                            quad_rect.x1 * zoom,
+                            y_bottom,
+                        ),
+                        rgb,
+                    )
+                )
+        return overlays
+
+    def _find_underline_selection_at_point(
+        self,
+        page_index: int,
+        point: fitz.Point,
+    ) -> tuple[fitz.Rect, list[fitz.Rect], str] | None:
+        if not (0 <= page_index < len(self._doc)):
+            return None
+        page = self._doc[page_index]
+        hit = fitz.Rect(point.x - 2, point.y - 2, point.x + 2, point.y + 2)
+        for annot in page.annots():
+            if annot.type[0] != fitz.PDF_ANNOT_UNDERLINE:
+                continue
+            page_rect = self._highlight_annot_page_rect(annot)
+            if not page_rect.intersects(hit):
+                continue
+            quad_rects = self._highlight_annot_quad_rects(annot)
+            if not quad_rects:
+                continue
+            text_parts: list[str] = []
+            for quad_rect in quad_rects:
+                text = page.get_text("text", clip=quad_rect).strip()
+                if text:
+                    text_parts.append(text)
+            selected_text = " ".join(text_parts) or page.get_text("text", clip=page_rect).strip()
+            return page_rect, quad_rects, selected_text
+        return None
+
+    def get_text_underline_selection_at_point(
+        self,
+        page_index: int,
+        point: fitz.Point,
+    ) -> tuple[fitz.Rect, list[fitz.Rect], str] | None:
+        return self._find_underline_selection_at_point(page_index, point)
+
+    def has_text_underline_in_rect(self, page_index: int, page_rect: fitz.Rect) -> bool:
+        if page_rect.is_empty or page_rect.is_infinite:
+            return False
+        if not (0 <= page_index < len(self._doc)):
+            return False
+        page = self._doc[page_index]
+        for annot in page.annots():
+            if annot.type[0] != fitz.PDF_ANNOT_UNDERLINE:
+                continue
+            if self._highlight_annot_page_rect(annot).intersects(page_rect):
+                return True
+        return False
+
+    def remove_text_underlines_in_rect(self, page_index: int, page_rect: fitz.Rect) -> bool:
+        if page_rect.is_empty or page_rect.is_infinite:
+            return False
+        if not (0 <= page_index < len(self._doc)):
+            return False
+        page = self._doc[page_index]
+        if not any(
+            annot.type[0] == fitz.PDF_ANNOT_UNDERLINE
+            and self._highlight_annot_page_rect(annot).intersects(page_rect)
+            for annot in page.annots()
+        ):
+            return False
+        if not self._restoring_history:
+            self._undo_stack.append(self._snapshot_bytes())
+            if len(self._undo_stack) > _MAX_UNDO_LEVELS:
+                self._undo_stack.pop(0)
+            self._redo_stack.clear()
+        page = self._doc[page_index]
+        to_delete = [
+            annot
+            for annot in page.annots()
+            if annot.type[0] == fitz.PDF_ANNOT_UNDERLINE
             and self._highlight_annot_page_rect(annot).intersects(page_rect)
         ]
         for annot in to_delete:

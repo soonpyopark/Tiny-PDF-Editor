@@ -6,46 +6,31 @@ from __future__ import annotations
 
 
 
-from collections.abc import Callable
-
-
+from collections.abc import Callable, Sequence
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, QSize, pyqtSignal
 
 from PyQt6.QtGui import QCursor, QIcon, QMouseEvent, QPainter, QPen, QColor, QPixmap
 
 from PyQt6.QtWidgets import (
-
     QApplication,
-
     QHBoxLayout,
-
     QLabel,
-
     QMenu,
-
     QPushButton,
-
     QSizePolicy,
-
     QToolButton,
-
     QWidget,
-
     QWidgetAction,
-
 )
 
-
-
 from pdf_editor.highlight_colors import (
-
     HIGHLIGHT_PRESET_ORDER,
-
+    UNDERLINE_PRESET_ORDER,
     color_circle_icon,
-
     preferred_highlight_icon,
-
+    preferred_underline_icon,
+    underline_color_circle_icon,
 )
 
 
@@ -303,7 +288,14 @@ class _HighlightColorPicker(QWidget):
 
 
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        preset_order: Sequence[str] = HIGHLIGHT_PRESET_ORDER,
+        icon_for: Callable[[str], QIcon] = color_circle_icon,
+        light_tooltips: bool = True,
+    ) -> None:
 
         super().__init__(parent)
 
@@ -321,11 +313,11 @@ class _HighlightColorPicker(QWidget):
 
 
 
-        for color_id in HIGHLIGHT_PRESET_ORDER:
+        for color_id in preset_order:
 
             button = QToolButton()
 
-            button.setIcon(color_circle_icon(color_id, size=16))
+            button.setIcon(icon_for(color_id, size=16))
 
             button.setIconSize(QSize(16, 16))
 
@@ -335,7 +327,7 @@ class _HighlightColorPicker(QWidget):
 
             button.setStyleSheet(_COLOR_PICKER_TOOL_BUTTON_STYLE)
 
-            button.setToolTip(_preset_tooltip(color_id))
+            button.setToolTip(_preset_tooltip(color_id, light=light_tooltips))
 
             button.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -397,8 +389,6 @@ class _HighlightSubmenuArrow(QLabel):
 
         self,
 
-        submenu: QMenu,
-
         row: "_HighlightSplitMenuItem",
 
         parent: QWidget | None = None,
@@ -406,8 +396,6 @@ class _HighlightSubmenuArrow(QLabel):
     ) -> None:
 
         super().__init__(parent)
-
-        self._submenu = submenu
 
         self._row = row
 
@@ -423,35 +411,65 @@ class _HighlightSubmenuArrow(QLabel):
             _submenu_arrow_icon().pixmap(_SUBMENU_ARROW_ICON_PX, _SUBMENU_ARROW_ICON_PX)
         )
 
-
-
-    def _show_submenu(self) -> None:
-
-        if self._submenu.isVisible():
-
-            return
-
-        self._row.set_hovered(True)
-
-        anchor = self.mapToGlobal(QPoint(self.width(), 0))
-
-        self._submenu.popup(anchor)
-
-
-
     def enterEvent(self, event) -> None:
 
-        self._show_submenu()
+        self._row.show_color_submenu()
 
         super().enterEvent(event)
-
-
 
     def mousePressEvent(self, event) -> None:
 
         if event.button() == Qt.MouseButton.LeftButton:
 
-            self._show_submenu()
+            self._row.show_color_submenu()
+
+            event.accept()
+
+            return
+
+        super().mousePressEvent(event)
+
+
+
+
+
+class _HighlightColorIcon(QLabel):
+
+    def __init__(
+
+        self,
+
+        icon: QIcon,
+
+        row: "_HighlightSplitMenuItem",
+
+        parent: QWidget | None = None,
+
+    ) -> None:
+
+        super().__init__(parent)
+
+        self._row = row
+
+        self.setFixedSize(16, 16)
+
+        self.setPixmap(icon.pixmap(16, 16))
+
+        self.setStyleSheet("background: transparent;")
+
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def enterEvent(self, event) -> None:
+
+        self._row.show_color_submenu()
+
+        super().enterEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+
+        if event.button() == Qt.MouseButton.LeftButton:
+
+            self._row.apply_default.emit()
 
             event.accept()
 
@@ -467,15 +485,16 @@ class _HighlightSplitMenuItem(QWidget):
 
     apply_default = pyqtSignal()
 
-
-
-    def __init__(self, color_menu: QMenu, icon: QIcon, parent: QWidget | None = None) -> None:
-
+    def __init__(
+        self,
+        color_menu: QMenu,
+        icon: QIcon,
+        label: str,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
-
         self._color_menu = color_menu
-
-        self.setObjectName("highlightMenuRow")
+        self.setObjectName("markupMenuRow")
 
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
 
@@ -503,7 +522,7 @@ class _HighlightSplitMenuItem(QWidget):
 
 
 
-        text_label = QLabel("하이라이트")
+        text_label = QLabel(label)
 
         text_label.setStyleSheet(
 
@@ -515,31 +534,20 @@ class _HighlightSplitMenuItem(QWidget):
 
         layout.addWidget(text_label)
 
-
-
-        icon_label = QLabel()
-
-        icon_label.setFixedSize(16, 16)
-
-        icon_label.setPixmap(icon.pixmap(16, 16))
-
-        icon_label.setStyleSheet("background: transparent;")
-
-        icon_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-
-        layout.addWidget(icon_label)
-
-
+        self._color_icon = _HighlightColorIcon(icon, self, self)
+        layout.addWidget(self._color_icon)
 
         layout.addStretch(1)
 
-
-
-        self._arrow = _HighlightSubmenuArrow(color_menu, self, self)
-
+        self._arrow = _HighlightSubmenuArrow(self, self)
         layout.addWidget(self._arrow)
 
-
+    def show_color_submenu(self) -> None:
+        if self._color_menu.isVisible():
+            return
+        self.set_hovered(True)
+        anchor = self._arrow.mapToGlobal(QPoint(self._arrow.width(), 0))
+        self._color_menu.popup(anchor)
 
     def set_hovered(self, hovered: bool) -> None:
 
@@ -552,17 +560,11 @@ class _HighlightSplitMenuItem(QWidget):
         if hovered:
 
             self.setStyleSheet(
-
-                f"QWidget#highlightMenuRow {{ background-color: {_MENU_ITEM_HOVER_BG}; }}"
-
+                f"QWidget#markupMenuRow {{ background-color: {_MENU_ITEM_HOVER_BG}; }}"
             )
-
         else:
-
             self.setStyleSheet(
-
-                "QWidget#highlightMenuRow { background-color: transparent; }"
-
+                "QWidget#markupMenuRow { background-color: transparent; }"
             )
 
 
@@ -599,6 +601,12 @@ class _HighlightSplitMenuItem(QWidget):
 
                 return
 
+            if self._color_icon.geometry().contains(event.pos()):
+
+                self._color_icon.mousePressEvent(event)
+
+                return
+
             self.apply_default.emit()
 
             event.accept()
@@ -611,21 +619,24 @@ class _HighlightSplitMenuItem(QWidget):
 
 
 
-def _preset_tooltip(color_id: str) -> str:
+def _preset_tooltip(color_id: str, *, light: bool = True) -> str:
 
-    labels = {
-
-        "gray": "연한 회색",
-
-        "yellow": "연한 노랑",
-
-        "red": "연한 빨강",
-
-        "blue": "연한 파랑",
-
-        "green": "연한 초록",
-
-    }
+    if light:
+        labels = {
+            "gray": "연한 회색",
+            "yellow": "연한 노랑",
+            "red": "연한 빨강",
+            "blue": "연한 파랑",
+            "green": "연한 초록",
+        }
+    else:
+        labels = {
+            "gray": "회색",
+            "yellow": "노랑",
+            "red": "빨강",
+            "blue": "파랑",
+            "green": "초록",
+        }
 
     return labels.get(color_id, color_id)
 
@@ -633,164 +644,153 @@ def _preset_tooltip(color_id: str) -> str:
 
 
 
-def add_text_highlight_menu_actions(
-
+def _add_colored_markup_menu_row(
     menu: QMenu,
-
     *,
-
+    label: str,
+    color_icon: QIcon,
     on_apply_default: Callable[[], None],
-
     on_color_selected: Callable[[str], None],
-
     on_more_colors: Callable[[], None],
-
+    at_start: bool,
+    preset_order: Sequence[str] = HIGHLIGHT_PRESET_ORDER,
+    icon_for: Callable[[str], QIcon] = color_circle_icon,
+    light_tooltips: bool = True,
 ) -> None:
-
-    """Insert split highlight row: click applies default color, > hover opens palette."""
-
     color_menu = QMenu(menu)
-
     color_menu.setStyleSheet(_HIGHLIGHT_COLOR_MENU_STYLE)
 
-
-
     picker_action = QWidgetAction(color_menu)
-
-    picker = _HighlightColorPicker(color_menu)
-
-
+    picker = _HighlightColorPicker(
+        color_menu,
+        preset_order=preset_order,
+        icon_for=icon_for,
+        light_tooltips=light_tooltips,
+    )
 
     def _pick_color(color_id: str) -> None:
-
         _dismiss_popup_menus(color_menu, menu)
-
         on_color_selected(color_id)
 
-
-
     def _pick_more() -> None:
-
         _dismiss_popup_menus(color_menu, menu)
-
         on_more_colors()
 
-
-
     picker.color_selected.connect(_pick_color)
-
     picker.more_requested.connect(_pick_more)
-
     picker_action.setDefaultWidget(picker)
-
     color_menu.addAction(picker_action)
 
-
-
-    highlight_icon = preferred_highlight_icon()
-
     row_action = QWidgetAction(menu)
-
-    row = _HighlightSplitMenuItem(color_menu, highlight_icon)
-
-
+    row = _HighlightSplitMenuItem(color_menu, color_icon, label)
 
     def _apply_default() -> None:
-
         _dismiss_popup_menus(color_menu, menu)
-
         on_apply_default()
 
-
-
     row.apply_default.connect(_apply_default)
-
     row_action.setDefaultWidget(row)
 
-
-
     hover_filter = _HighlightRowHoverFilter(menu, color_menu, row)
-
     menu.installEventFilter(hover_filter)
-
     color_menu.installEventFilter(hover_filter)
 
-
-
     def _sync_row_width() -> None:
-
         menu_width = menu.sizeHint().width()
-
         if menu_width > 0:
-
             row.setMinimumWidth(menu_width)
-
-
 
     menu.aboutToShow.connect(_sync_row_width)
 
-
-
-    first_action = menu.actions()[0] if menu.actions() else None
-
-    if first_action is not None:
-
-        menu.insertAction(first_action, row_action)
-
+    if at_start:
+        first_action = menu.actions()[0] if menu.actions() else None
+        if first_action is not None:
+            menu.insertAction(first_action, row_action)
+        else:
+            menu.addAction(row_action)
     else:
-
         menu.addAction(row_action)
+
+
+def add_text_highlight_menu_actions(
+    menu: QMenu,
+    *,
+    on_apply_default: Callable[[], None],
+    on_color_selected: Callable[[str], None],
+    on_more_colors: Callable[[], None],
+) -> None:
+    _add_colored_markup_menu_row(
+        menu,
+        label="하이라이트",
+        color_icon=preferred_highlight_icon(),
+        on_apply_default=on_apply_default,
+        on_color_selected=on_color_selected,
+        on_more_colors=on_more_colors,
+        at_start=True,
+    )
+
+
+def add_text_underline_menu_actions(
+    menu: QMenu,
+    *,
+    on_apply_default: Callable[[], None],
+    on_color_selected: Callable[[str], None],
+    on_more_colors: Callable[[], None],
+) -> None:
+    _add_colored_markup_menu_row(
+        menu,
+        label="밑줄",
+        color_icon=preferred_underline_icon(),
+        on_apply_default=on_apply_default,
+        on_color_selected=on_color_selected,
+        on_more_colors=on_more_colors,
+        at_start=False,
+        preset_order=UNDERLINE_PRESET_ORDER,
+        icon_for=underline_color_circle_icon,
+        light_tooltips=False,
+    )
 
 
 
 
 
 def build_text_selection_context_menu(
-
     parent: QWidget,
-
     *,
-
     on_apply_default_highlight: Callable[[], None],
-
     on_color_selected: Callable[[str], None],
-
     on_more_colors: Callable[[], None],
-
+    on_apply_default_underline: Callable[[], None],
+    on_underline_color_selected: Callable[[str], None],
+    on_more_underline_colors: Callable[[], None],
     on_copy,
-
     on_remove_highlight: Callable[[], None] | None = None,
-
     show_remove_highlight: bool = False,
-
+    on_remove_underline: Callable[[], None] | None = None,
+    show_remove_underline: bool = False,
 ) -> QMenu:
-
     menu = QMenu(parent)
-
     menu.setStyleSheet(TEXT_SELECTION_MENU_STYLE)
-
     add_text_highlight_menu_actions(
-
         menu,
-
         on_apply_default=on_apply_default_highlight,
-
         on_color_selected=on_color_selected,
-
         on_more_colors=on_more_colors,
-
     )
-
     if show_remove_highlight and on_remove_highlight is not None:
-
         remove_action = menu.addAction("하이라이트 제거")
-
         remove_action.triggered.connect(on_remove_highlight)
-
+    add_text_underline_menu_actions(
+        menu,
+        on_apply_default=on_apply_default_underline,
+        on_color_selected=on_underline_color_selected,
+        on_more_colors=on_more_underline_colors,
+    )
+    if show_remove_underline and on_remove_underline is not None:
+        remove_action = menu.addAction("밑줄 제거")
+        remove_action.triggered.connect(on_remove_underline)
     copy_action = menu.addAction("복사")
-
     copy_action.triggered.connect(on_copy)
-
     return menu
 
 
