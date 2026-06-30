@@ -932,6 +932,12 @@ class ThumbnailListWidget(QListWidget):
             self._block_selection_sync = False
             indices = [row]
         self._drag_start_indices = sorted(indices)
+        preview_row = self._drag_start_indices[0]
+        if len(self._drag_start_indices) > 1:
+            self._block_selection_sync = True
+            self.setCurrentRow(preview_row)
+            self._anchor_index = preview_row
+            self._block_selection_sync = False
         self._sync_selection_visuals()
         self._start_page_drag()
 
