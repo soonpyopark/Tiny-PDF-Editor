@@ -12,7 +12,6 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
-    QMenu,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -24,7 +23,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from pdf_editor.document import PdfDocument
+from pdf_editor.cross_page_selection import CrossPageSelection, PageSelectionSegment
+from pdf_editor.document import PdfDocument, TextMarkupEntry
 from pdf_editor.highlight_colors import (
     DEFAULT_HIGHLIGHT_COLOR_ID,
     DEFAULT_UNDERLINE_COLOR_ID,
@@ -151,6 +151,7 @@ class PageCanvas(QLabel):
     """Rendered page with drag-to-select text overlay."""
 
     text_highlight_added = pyqtSignal()
+    markup_clicked = pyqtSignal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -165,10 +166,16 @@ class PageCanvas(QLabel):
         self._selection_highlights: list[QRect] = []
         self._selection_page_rect: fitz.Rect | None = None
         self._selected_text = ""
+        self._selected_words: list = []
         self._text_highlights: list[tuple[QRect, QColor]] = []
         self._text_underlines: list[tuple[tuple[float, float, float, float], QColor]] = []
         self._search_highlights: list[QRect] = []
         self._active_search_highlight = -1
+        self._viewer: PageViewer | None = None
+        self._stored_segment_highlights: list[QRect] = []
+
+    def set_page_viewer(self, viewer: PageViewer) -> None:
+        self._viewer = viewer
 
     def set_content(
         self,
@@ -185,14 +192,28 @@ class PageCanvas(QLabel):
         self.setPixmap(pixmap)
         self.setFixedSize(pixmap.size())
         if clear_selection:
-            self.clear_selection()
+            self.clear_selection(clear_cross_page=False)
+        else:
+            self._anchor = None
+            self._cursor = None
+            self._selection_highlights = []
+            self._selection_page_rect = None
+            self._selected_text = ""
+            self._selected_words = []
+        self._rebuild_stored_segment_highlights()
 
-    def clear_selection(self) -> None:
+    def clear_selection(self, *, clear_cross_page: bool = True) -> None:
+        if self.mouseGrabber() == self:
+            self.releaseMouse()
         self._anchor = None
         self._cursor = None
         self._selection_highlights = []
         self._selection_page_rect = None
         self._selected_text = ""
+        self._selected_words = []
+        self._stored_segment_highlights = []
+        if clear_cross_page and self._viewer is not None:
+            self._viewer.clear_cross_page_selection()
         self.update()
 
     def set_text_highlights(self, highlights: list[tuple[QRect, QColor]]) -> None:
@@ -221,36 +242,102 @@ class PageCanvas(QLabel):
         self.update()
 
     def selected_text(self) -> str:
+        return self._effective_selected_text()
+
+    def _effective_selected_text(self) -> str:
+        if self._viewer is not None and self._viewer._cross_page_selection is not None:
+            cross = self._viewer._cross_page_selection
+            parts = [
+                cross.segments[index].text
+                for index in sorted(cross.segments)
+                if cross.segments[index].text.strip()
+            ]
+            if (
+                self._selected_text.strip()
+                and (
+                    self._page_index not in cross.segments
+                    or cross.segments[self._page_index].text != self._selected_text
+                )
+            ):
+                parts.append(self._selected_text)
+            return PdfDocument._join_continued_text_parts(parts)
         return self._selected_text
 
     def _copy_selection(self) -> None:
-        if self._selected_text:
-            QApplication.clipboard().setText(self._selected_text)
+        text = self._effective_selected_text()
+        if text:
+            QApplication.clipboard().setText(text)
+
+    def _markup_targets(
+        self,
+    ) -> tuple[int, list[tuple[int, fitz.Rect, tuple[tuple, ...] | None]]] | None:
+        if not self._document:
+            return None
+        cross = self._viewer._cross_page_selection if self._viewer is not None else None
+        rects: dict[int, fitz.Rect] = {}
+        words_by_page: dict[int, tuple[tuple, ...]] = {}
+        if cross is not None:
+            for index, segment in cross.segments.items():
+                rects[index] = segment.page_rect
+                if segment.words:
+                    words_by_page[index] = segment.words
+        if self._selection_page_rect is not None and self._selected_text.strip():
+            rects[self._page_index] = self._selection_page_rect
+            if self._selected_words:
+                words_by_page[self._page_index] = tuple(self._selected_words)
+        if not rects:
+            return None
+        origin = cross.origin_page_index if cross is not None else self._page_index
+        return origin, [
+            (index, rects[index], words_by_page.get(index))
+            for index in sorted(rects)
+        ]
+
+    def _apply_markup(self, kind: str, color_rgb: tuple[float, float, float]) -> bool:
+        targets = self._markup_targets()
+        if targets is None or not self._document:
+            return False
+        origin, page_targets = targets
+        cross = self._viewer._cross_page_selection if self._viewer is not None else None
+        if len(page_targets) == 1 and cross is None:
+            page_index, rect, selected_words = page_targets[0]
+            if kind == "highlight":
+                ok = self._document.set_text_highlight_color(
+                    page_index,
+                    rect,
+                    color_rgb,
+                    selected_words=selected_words,
+                )
+            else:
+                ok = self._document.set_text_underline_color(
+                    page_index,
+                    rect,
+                    color_rgb,
+                    selected_words=selected_words,
+                )
+        else:
+            ok = self._document.apply_text_markup_to_pages(
+                page_targets,
+                kind=kind,
+                color_rgb=color_rgb,
+                origin_page_index=origin,
+            )
+        if ok:
+            self.text_highlight_added.emit()
+            self.clear_selection()
+        return ok
 
     def _apply_preferred_text_highlight(self) -> None:
-        if not self._document or self._selection_page_rect is None:
+        if self._markup_targets() is None:
             return
-        rgb = preferred_highlight_rgb()
-        if self._document.set_text_highlight_color(
-            self._page_index,
-            self._selection_page_rect,
-            rgb,
-        ):
-            self.text_highlight_added.emit()
-            self.clear_selection()
+        self._apply_markup("highlight", preferred_highlight_rgb())
 
     def _apply_text_highlight(self, color_id: str) -> None:
-        if not self._document or self._selection_page_rect is None:
+        if self._markup_targets() is None:
             return
         rgb = HIGHLIGHT_RGB.get(color_id, HIGHLIGHT_RGB[DEFAULT_HIGHLIGHT_COLOR_ID])
-        if self._document.set_text_highlight_color(
-            self._page_index,
-            self._selection_page_rect,
-            rgb,
-        ):
+        if self._apply_markup("highlight", rgb):
             set_preferred_highlight_color_id(color_id)
-            self.text_highlight_added.emit()
-            self.clear_selection()
 
     def _pick_more_highlight_color(self) -> None:
         current = preferred_highlight_rgb()
@@ -258,17 +345,9 @@ class PageCanvas(QLabel):
         chosen = QColorDialog.getColor(default, self, "형광펜 색상 선택")
         if not chosen.isValid():
             return
-        if not self._document or self._selection_page_rect is None:
-            return
         rgb = (chosen.redF(), chosen.greenF(), chosen.blueF())
-        if self._document.set_text_highlight_color(
-            self._page_index,
-            self._selection_page_rect,
-            rgb,
-        ):
+        if self._apply_markup("highlight", rgb):
             set_preferred_highlight_rgb(rgb)
-            self.text_highlight_added.emit()
-            self.clear_selection()
 
     def _remove_highlight_selection(self) -> None:
         if not self._document or self._selection_page_rect is None:
@@ -281,29 +360,16 @@ class PageCanvas(QLabel):
             self.clear_selection()
 
     def _apply_preferred_text_underline(self) -> None:
-        if not self._document or self._selection_page_rect is None:
+        if self._markup_targets() is None:
             return
-        rgb = preferred_underline_rgb()
-        if self._document.set_text_underline_color(
-            self._page_index,
-            self._selection_page_rect,
-            rgb,
-        ):
-            self.text_highlight_added.emit()
-            self.clear_selection()
+        self._apply_markup("underline", preferred_underline_rgb())
 
     def _apply_text_underline(self, color_id: str) -> None:
-        if not self._document or self._selection_page_rect is None:
+        if self._markup_targets() is None:
             return
         rgb = UNDERLINE_RGB.get(color_id, UNDERLINE_RGB[DEFAULT_UNDERLINE_COLOR_ID])
-        if self._document.set_text_underline_color(
-            self._page_index,
-            self._selection_page_rect,
-            rgb,
-        ):
+        if self._apply_markup("underline", rgb):
             set_preferred_underline_color_id(color_id)
-            self.text_highlight_added.emit()
-            self.clear_selection()
 
     def _pick_more_underline_color(self) -> None:
         current = preferred_underline_rgb()
@@ -311,17 +377,9 @@ class PageCanvas(QLabel):
         chosen = QColorDialog.getColor(default, self, "밑줄 색상 선택")
         if not chosen.isValid():
             return
-        if not self._document or self._selection_page_rect is None:
-            return
         rgb = (chosen.redF(), chosen.greenF(), chosen.blueF())
-        if self._document.set_text_underline_color(
-            self._page_index,
-            self._selection_page_rect,
-            rgb,
-        ):
+        if self._apply_markup("underline", rgb):
             set_preferred_underline_rgb(rgb)
-            self.text_highlight_added.emit()
-            self.clear_selection()
 
     def _remove_underline_selection(self) -> None:
         if not self._document or self._selection_page_rect is None:
@@ -332,6 +390,93 @@ class PageCanvas(QLabel):
         ):
             self.text_highlight_added.emit()
             self.clear_selection()
+
+    def _has_next_page(self) -> bool:
+        return bool(
+            self._document
+            and self._page_index < self._document.page_count - 1
+        )
+
+    def _can_offer_continue_selection(self) -> bool:
+        return bool(self._selected_text.strip() and self._has_next_page())
+
+    def _clear_active_selection(self) -> None:
+        self._anchor = None
+        self._cursor = None
+        self._selection_highlights = []
+        self._selection_page_rect = None
+        self._selected_text = ""
+        self._selected_words = []
+
+    def _commit_current_segment_to_cross_page(self) -> None:
+        if (
+            not self._viewer
+            or not self._document
+            or self._selection_page_rect is None
+            or not self._selected_text.strip()
+        ):
+            return
+        segment = PageSelectionSegment(
+            self._page_index,
+            self._selection_page_rect,
+            self._selected_text,
+            tuple(self._selected_words),
+        )
+        cross = self._viewer._cross_page_selection
+        if cross is None:
+            cross = CrossPageSelection(origin_page_index=self._page_index)
+            self._viewer._cross_page_selection = cross
+        cross.set_segment(segment)
+
+    def _on_continue_selection(self) -> None:
+        if self._viewer is not None:
+            self._viewer.continue_cross_page_selection()
+
+    def _rebuild_stored_segment_highlights(self) -> None:
+        self._stored_segment_highlights = []
+        if self._viewer is None or self._viewer._cross_page_selection is None:
+            return
+        segment = self._viewer._cross_page_selection.segments.get(self._page_index)
+        if segment is None:
+            return
+        zoom = self._zoom
+        if segment.words:
+            page_rect = segment.page_rect
+            self._stored_segment_highlights = [
+                QRect(
+                    int(word[0] * zoom),
+                    int(word[1] * zoom),
+                    max(1, int((word[2] - word[0]) * zoom)),
+                    max(1, int((word[3] - word[1]) * zoom)),
+                )
+                for word in segment.words
+            ]
+            return
+        page_rect, highlight_rects, _, _ = (
+            self._document.get_text_block_selection(
+                self._page_index,
+                fitz.Point(segment.page_rect.x0, segment.page_rect.y0),
+                fitz.Point(segment.page_rect.x1, segment.page_rect.y1),
+                zoom,
+            )
+            if self._document
+            else (None, [], "", [])
+        )
+        if page_rect is None or not highlight_rects:
+            page_rect = segment.page_rect
+            self._stored_segment_highlights = [
+                QRect(
+                    int(page_rect.x0 * zoom),
+                    int(page_rect.y0 * zoom),
+                    max(1, int((page_rect.x1 - page_rect.x0) * zoom)),
+                    max(1, int((page_rect.y1 - page_rect.y0) * zoom)),
+                )
+            ]
+            return
+        self._stored_segment_highlights = [
+            QRect(int(x), int(y), max(1, int(w)), max(1, int(h)))
+            for x, y, w, h in highlight_rects
+        ]
 
     def _page_point_from_viewport(self, pos: QPoint) -> fitz.Point:
         return fitz.Point(pos.x() / self._zoom, pos.y() / self._zoom)
@@ -346,6 +491,8 @@ class PageCanvas(QLabel):
         if selection is None:
             return False
         page_rect, quad_rects, selected_text = selection
+        if self._viewer is not None:
+            self._viewer.clear_cross_page_selection(clear_canvas=False)
         self._selection_page_rect = page_rect
         zoom = self._zoom
         self._selection_highlights = [
@@ -372,9 +519,21 @@ class PageCanvas(QLabel):
         )
 
     def _select_markup_at(self, pos: QPoint) -> bool:
+        point = self._page_point_from_viewport(pos)
         if self._select_highlight_at(pos):
+            self._emit_markup_clicked(point)
             return True
-        return self._select_underline_at(pos)
+        if self._select_underline_at(pos):
+            self._emit_markup_clicked(point)
+            return True
+        return False
+
+    def _emit_markup_clicked(self, point: fitz.Point) -> None:
+        if not self._document:
+            return
+        entry = self._document.find_text_markup_entry_at_point(self._page_index, point)
+        if entry is not None:
+            self.markup_clicked.emit(entry)
 
     def _select_underline_at(self, pos: QPoint) -> bool:
         if not self._document:
@@ -386,6 +545,8 @@ class PageCanvas(QLabel):
         if selection is None:
             return False
         page_rect, quad_rects, selected_text = selection
+        if self._viewer is not None:
+            self._viewer.clear_cross_page_selection(clear_canvas=False)
         self._selection_page_rect = page_rect
         zoom = self._zoom
         self._selection_highlights = [
@@ -398,6 +559,40 @@ class PageCanvas(QLabel):
             for rect in quad_rects
         ]
         self._selected_text = selected_text
+        self.update()
+        return True
+
+    def apply_text_markup_selection(
+        self,
+        page_rect: fitz.Rect,
+        kind: str,
+        selected_text: str = "",
+    ) -> bool:
+        if not self._document or page_rect.is_empty:
+            return False
+        selection = self._document.get_text_markup_selection_for_rect(
+            self._page_index,
+            page_rect,
+            kind,
+        )
+        if selection is None:
+            return False
+        page_rect, quad_rects, text = selection
+        self._anchor = None
+        self._cursor = None
+        self._selection_page_rect = page_rect
+        self._selected_text = selected_text or text
+        zoom = self._zoom
+        self._selection_highlights = [
+            QRect(
+                int(rect.x0 * zoom),
+                int(rect.y0 * zoom),
+                max(1, int((rect.x1 - rect.x0) * zoom)),
+                max(1, int((rect.y1 - rect.y0) * zoom)),
+            )
+            for rect in quad_rects
+        ]
+        self._rebuild_stored_segment_highlights()
         self.update()
         return True
 
@@ -429,7 +624,7 @@ class PageCanvas(QLabel):
         return self.remove_selected_underline()
 
     def _prepare_context_menu_selection(self, pos: QPoint) -> bool:
-        if self._selected_text.strip():
+        if self._effective_selected_text().strip():
             return True
         return self._select_markup_at(pos)
 
@@ -449,6 +644,8 @@ class PageCanvas(QLabel):
             show_remove_highlight=self._can_remove_highlight(),
             on_remove_underline=self._remove_underline_selection,
             show_remove_underline=self._can_remove_underline(),
+            show_continue_selection=self._can_offer_continue_selection(),
+            on_continue_selection=self._on_continue_selection,
         )
         menu.exec(event.globalPos())
         event.accept()
@@ -462,23 +659,28 @@ class PageCanvas(QLabel):
             self._selection_highlights = []
             self._selection_page_rect = None
             self._selected_text = ""
+            self._selected_words = []
             return
         if (self._anchor - self._cursor).manhattanLength() < 4:
             self._selection_highlights = []
             self._selection_page_rect = None
             self._selected_text = ""
+            self._selected_words = []
             return
 
-        page_rect, highlight_rects, selected_text = self._document.get_text_block_selection(
-            self._page_index,
-            self._page_point_from_viewport(self._anchor),
-            self._page_point_from_viewport(self._cursor),
-            self._zoom,
+        page_rect, highlight_rects, selected_text, selected_words = (
+            self._document.get_text_block_selection(
+                self._page_index,
+                self._page_point_from_viewport(self._anchor),
+                self._page_point_from_viewport(self._cursor),
+                self._zoom,
+            )
         )
         if page_rect is None:
             self._selection_highlights = []
             self._selection_page_rect = None
             self._selected_text = ""
+            self._selected_words = []
             return
         self._selection_page_rect = page_rect
         self._selection_highlights = [
@@ -486,20 +688,50 @@ class PageCanvas(QLabel):
             for x, y, w, h in highlight_rects
         ]
         self._selected_text = selected_text
+        self._selected_words = selected_words
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self.setFocus()
+            if self._viewer is not None and self._viewer._awaiting_continuation:
+                if self._anchor is None:
+                    self._prime_continuation_anchor()
+                self._cursor = event.pos()
+                self._update_selection()
+                self._viewer._awaiting_continuation = False
+                event.accept()
+                return
             if self._select_markup_at(event.pos()):
                 self._anchor = None
                 self._cursor = None
                 event.accept()
                 return
+            if self._viewer is not None:
+                self._viewer.clear_cross_page_selection(clear_canvas=False)
             self._anchor = event.pos()
             self._cursor = event.pos()
             self._update_selection()
             self.update()
+            self.grabMouse()
         super().mousePressEvent(event)
+
+    def _prime_continuation_anchor(self) -> None:
+        if not self._document:
+            return
+        page = self._document._doc[self._page_index]
+        words = page.get_text("words")
+        if not words:
+            self._anchor = QPoint(0, 0)
+            return
+        first = min(
+            words,
+            key=lambda word: (
+                PdfDocument._word_line_id(word),
+                PdfDocument._word_sort_key(word),
+            ),
+        )
+        x0, y0, _, _ = first[:4]
+        self._anchor = QPoint(int(x0 * self._zoom), int(y0 * self._zoom))
 
     def mouseMoveEvent(self, event) -> None:
         if self._anchor is not None and event.buttons() & Qt.MouseButton.LeftButton:
@@ -509,6 +741,8 @@ class PageCanvas(QLabel):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if self.mouseGrabber() == self:
+            self.releaseMouse()
         if event.button() == Qt.MouseButton.LeftButton and self._anchor is not None:
             self._cursor = event.pos()
             self._update_selection()
@@ -523,6 +757,7 @@ class PageCanvas(QLabel):
             and not self._text_underlines
             and not self._search_highlights
             and not self._selection_highlights
+            and not self._stored_segment_highlights
         ):
             return
         painter = QPainter(self)
@@ -547,8 +782,11 @@ class PageCanvas(QLabel):
                 else:
                     painter.setBrush(QColor(255, 235, 59, 110))
                 painter.drawRect(rect)
-        if self._selection_highlights:
+        if self._stored_segment_highlights or self._selection_highlights:
             painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(51, 153, 255, 70))
+            for rect in self._stored_segment_highlights:
+                painter.drawRect(rect)
             painter.setBrush(QColor(51, 153, 255, 90))
             for rect in self._selection_highlights:
                 painter.drawRect(rect)
@@ -558,7 +796,7 @@ class PageCanvas(QLabel):
         if (
             event.key() == Qt.Key.Key_C
             and event.modifiers() & Qt.KeyboardModifier.ControlModifier
-            and self._selected_text
+            and self._effective_selected_text()
         ):
             self._copy_selection()
             event.accept()
@@ -591,6 +829,8 @@ class PageViewer(QWidget):
         self._initial_fit_scale: float | None = None
         self._search_page_rects: list[fitz.Rect] = []
         self._search_active_index = -1
+        self._cross_page_selection: CrossPageSelection | None = None
+        self._awaiting_continuation = False
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -629,6 +869,7 @@ class PageViewer(QWidget):
         viewport.installEventFilter(self)
 
         self.page_canvas = PageCanvas()
+        self.page_canvas.set_page_viewer(self)
         self.page_canvas.text_highlight_added.connect(self._apply_text_highlights_overlay)
         self.scroll_area.setWidget(self.page_canvas)
         self.preview_stack.addWidget(self.scroll_area)
@@ -751,6 +992,7 @@ class PageViewer(QWidget):
         self._fit_mode = "page"
         self._uniform_zoom = None
         self._pending_uniform_zoom_lock = bool(document and document.page_count > 0)
+        self.clear_cross_page_selection()
         self.refresh()
         if document and document.page_count > 0:
             self.fit_page_when_ready()
@@ -766,16 +1008,99 @@ class PageViewer(QWidget):
     def try_remove_selected_highlight(self) -> bool:
         return self.page_canvas.try_remove_selected_markup()
 
-    def set_current_index(self, index: int) -> None:
+    def select_markup_entry(self, entry: TextMarkupEntry) -> None:
+        if not self._document:
+            return
+        target_page = entry.page_index
+        preserve_cross_page = entry.group_id is not None
+        if entry.group_id:
+            segments = self._document.collect_text_markup_group_segments(
+                entry.group_id,
+                entry.kind,
+            )
+            if not segments:
+                return
+            self._cross_page_selection = CrossPageSelection(
+                origin_page_index=entry.page_index,
+            )
+            for segment in segments:
+                self._cross_page_selection.set_segment(segment)
+            self._awaiting_continuation = False
+        else:
+            self.clear_cross_page_selection(clear_canvas=False)
+
+        if target_page != self._current_index:
+            self.set_current_index(target_page, preserve_cross_page=preserve_cross_page)
+        elif preserve_cross_page:
+            self.refresh()
+        else:
+            self.page_canvas._anchor = None
+            self.page_canvas._cursor = None
+            self.page_canvas._selection_highlights = []
+            self.page_canvas._selection_page_rect = None
+            self.page_canvas._selected_text = ""
+            self.page_canvas._selected_words = []
+            self.page_canvas._rebuild_stored_segment_highlights()
+            self.page_canvas.update()
+
+        if entry.group_id and self._cross_page_selection is not None:
+            segment = self._cross_page_selection.segments.get(self._current_index)
+            if segment is not None:
+                self.page_canvas.apply_text_markup_selection(
+                    segment.page_rect,
+                    entry.kind,
+                    segment.text,
+                )
+                return
+        if entry.page_rect is not None:
+            self.page_canvas.apply_text_markup_selection(
+                entry.page_rect,
+                entry.kind,
+                entry.text,
+            )
+
+    def clear_cross_page_selection(self, *, clear_canvas: bool = True) -> None:
+        self._cross_page_selection = None
+        self._awaiting_continuation = False
+        if clear_canvas:
+            self.page_canvas._stored_segment_highlights = []
+            self.page_canvas.update()
+
+    def continue_cross_page_selection(self) -> None:
+        canvas = self.page_canvas
+        if not canvas._can_offer_continue_selection():
+            return
+        canvas._commit_current_segment_to_cross_page()
+        canvas._clear_active_selection()
+        canvas.update()
+        next_page = self._current_index + 1
+        self._awaiting_continuation = True
+        self.set_current_index(next_page, preserve_cross_page=True)
+
+    def _prime_continuation_selection(self) -> None:
+        self.page_canvas._prime_continuation_anchor()
+        self.page_canvas._cursor = self.page_canvas._anchor
+        self.page_canvas._update_selection()
+        self.page_canvas.update()
+
+    def set_current_index(self, index: int, *, preserve_cross_page: bool = False) -> None:
         if not self._document or self._document.page_count == 0:
             return
         index = max(0, min(index, self._document.page_count - 1))
         if index != self._current_index:
+            if not preserve_cross_page:
+                self.clear_cross_page_selection()
             self._current_index = index
             self.scroll_area.verticalScrollBar().setValue(0)
             self.scroll_area.horizontalScrollBar().setValue(0)
             self.refresh()
             self.page_changed.emit(index)
+            if self._awaiting_continuation:
+                QTimer.singleShot(0, self._prime_continuation_selection)
+        elif preserve_cross_page:
+            self.refresh()
+            if self._awaiting_continuation:
+                QTimer.singleShot(0, self._prime_continuation_selection)
 
     def set_zoom_percent(self, percent: float) -> None:
         self._initial_fit_scale = None
@@ -1257,11 +1582,15 @@ class PageViewer(QWidget):
 
         pix = self._document.render_page_pixmap(self._current_index, zoom)
         pixmap = pixmap_from_fitz(pix)
+        preserve_selection = (
+            self._awaiting_continuation or self._cross_page_selection is not None
+        )
         self.page_canvas.set_content(
             pixmap,
             self._document,
             self._current_index,
             zoom,
+            clear_selection=not preserve_selection,
         )
         self._apply_search_highlights()
         self._apply_text_highlights_overlay()

@@ -21,6 +21,14 @@ PANEL_HEADER_ROW_HEIGHT = PANEL_HEADER_BTN_HEIGHT + 8
 PANEL_HEADER_BAR_HEIGHT = PANEL_HEADER_ROW_HEIGHT + 1
 
 
+def make_panel_divider(parent: QWidget | None = None) -> QFrame:
+    divider = QFrame(parent)
+    divider.setFrameShape(QFrame.Shape.NoFrame)
+    divider.setFixedHeight(1)
+    divider.setStyleSheet(f"background-color: {SIDE_PANEL_DIVIDER_COLOR};")
+    return divider
+
+
 def make_panel_header_icon_button(
     icon: QIcon,
     tooltip: str,
@@ -53,10 +61,7 @@ class SidePanelHeaderBar(QWidget):
         self.row_layout.setContentsMargins(4, 4, 4, 4)
         self.row_layout.setSpacing(4)
 
-        divider = QFrame()
-        divider.setFrameShape(QFrame.Shape.NoFrame)
-        divider.setFixedHeight(1)
-        divider.setStyleSheet(f"background-color: {SIDE_PANEL_DIVIDER_COLOR};")
+        divider = make_panel_divider()
 
         outer.addWidget(self._row)
         outer.addWidget(divider)

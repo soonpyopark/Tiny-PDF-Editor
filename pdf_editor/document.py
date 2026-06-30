@@ -5,11 +5,14 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 import fitz
+
+from pdf_editor.cross_page_selection import PageSelectionSegment
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".tif", ".webp"}
 PDF_EXTENSIONS = {".pdf"}
@@ -37,6 +40,8 @@ class TextMarkupEntry:
     rgb: tuple[float, float, float]
     sort_y: float = 0.0
     sort_x: float = 0.0
+    page_rect: fitz.Rect | None = None
+    group_id: str | None = None
 
 @dataclass(frozen=True)
 class ReduceSizeOptions:
@@ -68,6 +73,7 @@ class OptimizeSizeOptions:
 _MICRO_IMAGE_MAX_PT = 12.0
 _MAX_UNDO_LEVELS = 50
 _EMPTY_SNAPSHOT = b""
+_MARKUP_GROUP_TITLE_PREFIX = "tpe:g="
 
 
 MIN_IMAGE_DPI = 24
@@ -924,7 +930,70 @@ class PdfDocument:
                 parts.append(str(word[4]))
         if parts:
             lines.append(" ".join(parts))
-        return "\n".join(lines)
+
+        result: list[str] = []
+        for line_text in lines:
+            if result and result[-1].rstrip().endswith("."):
+                result.append(" ")
+            result.append(line_text)
+        return "".join(result)
+
+    @staticmethod
+    def _join_continued_text_parts(parts: list[str]) -> str:
+        """Join cross-page segments with spaces instead of line breaks."""
+        return " ".join(part.strip() for part in parts if part.strip())
+
+    @staticmethod
+    def _words_in_reading_order(page, page_rect: fitz.Rect) -> list:
+        words = page.get_text("words", clip=page_rect)
+        if not words:
+            return []
+        return sorted(words, key=PdfDocument._word_sort_key)
+
+    @staticmethod
+    def _rect_center(rect: fitz.Rect) -> fitz.Point:
+        return fitz.Point((rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2)
+
+    @staticmethod
+    def _word_center_in_rect(word, page_rect: fitz.Rect) -> bool:
+        return page_rect.contains(PdfDocument._rect_center(fitz.Rect(word[:4])))
+
+    @staticmethod
+    def _words_for_markup_in_rect(
+        page,
+        page_rect: fitz.Rect,
+        selected_words: list | tuple | None = None,
+    ) -> list:
+        if selected_words:
+            return sorted(selected_words, key=PdfDocument._word_sort_key)
+        words = page.get_text("words")
+        matched = [
+            word
+            for word in words
+            if PdfDocument._word_center_in_rect(word, page_rect)
+        ]
+        if not matched:
+            matched = [
+                word
+                for word in words
+                if page_rect.contains(fitz.Rect(word[:4]))
+            ]
+        return sorted(matched, key=PdfDocument._word_sort_key)
+
+    @staticmethod
+    def _word_quads_from_words(words: list) -> list[fitz.Quad]:
+        quads: list[fitz.Quad] = []
+        for word in words:
+            x0, y0, x1, y1 = word[:4]
+            quads.append(
+                fitz.Quad(
+                    fitz.Point(x0, y1),
+                    fitz.Point(x1, y1),
+                    fitz.Point(x0, y0),
+                    fitz.Point(x1, y0),
+                )
+            )
+        return quads
 
     def get_text_block_selection(
         self,
@@ -932,14 +1001,14 @@ class PdfDocument:
         anchor: fitz.Point,
         cursor: fitz.Point,
         zoom: float,
-    ) -> tuple[fitz.Rect | None, list[tuple[float, float, float, float]], str]:
+    ) -> tuple[fitz.Rect | None, list[tuple[float, float, float, float]], str, list]:
         """Select words line-wise: dragging down/up includes full intermediate lines."""
         if not (0 <= page_index < len(self._doc)):
-            return None, [], ""
+            return None, [], "", []
         page = self._doc[page_index]
         words = page.get_text("words")
         if not words:
-            return None, [], ""
+            return None, [], "", []
 
         anchor_idx = self._word_index_at_point(words, anchor)
         cursor_idx = self._word_index_at_point(words, cursor)
@@ -953,8 +1022,13 @@ class PdfDocument:
         selected: list = []
 
         if anchor_line == cursor_line:
-            lo, hi = sorted((anchor_idx, cursor_idx))
-            selected = words[lo : hi + 1]
+            lo_key, hi_key = sorted((word_key(anchor_word), word_key(cursor_word)))
+            for word in words:
+                if line_id(word) != anchor_line:
+                    continue
+                current_key = word_key(word)
+                if lo_key <= current_key <= hi_key:
+                    selected.append(word)
         elif anchor_line < cursor_line:
             anchor_key = word_key(anchor_word)
             cursor_key = word_key(cursor_word)
@@ -985,8 +1059,9 @@ class PdfDocument:
                     selected.append(word)
 
         if not selected:
-            return None, [], ""
+            return None, [], "", []
 
+        selected.sort(key=word_key)
         page_rect = fitz.Rect(selected[0][:4])
         highlight_rects: list[tuple[float, float, float, float]] = []
         for word in selected:
@@ -995,7 +1070,7 @@ class PdfDocument:
             highlight_rects.append(
                 (x0 * zoom, y0 * zoom, (x1 - x0) * zoom, (y1 - y0) * zoom)
             )
-        return page_rect, highlight_rects, self._selection_text_from_words(selected)
+        return page_rect, highlight_rects, self._selection_text_from_words(selected), selected
 
     def get_word_highlight_rects(
         self, index: int, rect: fitz.Rect, zoom: float
@@ -1014,6 +1089,11 @@ class PdfDocument:
         page_index: int,
         page_rect: fitz.Rect,
         color_rgb: tuple[float, float, float],
+        *,
+        selected_words: list | tuple | None = None,
+        markup_group_id: str | None = None,
+        origin_page_index: int | None = None,
+        record_undo: bool = True,
     ) -> bool:
         """Add PDF highlight annotation for the words intersecting *page_rect*."""
         if page_rect.is_empty or page_rect.is_infinite:
@@ -1022,28 +1102,24 @@ class PdfDocument:
             return False
 
         page = self._doc[page_index]
-        words = page.get_text("words", clip=page_rect)
+        words = self._words_for_markup_in_rect(page, page_rect, selected_words)
         if not words:
             return False
 
-        quads: list[fitz.Quad] = []
-        for word in words:
-            x0, y0, x1, y1 = word[:4]
-            quads.append(
-                fitz.Quad(
-                    fitz.Point(x0, y1),
-                    fitz.Point(x1, y1),
-                    fitz.Point(x0, y0),
-                    fitz.Point(x1, y0),
-                )
-            )
+        quads = self._word_quads_from_words(words)
 
-        self._record_undo_checkpoint()
+        if record_undo:
+            self._record_undo_checkpoint()
         annot = page.add_highlight_annot(quads)
         annot.set_colors(stroke=color_rgb)
         annot.set_opacity(0.45)
+        if markup_group_id is not None and origin_page_index is not None:
+            annot.set_info(
+                title=PdfDocument._markup_group_title(markup_group_id, origin_page_index)
+            )
         annot.update()
-        self._touch()
+        if record_undo:
+            self._touch()
         return True
 
     def recolor_text_highlights_in_rect(
@@ -1085,11 +1161,18 @@ class PdfDocument:
         page_index: int,
         page_rect: fitz.Rect,
         color_rgb: tuple[float, float, float],
+        *,
+        selected_words: list | tuple | None = None,
     ) -> bool:
         """Recolor intersecting highlights, or add a new highlight when none exist."""
         if self.has_text_highlight_in_rect(page_index, page_rect):
             return self.recolor_text_highlights_in_rect(page_index, page_rect, color_rgb)
-        return self.add_text_highlight(page_index, page_rect, color_rgb)
+        return self.add_text_highlight(
+            page_index,
+            page_rect,
+            color_rgb,
+            selected_words=selected_words,
+        )
 
     def get_page_text_highlight_overlays(
         self,
@@ -1188,21 +1271,104 @@ class PdfDocument:
         return quad_rects
 
     @staticmethod
+    def _markup_group_title(group_id: str, origin_page_index: int) -> str:
+        return f"{_MARKUP_GROUP_TITLE_PREFIX}{group_id};o={origin_page_index}"
+
+    @staticmethod
+    def _parse_markup_group_title(title: str) -> tuple[str | None, int | None]:
+        if not title.startswith(_MARKUP_GROUP_TITLE_PREFIX):
+            return None, None
+        group_id: str | None = None
+        origin_page: int | None = None
+        for token in title.split(";"):
+            if token.startswith(_MARKUP_GROUP_TITLE_PREFIX):
+                group_id = token[len(_MARKUP_GROUP_TITLE_PREFIX) :]
+            elif token.startswith("o="):
+                try:
+                    origin_page = int(token[2:])
+                except ValueError:
+                    origin_page = None
+        return group_id, origin_page
+
+    def apply_text_markup_to_pages(
+        self,
+        page_targets: list[tuple[int, fitz.Rect, tuple[tuple, ...] | None]],
+        *,
+        kind: str,
+        color_rgb: tuple[float, float, float],
+        origin_page_index: int,
+    ) -> bool:
+        """Apply highlight/underline to multiple pages as one grouped markup."""
+        if not page_targets:
+            return False
+        group_id = uuid.uuid4().hex[:12]
+        self._record_undo_checkpoint()
+        applied = False
+        for page_index, page_rect, selected_words in page_targets:
+            if kind == "underline":
+                ok = self.add_text_underline(
+                    page_index,
+                    page_rect,
+                    color_rgb,
+                    selected_words=selected_words,
+                    markup_group_id=group_id,
+                    origin_page_index=origin_page_index,
+                    record_undo=False,
+                )
+            else:
+                ok = self.add_text_highlight(
+                    page_index,
+                    page_rect,
+                    color_rgb,
+                    selected_words=selected_words,
+                    markup_group_id=group_id,
+                    origin_page_index=origin_page_index,
+                    record_undo=False,
+                )
+            applied = applied or ok
+        if applied:
+            self._touch()
+        return applied
+
+    @staticmethod
     def _markup_text_from_annot(page, annot) -> str:
-        page_rect = PdfDocument._highlight_annot_page_rect(annot)
         quad_rects = PdfDocument._highlight_annot_quad_rects(annot)
-        if not quad_rects:
-            text = page.get_text("text", clip=page_rect).strip()
-        else:
+        if quad_rects:
+            words: list = []
+            for quad_rect in quad_rects:
+                for word in PdfDocument._words_in_reading_order(page, quad_rect):
+                    if PdfDocument._word_center_in_rect(word, quad_rect):
+                        words.append(word)
+            if words:
+                words.sort(key=PdfDocument._word_sort_key)
+                text = PdfDocument._selection_text_from_words(words).strip()
+                if text:
+                    return text
             text_parts: list[str] = []
             for quad_rect in quad_rects:
                 part = page.get_text("text", clip=quad_rect).strip()
                 if part:
                     text_parts.append(part)
-            text = " ".join(text_parts) or page.get_text("text", clip=page_rect).strip()
-        if not text:
-            text = (annot.get_text() or "").strip()
-        return text
+            if text_parts:
+                return "".join(text_parts)
+        page_rect = PdfDocument._highlight_annot_page_rect(annot)
+        words = PdfDocument._words_in_reading_order(page, page_rect)
+        if words:
+            matched = [
+                word
+                for word in words
+                if PdfDocument._word_center_in_rect(word, page_rect)
+            ]
+            if matched:
+                text = PdfDocument._selection_text_from_words(matched).strip()
+                if text:
+                    return text
+        if not quad_rects:
+            return page.get_text("text", clip=page_rect).strip()
+        text = page.get_text("text", clip=page_rect).strip()
+        if text:
+            return text
+        return (annot.get_text() or "").strip()
 
     @staticmethod
     def _markup_rgb_from_annot(annot, *, default: tuple[float, float, float]) -> tuple[float, float, float]:
@@ -1212,7 +1378,9 @@ class PdfDocument:
 
     def get_text_markup_entries(self) -> list[TextMarkupEntry]:
         """Return highlight/underline annotations sorted by page and position."""
-        entries: list[TextMarkupEntry] = []
+        grouped: dict[tuple[str, str], list[tuple[int, int, str, tuple[float, float, float], float, float]]] = {}
+        singles: list[TextMarkupEntry] = []
+
         for page_index in range(len(self._doc)):
             page = self._doc[page_index]
             for annot in page.annots() or []:
@@ -1230,18 +1398,234 @@ class PdfDocument:
                     continue
                 page_rect = self._highlight_annot_page_rect(annot)
                 rgb = self._markup_rgb_from_annot(annot, default=default_rgb)
-                entries.append(
-                    TextMarkupEntry(
-                        page_index=page_index,
-                        text=text,
-                        kind=kind,
-                        rgb=rgb,
-                        sort_y=page_rect.y0,
-                        sort_x=page_rect.x0,
+                title = (annot.info or {}).get("title") or ""
+                group_id, origin_page = self._parse_markup_group_title(title)
+                if group_id is not None and origin_page is not None:
+                    grouped.setdefault((group_id, kind), []).append(
+                        (origin_page, page_index, text, rgb, page_rect.y0, page_rect.x0)
                     )
+                else:
+                    singles.append(
+                        TextMarkupEntry(
+                            page_index=page_index,
+                            text=text,
+                            kind=kind,
+                            rgb=rgb,
+                            sort_y=page_rect.y0,
+                            sort_x=page_rect.x0,
+                            page_rect=page_rect,
+                        )
+                    )
+
+        entries: list[TextMarkupEntry] = list(singles)
+        for (_group_id, kind), items in grouped.items():
+            items.sort(key=lambda item: (item[1], item[4], item[5]))
+            origin_page = items[0][0]
+            merged_text = PdfDocument._join_continued_text_parts(
+                [item[2] for item in items]
+            )
+            rgb = items[0][3]
+            entries.append(
+                TextMarkupEntry(
+                    page_index=origin_page,
+                    text=merged_text,
+                    kind=kind,
+                    rgb=rgb,
+                    sort_y=items[0][4],
+                    sort_x=items[0][5],
+                    group_id=_group_id,
                 )
+            )
         entries.sort(key=lambda entry: (entry.page_index, entry.sort_y, entry.sort_x))
         return entries
+
+    def _markup_metadata_at_point(
+        self,
+        page_index: int,
+        point: fitz.Point,
+    ) -> tuple[str, fitz.Rect, str | None] | None:
+        if not (0 <= page_index < len(self._doc)):
+            return None
+        page = self._doc[page_index]
+        hit = fitz.Rect(point.x - 2, point.y - 2, point.x + 2, point.y + 2)
+        for preferred_type in (fitz.PDF_ANNOT_HIGHLIGHT, fitz.PDF_ANNOT_UNDERLINE):
+            for annot in page.annots() or []:
+                try:
+                    annot_type = annot.type[0]
+                except (RuntimeError, ValueError):
+                    continue
+                if annot_type != preferred_type:
+                    continue
+                page_rect = self._highlight_annot_page_rect(annot)
+                if not page_rect.intersects(hit):
+                    continue
+                kind = "underline" if annot_type == fitz.PDF_ANNOT_UNDERLINE else "highlight"
+                title = (annot.info or {}).get("title") or ""
+                group_id, _ = self._parse_markup_group_title(title)
+                return kind, page_rect, group_id
+        return None
+
+    @staticmethod
+    def _text_markup_entries_match(
+        left: TextMarkupEntry,
+        right: TextMarkupEntry,
+    ) -> bool:
+        if left.kind != right.kind:
+            return False
+        if left.group_id or right.group_id:
+            return left.group_id == right.group_id
+        if left.page_index != right.page_index:
+            return False
+        if left.page_rect is None or right.page_rect is None:
+            return False
+        return left.page_rect.intersects(right.page_rect)
+
+    def find_text_markup_entry_at_point(
+        self,
+        page_index: int,
+        point: fitz.Point,
+    ) -> TextMarkupEntry | None:
+        """Return the sidebar list entry for the markup annotation at *point*."""
+        metadata = self._markup_metadata_at_point(page_index, point)
+        if metadata is None:
+            return None
+        kind, page_rect, group_id = metadata
+        for entry in self.get_text_markup_entries():
+            if entry.kind != kind:
+                continue
+            if group_id is not None and entry.group_id == group_id:
+                return entry
+            if (
+                group_id is None
+                and entry.group_id is None
+                and entry.page_index == page_index
+                and entry.page_rect is not None
+                and entry.page_rect.intersects(page_rect)
+            ):
+                return entry
+        return None
+
+    def get_text_markup_selection_for_rect(
+        self,
+        page_index: int,
+        page_rect: fitz.Rect,
+        kind: str,
+    ) -> tuple[fitz.Rect, list[fitz.Rect], str] | None:
+        if page_rect.is_empty or page_rect.is_infinite:
+            return None
+        if not (0 <= page_index < len(self._doc)):
+            return None
+        annot_type = (
+            fitz.PDF_ANNOT_UNDERLINE if kind == "underline" else fitz.PDF_ANNOT_HIGHLIGHT
+        )
+        page = self._doc[page_index]
+        best: tuple[fitz.Rect, list[fitz.Rect], str] | None = None
+        best_area = -1.0
+        for annot in page.annots() or []:
+            try:
+                if annot.type[0] != annot_type:
+                    continue
+            except (RuntimeError, ValueError):
+                continue
+            rect = self._highlight_annot_page_rect(annot)
+            if not rect.intersects(page_rect):
+                continue
+            area = rect.get_area()
+            if area <= best_area:
+                continue
+            quad_rects = self._highlight_annot_quad_rects(annot)
+            if not quad_rects:
+                continue
+            text = self._markup_text_from_annot(page, annot)
+            best = (rect, quad_rects, text)
+            best_area = area
+        return best
+
+    def collect_text_markup_group_segments(
+        self,
+        group_id: str,
+        kind: str,
+    ) -> list[PageSelectionSegment]:
+        annot_type = (
+            fitz.PDF_ANNOT_UNDERLINE if kind == "underline" else fitz.PDF_ANNOT_HIGHLIGHT
+        )
+        segments: list[PageSelectionSegment] = []
+        for page_index in range(len(self._doc)):
+            page = self._doc[page_index]
+            for annot in page.annots() or []:
+                try:
+                    if annot.type[0] != annot_type:
+                        continue
+                except (RuntimeError, ValueError):
+                    continue
+                title = (annot.info or {}).get("title") or ""
+                parsed_group_id, _ = self._parse_markup_group_title(title)
+                if parsed_group_id != group_id:
+                    continue
+                page_rect = self._highlight_annot_page_rect(annot)
+                text = self._markup_text_from_annot(page, annot)
+                segments.append(
+                    PageSelectionSegment(page_index, page_rect, text)
+                )
+        segments.sort(key=lambda segment: segment.page_index)
+        return segments
+
+    @staticmethod
+    def _delete_page_annots_by_xrefs(page, xrefs: set[int]) -> int:
+        """Delete annotations by xref, re-resolving each annot from the page."""
+        remaining = set(xrefs)
+        deleted = 0
+        while remaining:
+            deleted_one = False
+            for annot in page.annots() or []:
+                if annot.xref not in remaining:
+                    continue
+                page.delete_annot(annot)
+                remaining.discard(annot.xref)
+                deleted += 1
+                deleted_one = True
+                break
+            if not deleted_one:
+                break
+        return deleted
+
+    def remove_text_markup_entry(self, entry: TextMarkupEntry) -> bool:
+        """Remove the highlight or underline represented by a panel list entry."""
+        if entry.group_id:
+            return self._remove_text_markup_group(entry.group_id, entry.kind)
+        if entry.page_rect is None or entry.page_rect.is_empty:
+            return False
+        if entry.kind == "underline":
+            return self.remove_text_underlines_in_rect(entry.page_index, entry.page_rect)
+        return self.remove_text_highlights_in_rect(entry.page_index, entry.page_rect)
+
+    def _remove_text_markup_group(self, group_id: str, kind: str) -> bool:
+        if kind == "underline":
+            annot_type = fitz.PDF_ANNOT_UNDERLINE
+        else:
+            annot_type = fitz.PDF_ANNOT_HIGHLIGHT
+        to_delete: dict[int, set[int]] = {}
+        for page_index in range(len(self._doc)):
+            page = self._doc[page_index]
+            for annot in page.annots() or []:
+                try:
+                    if annot.type[0] != annot_type:
+                        continue
+                except (RuntimeError, ValueError):
+                    continue
+                title = (annot.info or {}).get("title") or ""
+                parsed_group_id, _ = self._parse_markup_group_title(title)
+                if parsed_group_id != group_id:
+                    continue
+                to_delete.setdefault(page_index, set()).add(annot.xref)
+        if not to_delete:
+            return False
+        self._record_undo_checkpoint()
+        for page_index, xrefs in to_delete.items():
+            page = self._doc[page_index]
+            self._delete_page_annots_by_xrefs(page, xrefs)
+        self._touch()
+        return True
 
     def _find_highlight_selection_at_point(
         self,
@@ -1309,55 +1693,57 @@ class PdfDocument:
         ):
             return False
         if not self._restoring_history:
-            self._undo_stack.append(self._snapshot_bytes())
-            if len(self._undo_stack) > _MAX_UNDO_LEVELS:
-                self._undo_stack.pop(0)
-            self._redo_stack.clear()
+            self._record_undo_checkpoint()
         page = self._doc[page_index]
-        to_delete = [
-            annot
+        xrefs = {
+            annot.xref
             for annot in page.annots()
             if annot.type[0] == fitz.PDF_ANNOT_HIGHLIGHT
             and self._highlight_annot_page_rect(annot).intersects(page_rect)
-        ]
-        for annot in to_delete:
-            page.delete_annot(annot)
+        }
+        self._delete_page_annots_by_xrefs(page, xrefs)
         self._touch()
         return True
 
-    def _word_quads_in_rect(self, page, page_rect: fitz.Rect) -> list[fitz.Quad]:
-        quads: list[fitz.Quad] = []
-        for word in page.get_text("words", clip=page_rect):
-            x0, y0, x1, y1 = word[:4]
-            quads.append(
-                fitz.Quad(
-                    fitz.Point(x0, y1),
-                    fitz.Point(x1, y1),
-                    fitz.Point(x0, y0),
-                    fitz.Point(x1, y0),
-                )
-            )
-        return quads
+    def _word_quads_in_rect(
+        self,
+        page,
+        page_rect: fitz.Rect,
+        selected_words: list | tuple | None = None,
+    ) -> list[fitz.Quad]:
+        words = self._words_for_markup_in_rect(page, page_rect, selected_words)
+        return self._word_quads_from_words(words)
 
     def add_text_underline(
         self,
         page_index: int,
         page_rect: fitz.Rect,
         color_rgb: tuple[float, float, float],
+        *,
+        selected_words: list | tuple | None = None,
+        markup_group_id: str | None = None,
+        origin_page_index: int | None = None,
+        record_undo: bool = True,
     ) -> bool:
         if page_rect.is_empty or page_rect.is_infinite:
             return False
         if not (0 <= page_index < len(self._doc)):
             return False
         page = self._doc[page_index]
-        quads = self._word_quads_in_rect(page, page_rect)
+        quads = self._word_quads_in_rect(page, page_rect, selected_words)
         if not quads:
             return False
-        self._record_undo_checkpoint()
+        if record_undo:
+            self._record_undo_checkpoint()
         annot = page.add_underline_annot(quads)
         annot.set_colors(stroke=color_rgb)
+        if markup_group_id is not None and origin_page_index is not None:
+            annot.set_info(
+                title=PdfDocument._markup_group_title(markup_group_id, origin_page_index)
+            )
         annot.update()
-        self._touch()
+        if record_undo:
+            self._touch()
         return True
 
     def recolor_text_underlines_in_rect(
@@ -1398,10 +1784,17 @@ class PdfDocument:
         page_index: int,
         page_rect: fitz.Rect,
         color_rgb: tuple[float, float, float],
+        *,
+        selected_words: list | tuple | None = None,
     ) -> bool:
         if self.has_text_underline_in_rect(page_index, page_rect):
             return self.recolor_text_underlines_in_rect(page_index, page_rect, color_rgb)
-        return self.add_text_underline(page_index, page_rect, color_rgb)
+        return self.add_text_underline(
+            page_index,
+            page_rect,
+            color_rgb,
+            selected_words=selected_words,
+        )
 
     def get_page_text_underline_overlays(
         self,
@@ -1490,19 +1883,15 @@ class PdfDocument:
         ):
             return False
         if not self._restoring_history:
-            self._undo_stack.append(self._snapshot_bytes())
-            if len(self._undo_stack) > _MAX_UNDO_LEVELS:
-                self._undo_stack.pop(0)
-            self._redo_stack.clear()
+            self._record_undo_checkpoint()
         page = self._doc[page_index]
-        to_delete = [
-            annot
+        xrefs = {
+            annot.xref
             for annot in page.annots()
             if annot.type[0] == fitz.PDF_ANNOT_UNDERLINE
             and self._highlight_annot_page_rect(annot).intersects(page_rect)
-        ]
-        for annot in to_delete:
-            page.delete_annot(annot)
+        }
+        self._delete_page_annots_by_xrefs(page, xrefs)
         self._touch()
         return True
 

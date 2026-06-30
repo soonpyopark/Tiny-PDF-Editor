@@ -6,7 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QKeyEvent
 from PyQt6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -22,11 +22,12 @@ from PyQt6.QtWidgets import (
 
 from pdf_editor.document import PdfDocument, TextMarkupEntry
 from pdf_editor.highlight_colors import highlight_qcolor_from_rgb, markup_qcolor_from_rgb
-from pdf_editor.markup_export import export_markup_entries_to_csv
+from pdf_editor.markup_export import export_markup_entries_to_xlsx
 from pdf_editor.panel_header_icons import collapse_all_icon, expand_all_icon
 from pdf_editor.side_panel_header import (
     PANEL_HEADER_BTN_HEIGHT,
     SidePanelHeaderBar,
+    make_panel_divider,
     make_panel_header_icon_button,
 )
 
@@ -47,9 +48,22 @@ _EXCEL_EXPORT_BTN_STYLE = """
     }
 """
 
+_PANEL_SURFACE_STYLE = """
+    HighlightPanel {
+        background-color: #ffffff;
+    }
+    QScrollArea#markupPanelScroll {
+        background-color: #ffffff;
+        border: none;
+    }
+    QWidget#markupPanelBody {
+        background-color: #ffffff;
+    }
+"""
+
 _PAGE_HEADER_STYLE = """
     QPushButton#pageMarkupHeader {
-        background-color: transparent;
+        background-color: #efefef;
         border: none;
         border-bottom: 1px solid #e8e8e8;
         color: #333333;
@@ -59,9 +73,11 @@ _PAGE_HEADER_STYLE = """
         padding: 6px 4px 6px 2px;
     }
     QPushButton#pageMarkupHeader:hover {
-        background-color: #f0f0f0;
+        background-color: #e5e5e5;
     }
 """
+
+_ENTRY_SELECTED_BORDER = "border: 1px solid #666666;"
 
 _ENTRY_BASE_STYLE = """
     QFrame#markupEntryRow {
@@ -81,11 +97,12 @@ _ENTRY_BASE_STYLE = """
 
 
 class _MarkupEntryRow(QFrame):
-    clicked = pyqtSignal(int)
+    clicked = pyqtSignal(object)
 
     def __init__(self, entry: TextMarkupEntry, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._page_index = entry.page_index
+        self._entry = entry
+        self._selected = False
         self.setObjectName("markupEntryRow")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -122,25 +139,49 @@ class _MarkupEntryRow(QFrame):
             )
         layout.addWidget(text, 1)
 
-        if entry.kind == "highlight":
-            fill = highlight_qcolor_from_rgb(entry.rgb)
+        self._apply_style()
+
+    def entry(self) -> TextMarkupEntry:
+        return self._entry
+
+    def set_selected(self, selected: bool) -> None:
+        if self._selected == selected:
+            return
+        self._selected = selected
+        self._apply_style()
+
+    def is_selected(self) -> bool:
+        return self._selected
+
+    def _apply_style(self) -> None:
+        border = _ENTRY_SELECTED_BORDER if self._selected else "border: none;"
+        if self._entry.kind == "highlight":
+            fill = highlight_qcolor_from_rgb(self._entry.rgb)
             self.setStyleSheet(
                 _ENTRY_BASE_STYLE
-                + f"QFrame#markupEntryRow {{ background-color: {fill.name(QColor.NameFormat.HexArgb)}; }}"
+                + "QFrame#markupEntryRow {"
+                f" background-color: {fill.name(QColor.NameFormat.HexArgb)};"
+                f" {border}"
+                " }"
             )
         else:
-            self.setStyleSheet(_ENTRY_BASE_STYLE)
+            self.setStyleSheet(
+                _ENTRY_BASE_STYLE
+                + "QFrame#markupEntryRow {"
+                f" {border}"
+                " }"
+            )
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit(self._page_index)
+            self.clicked.emit(self)
             event.accept()
             return
         super().mouseReleaseEvent(event)
 
 
 class _PageMarkupSection(QWidget):
-    page_clicked = pyqtSignal(int)
+    entry_clicked = pyqtSignal(object)
 
     def __init__(
         self,
@@ -169,12 +210,23 @@ class _PageMarkupSection(QWidget):
         body_layout = QVBoxLayout(self._body)
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
+        self._rows: list[_MarkupEntryRow] = []
         for entry in entries:
             row = _MarkupEntryRow(entry, self._body)
-            row.clicked.connect(self.page_clicked.emit)
+            row.clicked.connect(self.entry_clicked.emit)
             body_layout.addWidget(row)
+            self._rows.append(row)
         layout.addWidget(self._body)
         self._body.setVisible(expanded)
+
+    def rows(self) -> list[_MarkupEntryRow]:
+        return self._rows
+
+    def row_for_entry(self, entry: TextMarkupEntry) -> _MarkupEntryRow | None:
+        for row in self._rows:
+            if PdfDocument._text_markup_entries_match(row.entry(), entry):
+                return row
+        return None
 
     def _header_label(self) -> str:
         chevron = "▼" if self._expanded else "▶"
@@ -196,15 +248,26 @@ class _PageMarkupSection(QWidget):
 
 class HighlightPanel(QWidget):
     page_selected = pyqtSignal(int)
+    entry_selected = pyqtSignal(object)
+    markup_changed = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._document: PdfDocument | None = None
         self._page_sections: list[_PageMarkupSection] = []
+        self._selected_row: _MarkupEntryRow | None = None
+        self._selected_entry: TextMarkupEntry | None = None
+
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(_PANEL_SURFACE_STYLE)
+
+        layout.addWidget(make_panel_divider())
 
         header_bar = SidePanelHeaderBar()
         header = header_bar.row_layout
@@ -235,11 +298,15 @@ class HighlightPanel(QWidget):
         layout.addWidget(header_bar)
 
         self._scroll = QScrollArea()
+        self._scroll.setObjectName("markupPanelScroll")
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         self._body = QWidget()
+        self._body.setObjectName("markupPanelBody")
+        self._body.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._body_layout = QVBoxLayout(self._body)
         self._body_layout.setContentsMargins(4, 4, 4, 4)
         self._body_layout.setSpacing(4)
@@ -254,6 +321,7 @@ class HighlightPanel(QWidget):
 
         self._scroll.setWidget(self._body)
         layout.addWidget(self._scroll, 1)
+        layout.addWidget(make_panel_divider())
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -287,16 +355,23 @@ class HighlightPanel(QWidget):
             grouped[entry.page_index].append(entry)
 
         self._page_sections.clear()
+        preserved_entry = self._selected_entry
+        self._selected_row = None
+        self._selected_entry = None
         for page_index in sorted(grouped):
             section = _PageMarkupSection(page_index, grouped[page_index], expanded=True, parent=self._body)
-            section.page_clicked.connect(self.page_selected.emit)
+            section.entry_clicked.connect(self._on_entry_clicked)
             self._body_layout.addWidget(section)
             self._page_sections.append(section)
 
         self._body_layout.addStretch(1)
+        if preserved_entry is not None:
+            self.select_entry(preserved_entry, scroll=False)
 
     def _clear_body(self) -> None:
         self._page_sections.clear()
+        self._selected_row = None
+        self._selected_entry = None
         while self._body_layout.count():
             item = self._body_layout.takeAt(0)
             widget = item.widget()
@@ -331,25 +406,88 @@ class HighlightPanel(QWidget):
             QMessageBox.information(self, "엑셀로 저장", "저장할 형광펜·밑줄이 없습니다.")
             return
 
-        default_name = "형광펜_밑줄.csv"
+        default_name = "형광펜_밑줄.xlsx"
         if self._document.source_path:
-            default_name = f"{Path(self._document.source_path).stem}_형광펜_밑줄.csv"
+            default_name = f"{Path(self._document.source_path).stem}_형광펜_밑줄.xlsx"
 
         path, _ = QFileDialog.getSaveFileName(
             self,
             "엑셀로 저장",
             default_name,
-            "Excel CSV (*.csv);;모든 파일 (*.*)",
+            "Excel 통합 문서 (*.xlsx);;모든 파일 (*.*)",
         )
         if not path:
             return
-        if not path.lower().endswith(".csv"):
-            path = f"{path}.csv"
+        if not path.lower().endswith(".xlsx"):
+            path = f"{path}.xlsx"
 
         try:
-            export_markup_entries_to_csv(entries, path)
+            export_markup_entries_to_xlsx(entries, path)
         except OSError as exc:
             QMessageBox.critical(self, "엑셀로 저장", f"파일을 저장하지 못했습니다.\n{exc}")
             return
 
         QMessageBox.information(self, "엑셀로 저장", "저장했습니다.")
+
+    def _on_entry_clicked(self, row: _MarkupEntryRow) -> None:
+        self._select_row(row, scroll=False)
+        self.entry_selected.emit(row.entry())
+        self.setFocus()
+
+    def select_entry(self, entry: TextMarkupEntry, *, scroll: bool = True) -> bool:
+        if not self._page_sections and self._document:
+            entries = self._document.get_text_markup_entries()
+            if entries:
+                self.refresh()
+        row = self._find_row_for_entry(entry)
+        if row is None:
+            return False
+        self._select_row(row, scroll=scroll)
+        return True
+
+    def _find_row_for_entry(self, entry: TextMarkupEntry) -> _MarkupEntryRow | None:
+        for section in self._page_sections:
+            row = section.row_for_entry(entry)
+            if row is not None:
+                return row
+        return None
+
+    def _select_row(self, row: _MarkupEntryRow | None, *, scroll: bool = True) -> None:
+        if self._selected_row is not None:
+            self._selected_row.set_selected(False)
+        self._selected_row = row
+        self._selected_entry = row.entry() if row is not None else None
+        if row is None:
+            return
+        row.set_selected(True)
+        if not scroll:
+            return
+        section = row.parentWidget()
+        while section is not None and not isinstance(section, _PageMarkupSection):
+            section = section.parentWidget()
+        if isinstance(section, _PageMarkupSection):
+            section.set_expanded(True)
+        self._scroll.ensureWidgetVisible(row, 24, 24)
+
+    def has_selected_entry(self) -> bool:
+        return self._selected_entry is not None
+
+    def try_remove_selected(self) -> bool:
+        if self._selected_entry is None:
+            return False
+        document = self._resolve_document()
+        if document is None:
+            return False
+        if not document.remove_text_markup_entry(self._selected_entry):
+            return False
+        self._selected_row = None
+        self._selected_entry = None
+        self.markup_changed.emit()
+        return True
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            if self.try_remove_selected():
+                event.accept()
+                return
+        super().keyPressEvent(event)

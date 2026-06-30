@@ -59,6 +59,7 @@ from pdf_editor.side_panel_header import (
   PANEL_HEADER_BTN_HEIGHT,
   PANEL_HEADER_BTN_WIDTH,
   SidePanelHeaderBar,
+  make_panel_divider,
 )
 from pdf_editor.thumbnail_panel import (
   DEFAULT_THUMB_SCALE_LEVEL,
@@ -353,6 +354,7 @@ class DocumentTab(QWidget):
   def __init__(self, document: PdfDocument, parent: QWidget | None = None) -> None:
     super().__init__(parent)
     self.document = document
+    self._markup_entry_count = len(document.get_text_markup_entries())
 
     layout = QHBoxLayout(self)
     layout.setContentsMargins(0, 0, 0, 0)
@@ -372,6 +374,8 @@ class DocumentTab(QWidget):
     thumb_layout = QVBoxLayout(thumb_page)
     thumb_layout.setContentsMargins(0, 0, 0, 0)
     thumb_layout.setSpacing(0)
+
+    thumb_layout.addWidget(make_panel_divider())
 
     header_bar = SidePanelHeaderBar()
     header = header_bar.row_layout
@@ -406,6 +410,7 @@ class DocumentTab(QWidget):
     self.thumbnails = ThumbnailPanel()
     self.thumbnails.set_document(document)
     thumb_layout.addWidget(self.thumbnails, 1)
+    thumb_layout.addWidget(make_panel_divider())
 
     self.highlight_panel = HighlightPanel()
     self.highlight_panel.set_document(document)
@@ -443,7 +448,9 @@ class DocumentTab(QWidget):
     self.thumbnails.page_selected.connect(self._on_thumb_selected)
     self.viewer.page_changed.connect(self._on_viewer_page_changed)
     self.viewer.page_canvas.text_highlight_added.connect(self._on_text_highlight_added)
-    self.highlight_panel.page_selected.connect(self.go_to_page)
+    self.highlight_panel.entry_selected.connect(self._on_highlight_panel_entry_selected)
+    self.highlight_panel.markup_changed.connect(self._on_text_highlight_added)
+    self.viewer.page_canvas.markup_clicked.connect(self.highlight_panel.select_entry)
     self.thumbnails.insert_requested.connect(self._on_insert)
     self.thumbnails.pages_move_requested.connect(self._on_move_pages)
     self.thumbnails.delete_requested.connect(self._on_delete)
@@ -484,6 +491,13 @@ class DocumentTab(QWidget):
       QTimer.singleShot(0, self.thumbnails._restore_after_tab_show)
     elif index == int(SideNavTab.HIGHLIGHTS):
       self.highlight_panel.refresh()
+
+  def _switch_to_highlights_panel(self) -> None:
+    if self.side_nav.current_tab() == SideNavTab.HIGHLIGHTS:
+      return
+    self.side_nav.set_current_tab(SideNavTab.HIGHLIGHTS)
+    self.content_stack.setCurrentIndex(int(SideNavTab.HIGHLIGHTS))
+    self.highlight_panel.refresh()
 
   def _page_indices_for_clipboard(self) -> list[int]:
     return self.thumbnails.copy_indices()
@@ -703,8 +717,14 @@ class DocumentTab(QWidget):
     self.thumbnails.blockSignals(False)
 
   def _on_text_highlight_added(self) -> None:
+    before_count = self._markup_entry_count
     self.highlight_panel.refresh()
+    self.viewer.refresh()
     self._notify_history_changed()
+    self._markup_entry_count = len(self.document.get_text_markup_entries())
+    if before_count == 0 and self._markup_entry_count > 0:
+      if self.side_nav.current_tab() == SideNavTab.THUMBNAILS:
+        self._switch_to_highlights_panel()
 
   def refresh_all(self, keep_index: int | None = None, select_indices: list[int] | None = None) -> None:
     index = keep_index if keep_index is not None else self.thumbnails.current_index()
@@ -712,6 +732,7 @@ class DocumentTab(QWidget):
     self.highlight_panel.refresh()
     self.viewer.set_current_index(index)
     self.viewer.refresh()
+    self._markup_entry_count = len(self.document.get_text_markup_entries())
 
   def go_to_page(self, index: int, *, fit_page: bool = False) -> None:
     if self.document.page_count == 0:
@@ -724,6 +745,12 @@ class DocumentTab(QWidget):
       self.viewer.refresh()
     if fit_page:
       self.viewer.fit_page_when_ready()
+
+  def _on_highlight_panel_entry_selected(self, entry) -> None:
+    self.viewer.select_markup_entry(entry)
+    self.thumbnails.blockSignals(True)
+    self.thumbnails.set_current_index(entry.page_index)
+    self.thumbnails.blockSignals(False)
 
   @staticmethod
   def _insert_focus_index(
@@ -1630,6 +1657,11 @@ class MainWindow(QMainWindow):
   def _delete_selected(self) -> None:
     tab = self._current_tab()
     if not tab:
+      return
+    if (
+      tab.side_nav.current_tab() == SideNavTab.HIGHLIGHTS
+      and tab.highlight_panel.try_remove_selected()
+    ):
       return
     if tab.viewer.try_remove_selected_highlight():
       return

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, QSize, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, QSize, QTimer, pyqtSignal
 
 from PyQt6.QtGui import QCursor, QIcon, QMouseEvent, QPainter, QPen, QColor, QPixmap
 
@@ -38,6 +38,10 @@ from pdf_editor.highlight_colors import (
 _MENU_ITEM_TEXT_COLOR = "#333333"
 
 _MENU_ITEM_HOVER_BG = "#ebebeb"
+
+_MENU_ITEM_NORMAL_BG = "#ffffff"
+
+_HOVER_ARM_THRESHOLD = 6
 
 
 
@@ -155,6 +159,31 @@ def _dismiss_popup_menus(*menus: QMenu) -> None:
         popup = QApplication.activePopupWidget()
 
 
+def _markup_menu_hover_armed(menu: QMenu, global_pos: QPoint | None = None) -> bool:
+    if getattr(menu, "_markup_hover_armed", False):
+        return True
+    open_pos = getattr(menu, "_markup_open_cursor", None)
+    if open_pos is None:
+        return True
+    pos = global_pos if global_pos is not None else QCursor.pos()
+    if (pos - open_pos).manhattanLength() >= _HOVER_ARM_THRESHOLD:
+        menu._markup_hover_armed = True
+        return True
+    return False
+
+
+def _reset_markup_menu_hover(menu: QMenu) -> None:
+    menu._markup_hover_armed = False
+    menu._markup_open_cursor = QCursor.pos()
+    menu.setActiveAction(None)
+    for row in getattr(menu, "_markup_rows", []):
+        row.set_hovered(False)
+    QTimer.singleShot(
+        0,
+        lambda: menu.setActiveAction(None) if menu.isVisible() else None,
+    )
+
+
 
 
 
@@ -184,25 +213,13 @@ class _HighlightRowHoverFilter(QObject):
 
         self._row = row
 
-        self._open_cursor_pos: QPoint | None = None
-
         menu.setMouseTracking(True)
 
         color_menu.setMouseTracking(True)
 
-        menu.aboutToShow.connect(self._on_menu_about_to_show)
-
         color_menu.aboutToShow.connect(lambda: self._row.set_hovered(True))
 
         color_menu.aboutToHide.connect(self._sync_from_cursor)
-
-
-
-    def _on_menu_about_to_show(self) -> None:
-
-        self._open_cursor_pos = QCursor.pos()
-
-        self._row.set_hovered(False)
 
 
 
@@ -234,19 +251,17 @@ class _HighlightRowHoverFilter(QObject):
 
         if self._color_menu.isVisible():
 
-            self._row.set_hovered(True)
+            if _markup_menu_hover_armed(self._menu, global_pos):
+
+                self._row.set_hovered(True)
 
             return
 
-        if self._open_cursor_pos is not None:
+        if not _markup_menu_hover_armed(self._menu, global_pos):
 
-            if (global_pos - self._open_cursor_pos).manhattanLength() < 3:
+            self._row.set_hovered(False)
 
-                self._row.set_hovered(False)
-
-                return
-
-            self._open_cursor_pos = None
+            return
 
         self._row.set_hovered(self._is_over_row(global_pos))
 
@@ -512,10 +527,12 @@ class _HighlightSplitMenuItem(QWidget):
         color_menu: QMenu,
         icon: QIcon,
         label: str,
+        parent_menu: QMenu,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._color_menu = color_menu
+        self._parent_menu = parent_menu
         self.setObjectName("markupMenuRow")
 
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
@@ -588,12 +605,16 @@ class _HighlightSplitMenuItem(QWidget):
             )
         else:
             self.setStyleSheet(
-                "QWidget#markupMenuRow { background-color: transparent; }"
+                f"QWidget#markupMenuRow {{ background-color: {_MENU_ITEM_NORMAL_BG}; }}"
             )
 
 
 
     def enterEvent(self, event) -> None:
+
+        if _markup_menu_hover_armed(self._parent_menu):
+
+            self.set_hovered(True)
 
         super().enterEvent(event)
 
@@ -704,7 +725,11 @@ def _add_colored_markup_menu_row(
     color_menu.addAction(picker_action)
 
     row_action = QWidgetAction(menu)
-    row = _HighlightSplitMenuItem(color_menu, color_icon, label)
+    row = _HighlightSplitMenuItem(color_menu, color_icon, label, menu)
+
+    if not hasattr(menu, "_markup_rows"):
+        menu._markup_rows = []
+    menu._markup_rows.append(row)
 
     def _apply_default() -> None:
         _dismiss_popup_menus(color_menu, menu)
@@ -790,10 +815,13 @@ def build_text_selection_context_menu(
     show_remove_highlight: bool = False,
     on_remove_underline: Callable[[], None] | None = None,
     show_remove_underline: bool = False,
+    show_continue_selection: bool = False,
+    on_continue_selection: Callable[[], None] | None = None,
 ) -> QMenu:
     menu = QMenu(parent)
     menu.setStyleSheet(TEXT_SELECTION_MENU_STYLE)
-    menu.aboutToShow.connect(lambda: menu.setActiveAction(None))
+    menu._markup_rows = []
+    menu.aboutToShow.connect(lambda: _reset_markup_menu_hover(menu))
     add_text_highlight_menu_actions(
         menu,
         on_apply_default=on_apply_default_highlight,
@@ -814,6 +842,9 @@ def build_text_selection_context_menu(
         remove_action.triggered.connect(on_remove_underline)
     copy_action = menu.addAction("복사")
     copy_action.triggered.connect(on_copy)
+    if show_continue_selection and on_continue_selection is not None:
+        continue_action = menu.addAction("계속 선택하기")
+        continue_action.triggered.connect(on_continue_selection)
     return menu
 
 
