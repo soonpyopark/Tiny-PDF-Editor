@@ -156,8 +156,37 @@ def parse_launch_paths(argv: list[str]) -> list[str]:
 
 class CloseSaveChoice(str, Enum):
     SAVE_AS = "save_as"
+    SAVE = "save"
     DISCARD = "discard"
     CANCEL = "cancel"
+
+
+_CLOSE_SAVE_DIALOG_BTN_HEIGHT = 36
+_CLOSE_SAVE_DIALOG_MESSAGE_SPACING = 10
+
+
+def _style_close_save_dialog_button(
+    button: QPushButton,
+    *,
+    background: str,
+    hover: str,
+    pressed: str,
+    text_color: str = "#333333",
+    border_color: str = "#cccccc",
+) -> None:
+    button.setFixedHeight(_CLOSE_SAVE_DIALOG_BTN_HEIGHT)
+    button.setStyleSheet(
+        "QPushButton {"
+        f" min-height: {_CLOSE_SAVE_DIALOG_BTN_HEIGHT}px;"
+        " padding: 8px 16px;"
+        f" border: 1px solid {border_color};"
+        " border-radius: 3px;"
+        f" background-color: {background};"
+        f" color: {text_color};"
+        " }"
+        f"QPushButton:hover {{ background-color: {hover}; border: 1px solid {border_color}; }}"
+        f"QPushButton:pressed {{ background-color: {pressed}; border: 1px solid {border_color}; }}"
+    )
 
 
 def _ask_save_modified(parent: QWidget, title: str, text: str) -> CloseSaveChoice:
@@ -165,21 +194,33 @@ def _ask_save_modified(parent: QWidget, title: str, text: str) -> CloseSaveChoic
     dialog.setWindowTitle(title)
 
     layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(24, 12, 24, 20)
+    layout.setSpacing(_CLOSE_SAVE_DIALOG_MESSAGE_SPACING)
+
     message = QLabel(text)
-    message.setWordWrap(True)
-    layout.addWidget(message)
+    message.setWordWrap(False)
+    message.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    message.setStyleSheet("QLabel { padding: 0; font-size: 13px; }")
+    layout.addWidget(message, 0, Qt.AlignmentFlag.AlignLeft)
 
     button_row = QHBoxLayout()
-    button_row.addStretch(1)
+    button_row.setSpacing(8)
+    button_row.setContentsMargins(0, 0, 0, 0)
 
-    save_button = QPushButton("다른이름으로 저장하고 닫기")
+    save_as_button = QPushButton("다른이름으로 저장하고 닫기")
+    save_button = QPushButton("저장하고 닫기")
     discard_button = QPushButton("저장하지 않고 닫기")
     cancel_button = QPushButton("취소")
     result = CloseSaveChoice.CANCEL
 
-    def choose_save() -> None:
+    def choose_save_as() -> None:
         nonlocal result
         result = CloseSaveChoice.SAVE_AS
+        dialog.accept()
+
+    def choose_save() -> None:
+        nonlocal result
+        result = CloseSaveChoice.SAVE
         dialog.accept()
 
     def choose_discard() -> None:
@@ -187,16 +228,46 @@ def _ask_save_modified(parent: QWidget, title: str, text: str) -> CloseSaveChoic
         result = CloseSaveChoice.DISCARD
         dialog.accept()
 
+    save_as_button.clicked.connect(choose_save_as)
     save_button.clicked.connect(choose_save)
     discard_button.clicked.connect(choose_discard)
     cancel_button.clicked.connect(dialog.reject)
 
+    _style_close_save_dialog_button(
+        save_as_button,
+        background="#dbeafe",
+        hover="#bfdbfe",
+        pressed="#93c5fd",
+    )
+    _style_close_save_dialog_button(
+        save_button,
+        background="#dcfce7",
+        hover="#bbf7d0",
+        pressed="#86efac",
+    )
+    _style_close_save_dialog_button(
+        discard_button,
+        background="#fde8e6",
+        hover="#fbd0cb",
+        pressed="#f5b8b2",
+    )
+    _style_close_save_dialog_button(
+        cancel_button,
+        background="#f3f4f6",
+        hover="#e5e7eb",
+        pressed="#d1d5db",
+    )
+
+    button_row.addWidget(save_as_button)
     button_row.addWidget(save_button)
     button_row.addWidget(discard_button)
     button_row.addWidget(cancel_button)
     layout.addLayout(button_row)
 
-    save_button.setDefault(True)
+    dialog.adjustSize()
+    dialog.setMinimumWidth(dialog.sizeHint().width())
+
+    save_as_button.setDefault(True)
 
     if dialog.exec() == QDialog.DialogCode.Accepted:
         return result
@@ -450,7 +521,7 @@ class DocumentTab(QWidget):
     self.viewer.page_canvas.text_highlight_added.connect(self._on_text_highlight_added)
     self.highlight_panel.entry_selected.connect(self._on_highlight_panel_entry_selected)
     self.highlight_panel.markup_changed.connect(self._on_text_highlight_added)
-    self.viewer.page_canvas.markup_clicked.connect(self.highlight_panel.select_entry)
+    self.viewer.page_canvas.markup_clicked.connect(self._on_markup_clicked)
     self.thumbnails.insert_requested.connect(self._on_insert)
     self.thumbnails.pages_move_requested.connect(self._on_move_pages)
     self.thumbnails.delete_requested.connect(self._on_delete)
@@ -746,7 +817,17 @@ class DocumentTab(QWidget):
     if fit_page:
       self.viewer.fit_page_when_ready()
 
+  def _on_markup_clicked(self, entry) -> None:
+    if self.side_nav.current_tab() == SideNavTab.THUMBNAILS:
+      self._switch_to_highlights_panel()
+    self.highlight_panel.select_entry(entry)
+    self.thumbnails.blockSignals(True)
+    self.thumbnails.set_current_index(entry.page_index)
+    self.thumbnails.blockSignals(False)
+
   def _on_highlight_panel_entry_selected(self, entry) -> None:
+    if self.side_nav.current_tab() == SideNavTab.THUMBNAILS:
+      self._switch_to_highlights_panel()
     self.viewer.select_markup_entry(entry)
     self.thumbnails.blockSignals(True)
     self.thumbnails.set_current_index(entry.page_index)
@@ -1553,6 +1634,8 @@ class MainWindow(QMainWindow):
       return False
     if choice == CloseSaveChoice.DISCARD:
       return True
+    if choice == CloseSaveChoice.SAVE:
+      return self._save_document_tab(tab)
     if choice == CloseSaveChoice.SAVE_AS:
       return self._save_document_tab_as(tab)
     return False

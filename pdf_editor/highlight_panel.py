@@ -79,11 +79,13 @@ _PAGE_HEADER_STYLE = """
 
 _ENTRY_SELECTED_BORDER = "border: 1px solid #666666;"
 
+_ENTRY_ROW_SPACING = 6
+_ENTRY_SECTION_INSET = 4
+
 _ENTRY_BASE_STYLE = """
     QFrame#markupEntryRow {
         border: none;
-        border-bottom: 1px solid #eeeeee;
-        border-radius: 2px;
+        border-radius: 3px;
     }
     QFrame#markupEntryRow:hover {
         background-color: #f7f7f7;
@@ -208,8 +210,13 @@ class _PageMarkupSection(QWidget):
 
         self._body = QWidget(self)
         body_layout = QVBoxLayout(self._body)
-        body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(0)
+        body_layout.setContentsMargins(
+            _ENTRY_SECTION_INSET,
+            4,
+            _ENTRY_SECTION_INSET,
+            4,
+        )
+        body_layout.setSpacing(_ENTRY_ROW_SPACING)
         self._rows: list[_MarkupEntryRow] = []
         for entry in entries:
             row = _MarkupEntryRow(entry, self._body)
@@ -309,7 +316,7 @@ class HighlightPanel(QWidget):
         self._body.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._body_layout = QVBoxLayout(self._body)
         self._body_layout.setContentsMargins(4, 4, 4, 4)
-        self._body_layout.setSpacing(4)
+        self._body_layout.setSpacing(8)
 
         self._empty_hint = QLabel("형광펜이나 밑줄 친 내용이 없습니다.")
         self._empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)

@@ -939,6 +939,39 @@ class PdfDocument:
         return "".join(result)
 
     @staticmethod
+    def _plain_text_to_markup_text(text: str) -> str:
+        """Apply markup line-join rules to plain extracted text."""
+        if not text:
+            return ""
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            return text.strip()
+        result: list[str] = []
+        for line_text in lines:
+            if result and result[-1].rstrip().endswith("."):
+                result.append(" ")
+            result.append(line_text)
+        return "".join(result)
+
+    @staticmethod
+    def _words_from_highlight_quads(page, quad_rects: list[fitz.Rect]) -> list:
+        if not quad_rects:
+            return []
+        matched: list = []
+        seen: set[tuple[int, int, int]] = set()
+        for word in page.get_text("words"):
+            word_rect = fitz.Rect(word[:4])
+            word_key = PdfDocument._word_sort_key(word)
+            if word_key in seen:
+                continue
+            for quad_rect in quad_rects:
+                if word_rect.intersects(quad_rect):
+                    seen.add(word_key)
+                    matched.append(word)
+                    break
+        return sorted(matched, key=PdfDocument._word_sort_key)
+
+    @staticmethod
     def _join_continued_text_parts(parts: list[str]) -> str:
         """Join cross-page segments with spaces instead of line breaks."""
         return " ".join(part.strip() for part in parts if part.strip())
@@ -1332,43 +1365,34 @@ class PdfDocument:
 
     @staticmethod
     def _markup_text_from_annot(page, annot) -> str:
+        page_rect = PdfDocument._highlight_annot_page_rect(annot)
         quad_rects = PdfDocument._highlight_annot_quad_rects(annot)
+        words = PdfDocument._words_from_highlight_quads(page, quad_rects)
+        if not words:
+            words = PdfDocument._words_in_reading_order(page, page_rect)
+            centered = [
+                word
+                for word in words
+                if PdfDocument._word_center_in_rect(word, page_rect)
+            ]
+            if centered:
+                words = centered
+        if words:
+            text = PdfDocument._selection_text_from_words(words).strip()
+            if text:
+                return text
         if quad_rects:
-            words: list = []
-            for quad_rect in quad_rects:
-                for word in PdfDocument._words_in_reading_order(page, quad_rect):
-                    if PdfDocument._word_center_in_rect(word, quad_rect):
-                        words.append(word)
-            if words:
-                words.sort(key=PdfDocument._word_sort_key)
-                text = PdfDocument._selection_text_from_words(words).strip()
-                if text:
-                    return text
             text_parts: list[str] = []
             for quad_rect in quad_rects:
                 part = page.get_text("text", clip=quad_rect).strip()
                 if part:
                     text_parts.append(part)
             if text_parts:
-                return "".join(text_parts)
-        page_rect = PdfDocument._highlight_annot_page_rect(annot)
-        words = PdfDocument._words_in_reading_order(page, page_rect)
-        if words:
-            matched = [
-                word
-                for word in words
-                if PdfDocument._word_center_in_rect(word, page_rect)
-            ]
-            if matched:
-                text = PdfDocument._selection_text_from_words(matched).strip()
-                if text:
-                    return text
-        if not quad_rects:
-            return page.get_text("text", clip=page_rect).strip()
+                return PdfDocument._plain_text_to_markup_text("\n".join(text_parts))
         text = page.get_text("text", clip=page_rect).strip()
         if text:
-            return text
-        return (annot.get_text() or "").strip()
+            return PdfDocument._plain_text_to_markup_text(text)
+        return PdfDocument._plain_text_to_markup_text((annot.get_text() or "").strip())
 
     @staticmethod
     def _markup_rgb_from_annot(annot, *, default: tuple[float, float, float]) -> tuple[float, float, float]:
