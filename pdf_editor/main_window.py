@@ -164,6 +164,9 @@ class CloseSaveChoice(str, Enum):
 _CLOSE_SAVE_DIALOG_BTN_HEIGHT = 36
 _CLOSE_SAVE_DIALOG_MESSAGE_SPACING = 10
 
+_INSERT_INITIAL_BATCH = 5
+_INSERT_CONTINUE_BATCH = 20
+
 
 def _style_close_save_dialog_button(
     button: QPushButton,
@@ -207,7 +210,7 @@ def _ask_save_modified(parent: QWidget, title: str, text: str) -> CloseSaveChoic
     button_row.setSpacing(8)
     button_row.setContentsMargins(0, 0, 0, 0)
 
-    save_as_button = QPushButton("다른이름으로 저장하고 닫기")
+    save_as_button = QPushButton("다른 이름으로 저장하고 닫기")
     save_button = QPushButton("저장하고 닫기")
     discard_button = QPushButton("저장하지 않고 닫기")
     cancel_button = QPushButton("취소")
@@ -258,9 +261,9 @@ def _ask_save_modified(parent: QWidget, title: str, text: str) -> CloseSaveChoic
         pressed="#d1d5db",
     )
 
-    button_row.addWidget(save_as_button)
-    button_row.addWidget(save_button)
     button_row.addWidget(discard_button)
+    button_row.addWidget(save_button)
+    button_row.addWidget(save_as_button)
     button_row.addWidget(cancel_button)
     layout.addLayout(button_row)
 
@@ -426,6 +429,7 @@ class DocumentTab(QWidget):
     super().__init__(parent)
     self.document = document
     self._markup_entry_count = len(document.get_text_markup_entries())
+    self._file_insert_token = 0
 
     layout = QHBoxLayout(self)
     layout.setContentsMargins(0, 0, 0, 0)
@@ -556,19 +560,24 @@ class DocumentTab(QWidget):
     self._setup_page_navigation_shortcuts()
     self._sync_thumb_zoom_buttons()
 
+  def _restore_highlights_panel_viewport(self) -> None:
+    self.highlight_panel.refresh()
+    current = self.viewer.current_index()
+    QTimer.singleShot(0, lambda idx=current: self.highlight_panel.scroll_to_current_context(idx))
+
   def _on_side_nav_tab_changed(self, index: int) -> None:
     self.content_stack.setCurrentIndex(index)
     if index == int(SideNavTab.THUMBNAILS):
       QTimer.singleShot(0, self.thumbnails._restore_after_tab_show)
     elif index == int(SideNavTab.HIGHLIGHTS):
-      self.highlight_panel.refresh()
+      self._restore_highlights_panel_viewport()
 
   def _switch_to_highlights_panel(self) -> None:
     if self.side_nav.current_tab() == SideNavTab.HIGHLIGHTS:
       return
     self.side_nav.set_current_tab(SideNavTab.HIGHLIGHTS)
     self.content_stack.setCurrentIndex(int(SideNavTab.HIGHLIGHTS))
-    self.highlight_panel.refresh()
+    self._restore_highlights_panel_viewport()
 
   def _page_indices_for_clipboard(self) -> list[int]:
     return self.thumbnails.copy_indices()
@@ -881,28 +890,150 @@ class DocumentTab(QWidget):
       )
     if not paths:
       return
+    page_count_before = self.document.page_count
+    was_empty = page_count_before == 0
+    if len(paths) <= _INSERT_INITIAL_BATCH:
+      try:
+        added = self.document.insert_files_at(index, paths)
+        if added:
+          focus = self._insert_focus_index(
+            index,
+            added,
+            was_empty=was_empty,
+            page_count_before=page_count_before,
+          )
+          self.thumbnails.insert_pages_at(
+            index,
+            added,
+            keep_index=focus,
+            select_indices=[focus],
+          )
+          self.go_to_page(focus, fit_page=was_empty)
+          self.highlight_panel.refresh()
+        self._notify_history_changed()
+      except Exception as exc:
+        QMessageBox.critical(self, "삽입 오류", str(exc))
+      return
+
+    self._file_insert_token += 1
+    token = self._file_insert_token
     try:
-      page_count_before = self.document.page_count
-      was_empty = page_count_before == 0
-      added = self.document.insert_files_at(index, paths)
-      if added:
-        focus = self._insert_focus_index(
-          index,
-          added,
-          was_empty=was_empty,
-          page_count_before=page_count_before,
+      added = self._insert_files_batch(
+        index,
+        paths[:_INSERT_INITIAL_BATCH],
+        was_empty=was_empty,
+        page_count_before=page_count_before,
+        record_undo=True,
+        fit_page=was_empty,
+        focus=None,
+        token=token,
+      )
+      remaining = paths[_INSERT_INITIAL_BATCH:]
+      if remaining:
+        focus = self.thumbnails.current_index()
+        self.viewer.show_busy_message("파일 불러오는 중...")
+        QTimer.singleShot(
+          0,
+          lambda ni=index + added, rp=remaining, f=focus: self._continue_insert_files(
+            ni,
+            rp,
+            page_count_before=page_count_before,
+            focus=f,
+            token=token,
+          ),
         )
-        self.thumbnails.insert_pages_at(
-          index,
-          added,
-          keep_index=focus,
-          select_indices=[focus],
-        )
-        self.go_to_page(focus, fit_page=was_empty)
-        self.highlight_panel.refresh()
-      self._notify_history_changed()
+      elif added:
+        self._finish_insert_files(token)
     except Exception as exc:
+      self._file_insert_token += 1
+      self.viewer.hide_busy_message()
       QMessageBox.critical(self, "삽입 오류", str(exc))
+
+  def _insert_files_batch(
+    self,
+    index: int,
+    paths: list[str],
+    *,
+    was_empty: bool,
+    page_count_before: int,
+    record_undo: bool,
+    fit_page: bool,
+    focus: int | None,
+    token: int,
+  ) -> int:
+    if token != self._file_insert_token:
+      return 0
+    added = self.document.insert_files_at(index, paths, record_undo=record_undo)
+    if added <= 0:
+      return 0
+    if focus is None:
+      focus = self._insert_focus_index(
+        index,
+        added,
+        was_empty=was_empty,
+        page_count_before=page_count_before,
+      )
+    self.thumbnails.insert_pages_at(
+      index,
+      added,
+      keep_index=focus,
+      select_indices=[focus],
+    )
+    if fit_page:
+      self.go_to_page(focus, fit_page=True)
+    return added
+
+  def _continue_insert_files(
+    self,
+    index: int,
+    paths: list[str],
+    *,
+    page_count_before: int,
+    focus: int,
+    token: int,
+  ) -> None:
+    if token != self._file_insert_token or not paths:
+      return
+    batch = paths[:_INSERT_CONTINUE_BATCH]
+    rest = paths[_INSERT_CONTINUE_BATCH:]
+    try:
+      added = self._insert_files_batch(
+        index,
+        batch,
+        was_empty=False,
+        page_count_before=page_count_before,
+        record_undo=False,
+        fit_page=False,
+        focus=focus,
+        token=token,
+      )
+      loaded = self.document.page_count - page_count_before
+      self.viewer.show_busy_message(f"파일 불러오는 중... {loaded}페이지")
+      if rest and token == self._file_insert_token:
+        QTimer.singleShot(
+          0,
+          lambda: self._continue_insert_files(
+            index + added,
+            rest,
+            page_count_before=page_count_before,
+            focus=focus,
+            token=token,
+          ),
+        )
+        return
+      self._finish_insert_files(token)
+    except Exception as exc:
+      self._file_insert_token += 1
+      self.viewer.hide_busy_message()
+      QMessageBox.critical(self, "삽입 오류", str(exc))
+      self._notify_history_changed()
+
+  def _finish_insert_files(self, token: int) -> None:
+    if token != self._file_insert_token:
+      return
+    self.viewer.hide_busy_message()
+    self.highlight_panel.refresh()
+    self._notify_history_changed()
 
   def _on_insert_blank(self, index: int) -> None:
     try:
@@ -1761,6 +1892,8 @@ class MainWindow(QMainWindow):
       )
       if not self._handle_close_save_choice(widget, reply):
         return
+    if isinstance(widget, DocumentTab):
+      widget._file_insert_token += 1
     self.tabs.removeTab(index)
     if self.tabs.count() == 0:
       self._new_tab()

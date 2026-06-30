@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QKeyEvent
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QKeyEvent, QTextOption
 from PyQt6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -95,7 +96,69 @@ _ENTRY_BASE_STYLE = """
         font-size: 12px;
         background: transparent;
     }
+    QTextEdit#markupEntryText {
+        color: #333333;
+        font-size: 12px;
+        background: transparent;
+        border: none;
+    }
 """
+
+
+class _MarkupEntryText(QTextEdit):
+    """Read-only entry text that wraps at word boundaries or by character/syllable."""
+
+    def __init__(
+        self,
+        text: str,
+        *,
+        underline_color: str | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("markupEntryText")
+        self.setReadOnly(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setViewportMargins(0, 0, 0, 0)
+        self.document().setDocumentMargin(0)
+        wrap_option = QTextOption()
+        wrap_option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.document().setDefaultTextOption(wrap_option)
+        style = (
+            "QTextEdit#markupEntryText {"
+            " color: #333333;"
+            " font-size: 12px;"
+            " background: transparent;"
+            " border: none;"
+        )
+        if underline_color is not None:
+            style += (
+                f" border-bottom: 2px solid {underline_color};"
+                " padding-bottom: 1px;"
+            )
+        style += " }"
+        self.setStyleSheet(style)
+        self.setPlainText(text)
+        self._sync_height()
+
+    def _sync_height(self) -> None:
+        width = max(1, self.viewport().width())
+        self.document().setTextWidth(width)
+        height = int(self.document().size().height()) + 2
+        self.setFixedHeight(height)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._sync_height()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._sync_height()
 
 
 class _MarkupEntryRow(QFrame):
@@ -128,20 +191,17 @@ class _MarkupEntryRow(QFrame):
             )
         layout.addWidget(accent, 0, Qt.AlignmentFlag.AlignTop)
 
-        text = QLabel(entry.text)
-        text.setObjectName("markupEntryText")
-        text.setWordWrap(True)
-        text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        text.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        underline_color = None
         if entry.kind == "underline":
-            stroke = markup_qcolor_from_rgb(entry.rgb)
-            text.setStyleSheet(
-                f"color: #333333; font-size: 12px; background: transparent;"
-                f"border-bottom: 2px solid {stroke.name()}; padding-bottom: 1px;"
-            )
+            underline_color = markup_qcolor_from_rgb(entry.rgb).name()
+        text = _MarkupEntryText(entry.text, underline_color=underline_color)
+        self._entry_text = text
         layout.addWidget(text, 1)
 
         self._apply_style()
+
+    def sync_text_layout(self) -> None:
+        self._entry_text._sync_height()
 
     def entry(self) -> TextMarkupEntry:
         return self._entry
@@ -225,6 +285,9 @@ class _PageMarkupSection(QWidget):
             self._rows.append(row)
         layout.addWidget(self._body)
         self._body.setVisible(expanded)
+
+    def page_index(self) -> int:
+        return self._page_index
 
     def rows(self) -> list[_MarkupEntryRow]:
         return self._rows
@@ -332,6 +395,15 @@ class HighlightPanel(QWidget):
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
+    def _sync_entry_text_heights(self) -> None:
+        for section in self._page_sections:
+            for row in section.rows():
+                row.sync_text_layout()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._sync_entry_text_heights()
+
     def set_document(self, document: PdfDocument | None) -> None:
         self._document = document
         self.refresh()
@@ -374,6 +446,7 @@ class HighlightPanel(QWidget):
         self._body_layout.addStretch(1)
         if preserved_entry is not None:
             self.select_entry(preserved_entry, scroll=False)
+        QTimer.singleShot(0, self._sync_entry_text_heights)
 
     def _clear_body(self) -> None:
         self._page_sections.clear()
@@ -435,6 +508,20 @@ class HighlightPanel(QWidget):
             return
 
         QMessageBox.information(self, "엑셀로 저장", "저장했습니다.")
+
+    def scroll_to_current_context(self, page_index: int) -> None:
+        """Scroll the list to the selected entry, or to *page_index* if none."""
+        if self._selected_entry is not None:
+            self.select_entry(self._selected_entry, scroll=True)
+            return
+        self.scroll_to_page(page_index)
+
+    def scroll_to_page(self, page_index: int) -> None:
+        for section in self._page_sections:
+            if section.page_index() == page_index:
+                section.set_expanded(True)
+                self._scroll.ensureWidgetVisible(section, 0, 24)
+                return
 
     def _on_entry_clicked(self, row: _MarkupEntryRow) -> None:
         self._select_row(row, scroll=False)

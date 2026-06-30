@@ -1014,19 +1014,73 @@ class PdfDocument:
         return sorted(matched, key=PdfDocument._word_sort_key)
 
     @staticmethod
-    def _word_quads_from_words(words: list) -> list[fitz.Quad]:
+    def _quad_from_rect(rect: fitz.Rect) -> fitz.Quad:
+        return fitz.Quad(
+            fitz.Point(rect.x0, rect.y1),
+            fitz.Point(rect.x1, rect.y1),
+            fitz.Point(rect.x0, rect.y0),
+            fitz.Point(rect.x1, rect.y0),
+        )
+
+    @staticmethod
+    def _markup_quads_from_words(words: list) -> list[fitz.Quad]:
+        """Build highlight/underline quads including whitespace gaps on each line."""
+        if not words:
+            return []
+        ordered = sorted(words, key=PdfDocument._word_sort_key)
         quads: list[fitz.Quad] = []
-        for word in words:
-            x0, y0, x1, y1 = word[:4]
-            quads.append(
-                fitz.Quad(
-                    fitz.Point(x0, y1),
-                    fitz.Point(x1, y1),
-                    fitz.Point(x0, y0),
-                    fitz.Point(x1, y0),
+        line_words: list = [ordered[0]]
+        current_line = PdfDocument._word_line_id(ordered[0])
+
+        def flush_line(words_on_line: list) -> None:
+            for index, word in enumerate(words_on_line):
+                x0, y0, x1, y1 = word[:4]
+                quads.append(PdfDocument._quad_from_rect(fitz.Rect(x0, y0, x1, y1)))
+                if index + 1 >= len(words_on_line):
+                    continue
+                next_word = words_on_line[index + 1]
+                nx0, ny0, nx1, ny1 = next_word[:4]
+                gap_x0 = x1
+                gap_x1 = nx0
+                if gap_x1 <= gap_x0 + 0.1:
+                    continue
+                gy0 = min(y0, ny0)
+                gy1 = max(y1, ny1)
+                quads.append(
+                    PdfDocument._quad_from_rect(fitz.Rect(gap_x0, gy0, gap_x1, gy1))
+                )
+
+        for word in ordered[1:]:
+            if PdfDocument._word_line_id(word) != current_line:
+                flush_line(line_words)
+                line_words = [word]
+                current_line = PdfDocument._word_line_id(word)
+            else:
+                line_words.append(word)
+        flush_line(line_words)
+        return quads
+
+    @staticmethod
+    def _markup_highlight_rects_from_words(
+        words: list,
+        zoom: float,
+    ) -> list[tuple[float, float, float, float]]:
+        rects: list[tuple[float, float, float, float]] = []
+        for quad in PdfDocument._markup_quads_from_words(words):
+            rect = quad.rect
+            rects.append(
+                (
+                    rect.x0 * zoom,
+                    rect.y0 * zoom,
+                    (rect.x1 - rect.x0) * zoom,
+                    (rect.y1 - rect.y0) * zoom,
                 )
             )
-        return quads
+        return rects
+
+    @staticmethod
+    def _word_quads_from_words(words: list) -> list[fitz.Quad]:
+        return PdfDocument._markup_quads_from_words(words)
 
     def get_text_block_selection(
         self,
@@ -1096,13 +1150,9 @@ class PdfDocument:
 
         selected.sort(key=word_key)
         page_rect = fitz.Rect(selected[0][:4])
-        highlight_rects: list[tuple[float, float, float, float]] = []
-        for word in selected:
-            x0, y0, x1, y1 = word[:4]
-            page_rect |= fitz.Rect(x0, y0, x1, y1)
-            highlight_rects.append(
-                (x0 * zoom, y0 * zoom, (x1 - x0) * zoom, (y1 - y0) * zoom)
-            )
+        highlight_rects = self._markup_highlight_rects_from_words(selected, zoom)
+        for x, y, w, h in highlight_rects:
+            page_rect |= fitz.Rect(x / zoom, y / zoom, (x + w) / zoom, (y + h) / zoom)
         return page_rect, highlight_rects, self._selection_text_from_words(selected), selected
 
     def get_word_highlight_rects(
@@ -1169,7 +1219,7 @@ class PdfDocument:
         if not any(
             annot.type[0] == fitz.PDF_ANNOT_HIGHLIGHT
             and self._highlight_annot_page_rect(annot).intersects(page_rect)
-            for annot in page.annots()
+            for annot in PdfDocument._iter_page_annots(page)
         ):
             return False
         if not self._restoring_history:
@@ -1178,7 +1228,7 @@ class PdfDocument:
                 self._undo_stack.pop(0)
             self._redo_stack.clear()
         page = self._doc[page_index]
-        for annot in page.annots():
+        for annot in PdfDocument._iter_page_annots(page):
             if annot.type[0] != fitz.PDF_ANNOT_HIGHLIGHT:
                 continue
             if not self._highlight_annot_page_rect(annot).intersects(page_rect):
@@ -1217,7 +1267,7 @@ class PdfDocument:
             return []
         page = self._doc[page_index]
         overlays: list[tuple[fitz.Rect, tuple[float, float, float]]] = []
-        for annot in page.annots():
+        for annot in PdfDocument._iter_page_annots(page):
             if annot.type[0] != fitz.PDF_ANNOT_HIGHLIGHT:
                 continue
             colors = annot.colors or {}
@@ -1258,6 +1308,20 @@ class PdfDocument:
                     )
                 )
         return overlays
+
+    @staticmethod
+    def _iter_page_annots(page):
+        """Yield each page annotation once; some PDFs expose the same xref twice."""
+        seen_xrefs: set[int] = set()
+        for annot in page.annots() or []:
+            try:
+                xref = annot.xref
+            except (RuntimeError, ValueError):
+                continue
+            if xref in seen_xrefs:
+                continue
+            seen_xrefs.add(xref)
+            yield annot
 
     @staticmethod
     def _highlight_annot_page_rect(annot) -> fitz.Rect:
@@ -1407,7 +1471,7 @@ class PdfDocument:
 
         for page_index in range(len(self._doc)):
             page = self._doc[page_index]
-            for annot in page.annots() or []:
+            for annot in PdfDocument._iter_page_annots(page):
                 annot_type = annot.type[0]
                 if annot_type == fitz.PDF_ANNOT_HIGHLIGHT:
                     kind = "highlight"
@@ -1473,7 +1537,7 @@ class PdfDocument:
         page = self._doc[page_index]
         hit = fitz.Rect(point.x - 2, point.y - 2, point.x + 2, point.y + 2)
         for preferred_type in (fitz.PDF_ANNOT_HIGHLIGHT, fitz.PDF_ANNOT_UNDERLINE):
-            for annot in page.annots() or []:
+            for annot in PdfDocument._iter_page_annots(page):
                 try:
                     annot_type = annot.type[0]
                 except (RuntimeError, ValueError):
@@ -1545,7 +1609,7 @@ class PdfDocument:
         page = self._doc[page_index]
         best: tuple[fitz.Rect, list[fitz.Rect], str] | None = None
         best_area = -1.0
-        for annot in page.annots() or []:
+        for annot in PdfDocument._iter_page_annots(page):
             try:
                 if annot.type[0] != annot_type:
                     continue
@@ -1576,7 +1640,7 @@ class PdfDocument:
         segments: list[PageSelectionSegment] = []
         for page_index in range(len(self._doc)):
             page = self._doc[page_index]
-            for annot in page.annots() or []:
+            for annot in PdfDocument._iter_page_annots(page):
                 try:
                     if annot.type[0] != annot_type:
                         continue
@@ -1601,7 +1665,7 @@ class PdfDocument:
         deleted = 0
         while remaining:
             deleted_one = False
-            for annot in page.annots() or []:
+            for annot in PdfDocument._iter_page_annots(page):
                 if annot.xref not in remaining:
                     continue
                 page.delete_annot(annot)
@@ -1631,7 +1695,7 @@ class PdfDocument:
         to_delete: dict[int, set[int]] = {}
         for page_index in range(len(self._doc)):
             page = self._doc[page_index]
-            for annot in page.annots() or []:
+            for annot in PdfDocument._iter_page_annots(page):
                 try:
                     if annot.type[0] != annot_type:
                         continue
@@ -1661,7 +1725,7 @@ class PdfDocument:
             return None
         page = self._doc[page_index]
         hit = fitz.Rect(point.x - 2, point.y - 2, point.x + 2, point.y + 2)
-        for annot in page.annots():
+        for annot in PdfDocument._iter_page_annots(page):
             if annot.type[0] != fitz.PDF_ANNOT_HIGHLIGHT:
                 continue
             page_rect = self._highlight_annot_page_rect(annot)
@@ -1697,7 +1761,7 @@ class PdfDocument:
         if not (0 <= page_index < len(self._doc)):
             return False
         page = self._doc[page_index]
-        for annot in page.annots():
+        for annot in PdfDocument._iter_page_annots(page):
             if annot.type[0] != fitz.PDF_ANNOT_HIGHLIGHT:
                 continue
             if self._highlight_annot_page_rect(annot).intersects(page_rect):
@@ -1713,7 +1777,7 @@ class PdfDocument:
         if not any(
             annot.type[0] == fitz.PDF_ANNOT_HIGHLIGHT
             and self._highlight_annot_page_rect(annot).intersects(page_rect)
-            for annot in page.annots()
+            for annot in PdfDocument._iter_page_annots(page)
         ):
             return False
         if not self._restoring_history:
@@ -1721,7 +1785,7 @@ class PdfDocument:
         page = self._doc[page_index]
         xrefs = {
             annot.xref
-            for annot in page.annots()
+            for annot in PdfDocument._iter_page_annots(page)
             if annot.type[0] == fitz.PDF_ANNOT_HIGHLIGHT
             and self._highlight_annot_page_rect(annot).intersects(page_rect)
         }
@@ -1784,7 +1848,7 @@ class PdfDocument:
         if not any(
             annot.type[0] == fitz.PDF_ANNOT_UNDERLINE
             and self._highlight_annot_page_rect(annot).intersects(page_rect)
-            for annot in page.annots()
+            for annot in PdfDocument._iter_page_annots(page)
         ):
             return False
         if not self._restoring_history:
@@ -1793,7 +1857,7 @@ class PdfDocument:
                 self._undo_stack.pop(0)
             self._redo_stack.clear()
         page = self._doc[page_index]
-        for annot in page.annots():
+        for annot in PdfDocument._iter_page_annots(page):
             if annot.type[0] != fitz.PDF_ANNOT_UNDERLINE:
                 continue
             if not self._highlight_annot_page_rect(annot).intersects(page_rect):
@@ -1831,7 +1895,7 @@ class PdfDocument:
         overlays: list[
             tuple[tuple[float, float, float, float], tuple[float, float, float]]
         ] = []
-        for annot in page.annots():
+        for annot in PdfDocument._iter_page_annots(page):
             if annot.type[0] != fitz.PDF_ANNOT_UNDERLINE:
                 continue
             colors = annot.colors or {}
@@ -1861,7 +1925,7 @@ class PdfDocument:
             return None
         page = self._doc[page_index]
         hit = fitz.Rect(point.x - 2, point.y - 2, point.x + 2, point.y + 2)
-        for annot in page.annots():
+        for annot in PdfDocument._iter_page_annots(page):
             if annot.type[0] != fitz.PDF_ANNOT_UNDERLINE:
                 continue
             page_rect = self._highlight_annot_page_rect(annot)
@@ -1887,7 +1951,7 @@ class PdfDocument:
         if not (0 <= page_index < len(self._doc)):
             return False
         page = self._doc[page_index]
-        for annot in page.annots():
+        for annot in PdfDocument._iter_page_annots(page):
             if annot.type[0] != fitz.PDF_ANNOT_UNDERLINE:
                 continue
             if self._highlight_annot_page_rect(annot).intersects(page_rect):
@@ -1903,7 +1967,7 @@ class PdfDocument:
         if not any(
             annot.type[0] == fitz.PDF_ANNOT_UNDERLINE
             and self._highlight_annot_page_rect(annot).intersects(page_rect)
-            for annot in page.annots()
+            for annot in PdfDocument._iter_page_annots(page)
         ):
             return False
         if not self._restoring_history:
@@ -1911,7 +1975,7 @@ class PdfDocument:
         page = self._doc[page_index]
         xrefs = {
             annot.xref
-            for annot in page.annots()
+            for annot in PdfDocument._iter_page_annots(page)
             if annot.type[0] == fitz.PDF_ANNOT_UNDERLINE
             and self._highlight_annot_page_rect(annot).intersects(page_rect)
         }
@@ -2039,7 +2103,13 @@ class PdfDocument:
                 page.set_rotation((page.rotation + degrees) % 360)
         self._touch()
 
-    def insert_files_at(self, index: int, file_paths: list[str]) -> int:
+    def insert_files_at(
+        self,
+        index: int,
+        file_paths: list[str],
+        *,
+        record_undo: bool = True,
+    ) -> int:
         """Insert PDF pages or images at *index*. Returns number of pages added."""
         index = max(0, min(index, len(self._doc)))
         if not file_paths:
@@ -2050,7 +2120,7 @@ class PdfDocument:
             ext = Path(file_path).suffix.lower()
             if ext not in PDF_EXTENSIONS and ext not in IMAGE_EXTENSIONS:
                 continue
-            if added == 0:
+            if record_undo and added == 0:
                 self._record_undo_checkpoint()
             if ext in PDF_EXTENSIONS:
                 added += self._insert_pdf_at(index + added, file_path)

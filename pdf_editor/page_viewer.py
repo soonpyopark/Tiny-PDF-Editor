@@ -441,15 +441,12 @@ class PageCanvas(QLabel):
             return
         zoom = self._zoom
         if segment.words:
-            page_rect = segment.page_rect
             self._stored_segment_highlights = [
-                QRect(
-                    int(word[0] * zoom),
-                    int(word[1] * zoom),
-                    max(1, int((word[2] - word[0]) * zoom)),
-                    max(1, int((word[3] - word[1]) * zoom)),
+                QRect(int(x), int(y), max(1, int(w)), max(1, int(h)))
+                for x, y, w, h in PdfDocument._markup_highlight_rects_from_words(
+                    list(segment.words),
+                    zoom,
                 )
-                for word in segment.words
             ]
             return
         page_rect, highlight_rects, _, _ = (
