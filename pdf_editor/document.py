@@ -28,6 +28,17 @@ class SearchHit:
 
 
 @dataclass(frozen=True)
+class TextMarkupEntry:
+    """One highlight or underline annotation with extracted text."""
+
+    page_index: int
+    text: str
+    kind: str  # "highlight" | "underline"
+    rgb: tuple[float, float, float]
+    sort_y: float = 0.0
+    sort_x: float = 0.0
+
+@dataclass(frozen=True)
 class ReduceSizeOptions:
     """Internal image recompress settings used by optimize."""
 
@@ -122,7 +133,7 @@ class PdfDocument:
             pdf_bytes = Path(path).read_bytes()
             new_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             del pdf_bytes
-            self._source_path = path
+            self._source_path = str(Path(path).resolve())
         elif ext in IMAGE_EXTENSIONS:
             new_doc = PdfDocument._open_image_as_document(path)
             self._source_path = None
@@ -1176,6 +1187,62 @@ class PdfDocument:
             quad_rects.append(fitz.Rect(min(xs), min(ys), max(xs), max(ys)))
         return quad_rects
 
+    @staticmethod
+    def _markup_text_from_annot(page, annot) -> str:
+        page_rect = PdfDocument._highlight_annot_page_rect(annot)
+        quad_rects = PdfDocument._highlight_annot_quad_rects(annot)
+        if not quad_rects:
+            text = page.get_text("text", clip=page_rect).strip()
+        else:
+            text_parts: list[str] = []
+            for quad_rect in quad_rects:
+                part = page.get_text("text", clip=quad_rect).strip()
+                if part:
+                    text_parts.append(part)
+            text = " ".join(text_parts) or page.get_text("text", clip=page_rect).strip()
+        if not text:
+            text = (annot.get_text() or "").strip()
+        return text
+
+    @staticmethod
+    def _markup_rgb_from_annot(annot, *, default: tuple[float, float, float]) -> tuple[float, float, float]:
+        colors = annot.colors or {}
+        stroke = colors.get("stroke") or colors.get("fill") or default
+        return tuple(float(value) for value in stroke[:3])
+
+    def get_text_markup_entries(self) -> list[TextMarkupEntry]:
+        """Return highlight/underline annotations sorted by page and position."""
+        entries: list[TextMarkupEntry] = []
+        for page_index in range(len(self._doc)):
+            page = self._doc[page_index]
+            for annot in page.annots() or []:
+                annot_type = annot.type[0]
+                if annot_type == fitz.PDF_ANNOT_HIGHLIGHT:
+                    kind = "highlight"
+                    default_rgb = (1.0, 1.0, 0.0)
+                elif annot_type == fitz.PDF_ANNOT_UNDERLINE:
+                    kind = "underline"
+                    default_rgb = (1.0, 0.0, 0.0)
+                else:
+                    continue
+                text = self._markup_text_from_annot(page, annot).strip()
+                if not text:
+                    continue
+                page_rect = self._highlight_annot_page_rect(annot)
+                rgb = self._markup_rgb_from_annot(annot, default=default_rgb)
+                entries.append(
+                    TextMarkupEntry(
+                        page_index=page_index,
+                        text=text,
+                        kind=kind,
+                        rgb=rgb,
+                        sort_y=page_rect.y0,
+                        sort_x=page_rect.x0,
+                    )
+                )
+        entries.sort(key=lambda entry: (entry.page_index, entry.sort_y, entry.sort_x))
+        return entries
+
     def _find_highlight_selection_at_point(
         self,
         page_index: int,
@@ -1195,12 +1262,7 @@ class PdfDocument:
             quad_rects = self._highlight_annot_quad_rects(annot)
             if not quad_rects:
                 continue
-            text_parts: list[str] = []
-            for quad_rect in quad_rects:
-                text = page.get_text("text", clip=quad_rect).strip()
-                if text:
-                    text_parts.append(text)
-            selected_text = " ".join(text_parts) or page.get_text("text", clip=page_rect).strip()
+            selected_text = self._markup_text_from_annot(page, annot)
             return page_rect, quad_rects, selected_text
         return None
 
@@ -1391,12 +1453,7 @@ class PdfDocument:
             quad_rects = self._highlight_annot_quad_rects(annot)
             if not quad_rects:
                 continue
-            text_parts: list[str] = []
-            for quad_rect in quad_rects:
-                text = page.get_text("text", clip=quad_rect).strip()
-                if text:
-                    text_parts.append(text)
-            selected_text = " ".join(text_parts) or page.get_text("text", clip=page_rect).strip()
+            selected_text = self._markup_text_from_annot(page, annot)
             return page_rect, quad_rects, selected_text
         return None
 
@@ -1574,6 +1631,7 @@ class PdfDocument:
         index = max(0, min(index, len(self._doc)))
         if not file_paths:
             return 0
+        was_empty = len(self._doc) == 0
         added = 0
         for file_path in file_paths:
             ext = Path(file_path).suffix.lower()
@@ -1588,6 +1646,14 @@ class PdfDocument:
                 added += 1
         if added:
             self._touch()
+            if was_empty and self._source_path is None:
+                pdf_paths = [
+                    str(Path(path).resolve())
+                    for path in file_paths
+                    if Path(path).suffix.lower() in PDF_EXTENSIONS
+                ]
+                if len(pdf_paths) == 1:
+                    self._source_path = pdf_paths[0]
         return added
 
     def insert_blank_page_at(self, index: int) -> None:

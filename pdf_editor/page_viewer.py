@@ -255,7 +255,7 @@ class PageCanvas(QLabel):
     def _pick_more_highlight_color(self) -> None:
         current = preferred_highlight_rgb()
         default = QColor.fromRgbF(current[0], current[1], current[2])
-        chosen = QColorDialog.getColor(default, self, "하이라이트 색상 선택")
+        chosen = QColorDialog.getColor(default, self, "형광펜 색상 선택")
         if not chosen.isValid():
             return
         if not self._document or self._selection_page_rect is None:

@@ -443,6 +443,7 @@ class DocumentTab(QWidget):
     self.thumbnails.page_selected.connect(self._on_thumb_selected)
     self.viewer.page_changed.connect(self._on_viewer_page_changed)
     self.viewer.page_canvas.text_highlight_added.connect(self._on_text_highlight_added)
+    self.highlight_panel.page_selected.connect(self.go_to_page)
     self.thumbnails.insert_requested.connect(self._on_insert)
     self.thumbnails.pages_move_requested.connect(self._on_move_pages)
     self.thumbnails.delete_requested.connect(self._on_delete)
@@ -481,6 +482,8 @@ class DocumentTab(QWidget):
     self.content_stack.setCurrentIndex(index)
     if index == int(SideNavTab.THUMBNAILS):
       QTimer.singleShot(0, self.thumbnails._restore_after_tab_show)
+    elif index == int(SideNavTab.HIGHLIGHTS):
+      self.highlight_panel.refresh()
 
   def _page_indices_for_clipboard(self) -> list[int]:
     return self.thumbnails.copy_indices()
@@ -788,6 +791,7 @@ class DocumentTab(QWidget):
           select_indices=[focus],
         )
         self.go_to_page(focus, fit_page=was_empty)
+        self.highlight_panel.refresh()
       self._notify_history_changed()
     except Exception as exc:
       QMessageBox.critical(self, "삽입 오류", str(exc))
@@ -1363,7 +1367,9 @@ class MainWindow(QMainWindow):
       doc._doc.close()
       return False
 
-    doc._source_path = None
+    doc._source_path = (
+      str(Path(opened[0]).resolve()) if len(opened) == 1 else None
+    )
     doc._modified = False
     doc.clear_history()
 
@@ -1479,6 +1485,7 @@ class MainWindow(QMainWindow):
         tab.document.save()
         if index >= 0:
           self.tabs.setTabText(index, tab.document.display_name)
+        tab.highlight_panel.refresh()
         self.statusBar().showMessage(f"저장됨: {tab.document.source_path}")
         return True
       except Exception as exc:
@@ -1488,7 +1495,16 @@ class MainWindow(QMainWindow):
 
   def _save_document_tab_as(self, tab: DocumentTab) -> bool:
     index = self.tabs.indexOf(tab)
-    path, _ = QFileDialog.getSaveFileName(self, "다른 이름으로 저장", "", "PDF (*.pdf)")
+    default_path = tab.document.source_path or ""
+    if not default_path:
+      title = tab.document.display_name
+      if title and title != "새 문서":
+        default_path = title if title.lower().endswith(".pdf") else f"{Path(title).stem}.pdf"
+      else:
+        default_path = "새 문서.pdf"
+    path, _ = QFileDialog.getSaveFileName(
+      self, "다른 이름으로 저장", default_path, "PDF (*.pdf)"
+    )
     if not path:
       return False
     if not path.lower().endswith(".pdf"):
@@ -1497,6 +1513,7 @@ class MainWindow(QMainWindow):
       tab.document.save(path)
       if index >= 0:
         self.tabs.setTabText(index, tab.document.display_name)
+      tab.highlight_panel.refresh()
       self.statusBar().showMessage(f"저장됨: {path}")
       return True
     except Exception as exc:

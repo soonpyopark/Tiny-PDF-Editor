@@ -184,13 +184,25 @@ class _HighlightRowHoverFilter(QObject):
 
         self._row = row
 
+        self._open_cursor_pos: QPoint | None = None
+
         menu.setMouseTracking(True)
 
         color_menu.setMouseTracking(True)
 
+        menu.aboutToShow.connect(self._on_menu_about_to_show)
+
         color_menu.aboutToShow.connect(lambda: self._row.set_hovered(True))
 
         color_menu.aboutToHide.connect(self._sync_from_cursor)
+
+
+
+    def _on_menu_about_to_show(self) -> None:
+
+        self._open_cursor_pos = QCursor.pos()
+
+        self._row.set_hovered(False)
 
 
 
@@ -225,6 +237,16 @@ class _HighlightRowHoverFilter(QObject):
             self._row.set_hovered(True)
 
             return
+
+        if self._open_cursor_pos is not None:
+
+            if (global_pos - self._open_cursor_pos).manhattanLength() < 3:
+
+                self._row.set_hovered(False)
+
+                return
+
+            self._open_cursor_pos = None
 
         self._row.set_hovered(self._is_over_row(global_pos))
 
@@ -534,13 +556,15 @@ class _HighlightSplitMenuItem(QWidget):
 
         layout.addWidget(text_label)
 
-        self._color_icon = _HighlightColorIcon(icon, self, self)
-        layout.addWidget(self._color_icon)
-
         layout.addStretch(1)
 
+        self._color_icon = _HighlightColorIcon(icon, self, self)
+        layout.addWidget(self._color_icon, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        layout.addSpacing(2)
+
         self._arrow = _HighlightSubmenuArrow(self, self)
-        layout.addWidget(self._arrow)
+        layout.addWidget(self._arrow, 0, Qt.AlignmentFlag.AlignVCenter)
 
     def show_color_submenu(self) -> None:
         if self._color_menu.isVisible():
@@ -570,8 +594,6 @@ class _HighlightSplitMenuItem(QWidget):
 
 
     def enterEvent(self, event) -> None:
-
-        self.set_hovered(True)
 
         super().enterEvent(event)
 
@@ -721,7 +743,7 @@ def add_text_highlight_menu_actions(
 ) -> None:
     _add_colored_markup_menu_row(
         menu,
-        label="하이라이트",
+        label="형광펜",
         color_icon=preferred_highlight_icon(),
         on_apply_default=on_apply_default,
         on_color_selected=on_color_selected,
@@ -771,6 +793,7 @@ def build_text_selection_context_menu(
 ) -> QMenu:
     menu = QMenu(parent)
     menu.setStyleSheet(TEXT_SELECTION_MENU_STYLE)
+    menu.aboutToShow.connect(lambda: menu.setActiveAction(None))
     add_text_highlight_menu_actions(
         menu,
         on_apply_default=on_apply_default_highlight,
@@ -778,7 +801,7 @@ def build_text_selection_context_menu(
         on_more_colors=on_more_colors,
     )
     if show_remove_highlight and on_remove_highlight is not None:
-        remove_action = menu.addAction("하이라이트 제거")
+        remove_action = menu.addAction("형광펜 제거")
         remove_action.triggered.connect(on_remove_highlight)
     add_text_underline_menu_actions(
         menu,

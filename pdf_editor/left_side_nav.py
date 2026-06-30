@@ -118,7 +118,7 @@ class LeftSideNavBar(QWidget):
         self._group.setExclusive(True)
 
         self.btn_thumbnails = _NavTabButton(SideNavTab.THUMBNAILS, "썸네일")
-        self.btn_highlights = _NavTabButton(SideNavTab.HIGHLIGHTS, "하이라이트")
+        self.btn_highlights = _NavTabButton(SideNavTab.HIGHLIGHTS, "형광펜 & 밑줄")
 
         for index, button in enumerate((self.btn_thumbnails, self.btn_highlights)):
             self._group.addButton(button, index)
