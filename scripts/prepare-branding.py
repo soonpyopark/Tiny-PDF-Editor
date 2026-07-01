@@ -16,7 +16,6 @@ OUT_DIR = ROOT / "pdf_editor" / "branding"
 _SATURATION_THRESHOLD = 0.06
 _WHITE_BG_THRESHOLD = 232
 _ICON_CROP_PADDING = 4
-_ICON_CANVAS_BG = (255, 255, 255)
 
 
 def find_source() -> Path:
@@ -256,14 +255,22 @@ def prepare_logo(source: Path) -> Image.Image:
     return make_transparent_logo(source)
 
 
-def make_square_icon(icon: Image.Image, size: int) -> Image.Image:
-    canvas = Image.new("RGBA", (size, size), (*_ICON_CANVAS_BG, 255))
+def fit_icon_png(icon: Image.Image, max_size: int = 256) -> Image.Image:
+    """Resize for app_icon.png while preserving transparency like app_logo.png."""
+    fitted = icon.convert("RGBA")
+    fitted.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+    return fitted
+
+
+def make_ico_image(icon: Image.Image, size: int = 256) -> Image.Image:
+    """Center icon on a transparent square canvas for .ico export."""
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     fitted = icon.convert("RGBA")
     fitted.thumbnail((size, size), Image.Resampling.LANCZOS)
     x = (size - fitted.width) // 2
     y = (size - fitted.height) // 2
     canvas.paste(fitted, (x, y), fitted)
-    return canvas.convert("RGB")
+    return canvas
 
 
 def main() -> None:
@@ -275,10 +282,10 @@ def main() -> None:
     logo.save(logo_path)
 
     icon_png_path = OUT_DIR / "app_icon.png"
-    make_square_icon(logo, 256).save(icon_png_path)
+    fit_icon_png(logo, 256).save(icon_png_path)
 
     ico_path = OUT_DIR / "app_icon.ico"
-    make_square_icon(logo, 256).save(
+    make_ico_image(logo, 256).save(
         ico_path,
         format="ICO",
         sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
