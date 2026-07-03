@@ -273,6 +273,22 @@ def make_ico_image(icon: Image.Image, size: int = 256) -> Image.Image:
     return canvas
 
 
+_PDF_FILE_ICON_BG = (255, 255, 255, 255)
+_PDF_FILE_ICON_MARGIN = 0.06
+
+
+def make_pdf_file_icon_image(icon: Image.Image, size: int = 256) -> Image.Image:
+    """Opaque square icon for Windows PDF shell association."""
+    canvas = Image.new("RGBA", (size, size), _PDF_FILE_ICON_BG)
+    fitted = icon.convert("RGBA")
+    inner = max(16, int(size * (1 - 2 * _PDF_FILE_ICON_MARGIN)))
+    fitted.thumbnail((inner, inner), Image.Resampling.LANCZOS)
+    x = (size - fitted.width) // 2
+    y = (size - fitted.height) // 2
+    canvas.paste(fitted, (x, y), fitted)
+    return canvas.convert("RGBA")
+
+
 def main() -> None:
     source = find_source()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -291,9 +307,17 @@ def main() -> None:
         sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
 
+    pdf_file_icon_path = OUT_DIR / "pdf_file_icon.ico"
+    make_pdf_file_icon_image(logo, 256).save(
+        pdf_file_icon_path,
+        format="ICO",
+        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+    )
+
     print(f"saved {logo_path} ({logo.size[0]}x{logo.size[1]})")
     print(f"saved {icon_png_path}")
     print(f"saved {ico_path}")
+    print(f"saved {pdf_file_icon_path}")
 
 
 if __name__ == "__main__":

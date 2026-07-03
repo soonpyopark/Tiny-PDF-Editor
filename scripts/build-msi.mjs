@@ -5,6 +5,7 @@
  */
 
 import { execSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -102,6 +103,7 @@ function stageForMsi() {
 function buildMsi() {
   const version = readVersion();
   const productVersion = toMsiVersion(version);
+  const productCode = randomUUID().toUpperCase();
   const timestamp = formatTimestamp();
   const outputName = `Tiny PDF Editor v${version}_${timestamp}.msi`;
   const outputPath = path.join(MSI_DIR, outputName);
@@ -110,7 +112,7 @@ function buildMsi() {
   fs.rmSync(outputPath, { force: true });
 
   run(
-    `${wixCmd} build "${PRODUCT_WXS}" -d ProductVersion=${productVersion} -ext WixToolset.UI.wixext -o "${outputPath}"`,
+    `${wixCmd} build "${PRODUCT_WXS}" -d ProductVersion=${productVersion} -d ProductCode=${productCode} -ext WixToolset.UI.wixext -o "${outputPath}"`,
   );
 
   const sizeMb = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);

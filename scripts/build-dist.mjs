@@ -20,6 +20,7 @@ const MANIFEST_PATH = path.join(BUILD_DIR, "latest-release.json");
 const BRANDING_DIR = path.join(ROOT, "pdf_editor", "branding");
 const SOURCE_LOGO = path.join(ROOT, "assets", "source_logo.png");
 const APP_ICON = path.join(BRANDING_DIR, "app_icon.ico");
+const PDF_FILE_ICON = path.join(BRANDING_DIR, "pdf_file_icon.ico");
 const APP_LOGO = path.join(BRANDING_DIR, "app_logo.png");
 const APP_ICON_PNG = path.join(BRANDING_DIR, "app_icon.png");
 const MAX_RELEASES = 3;
@@ -65,11 +66,16 @@ function ensureBrandingAssets() {
   if (fs.existsSync(SOURCE_LOGO)) {
     run("python scripts/prepare-branding.py");
   }
-  if (!fs.existsSync(APP_ICON) || !fs.existsSync(APP_LOGO)) {
+  if (!fs.existsSync(APP_ICON) || !fs.existsSync(APP_LOGO) || !fs.existsSync(PDF_FILE_ICON)) {
     throw new Error(
       "Branding assets missing. Run: python scripts/prepare-branding.py",
     );
   }
+}
+
+function copyPdfFileIconToAppRoot(appDir) {
+  fs.copyFileSync(PDF_FILE_ICON, path.join(appDir, "pdf_file_icon.ico"));
+  log("copied pdf_file_icon.ico to app root");
 }
 
 export function buildPortableApp() {
@@ -81,6 +87,7 @@ export function buildPortableApp() {
   const addData = [
     `${APP_LOGO};pdf_editor/branding`,
     `${APP_ICON};pdf_editor/branding`,
+    `${PDF_FILE_ICON};pdf_editor/branding`,
   ];
   if (fs.existsSync(APP_ICON_PNG)) {
     addData.push(`${APP_ICON_PNG};pdf_editor/branding`);
@@ -104,6 +111,7 @@ export function buildPortableApp() {
   ];
 
   run(args.join(" "));
+  copyPdfFileIconToAppRoot(path.join(PYI_DIST, "PDFEditor"));
 }
 
 function fileHash(filePath) {

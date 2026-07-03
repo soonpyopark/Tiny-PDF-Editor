@@ -41,8 +41,6 @@ _MENU_ITEM_HOVER_BG = "#ebebeb"
 
 _MENU_ITEM_NORMAL_BG = "#ffffff"
 
-_HOVER_ARM_THRESHOLD = 6
-
 
 
 TEXT_SELECTION_MENU_STYLE = f"""
@@ -159,22 +157,8 @@ def _dismiss_popup_menus(*menus: QMenu) -> None:
         popup = QApplication.activePopupWidget()
 
 
-def _markup_menu_hover_armed(menu: QMenu, global_pos: QPoint | None = None) -> bool:
-    if getattr(menu, "_markup_hover_armed", False):
-        return True
-    open_pos = getattr(menu, "_markup_open_cursor", None)
-    if open_pos is None:
-        return True
-    pos = global_pos if global_pos is not None else QCursor.pos()
-    if (pos - open_pos).manhattanLength() >= _HOVER_ARM_THRESHOLD:
-        menu._markup_hover_armed = True
-        return True
-    return False
-
-
 def _reset_markup_menu_hover(menu: QMenu) -> None:
-    menu._markup_hover_armed = False
-    menu._markup_open_cursor = QCursor.pos()
+    menu._block_markup_hover = True
     menu.setActiveAction(None)
     for row in getattr(menu, "_markup_rows", []):
         row.set_hovered(False)
@@ -184,132 +168,36 @@ def _reset_markup_menu_hover(menu: QMenu) -> None:
     )
 
 
+class _MarkupMenuHoverFilter(QObject):
+    """Defer row hover until the pointer moves after the menu opens."""
 
-
-
-class _HighlightRowHoverFilter(QObject):
-
-    """Keep highlight row hover while pointer is on the row or its color submenu."""
-
-
-
-    def __init__(
-
-        self,
-
-        menu: QMenu,
-
-        color_menu: QMenu,
-
-        row: "_HighlightSplitMenuItem",
-
-    ) -> None:
-
+    def __init__(self, menu: QMenu) -> None:
         super().__init__(menu)
-
-        self._menu = menu
-
-        self._color_menu = color_menu
-
-        self._row = row
-
         menu.setMouseTracking(True)
 
-        color_menu.setMouseTracking(True)
-
-        color_menu.aboutToShow.connect(lambda: self._row.set_hovered(True))
-
-        color_menu.aboutToHide.connect(self._sync_from_cursor)
-
-
-
-    def _mouse_global_pos(self, event: QEvent) -> QPoint | None:
-
-        if isinstance(event, QMouseEvent):
-
-            return event.globalPosition().toPoint()
-
-        return None
-
-
-
-    def _is_over_row(self, global_pos: QPoint) -> bool:
-
-        local = self._row.mapFromGlobal(global_pos)
-
-        return self._row.rect().contains(local)
-
-
-
-    def _sync_from_cursor(self) -> None:
-
-        self._sync_hover(QCursor.pos())
-
-
-
-    def _sync_hover(self, global_pos: QPoint) -> None:
-
-        if self._color_menu.isVisible():
-
-            if _markup_menu_hover_armed(self._menu, global_pos):
-
-                self._row.set_hovered(True)
-
-            return
-
-        if not _markup_menu_hover_armed(self._menu, global_pos):
-
-            self._row.set_hovered(False)
-
-            return
-
-        self._row.set_hovered(self._is_over_row(global_pos))
-
-
-
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-
-        if watched is self._menu:
-
-            if event.type() == QEvent.Type.Leave:
-
-                if not self._color_menu.isVisible():
-
-                    self._row.set_hovered(False)
-
-                return False
-
-            if event.type() == QEvent.Type.MouseMove:
-
-                global_pos = self._mouse_global_pos(event)
-
-                if global_pos is not None:
-
-                    self._sync_hover(global_pos)
-
+        if watched is not self.parent():
             return False
 
-
-
-        if watched is self._color_menu:
-
-            if event.type() in (
-
-                QEvent.Type.MouseMove,
-
-                QEvent.Type.Enter,
-
-            ):
-
-                self._row.set_hovered(True)
-
-            elif event.type() == QEvent.Type.Leave:
-
-                self._sync_from_cursor()
-
+        menu = self.parent()
+        if not isinstance(menu, QMenu):
             return False
 
+        if event.type() == QEvent.Type.MouseMove:
+            menu._block_markup_hover = False
+            global_pos = (
+                event.globalPosition().toPoint()
+                if isinstance(event, QMouseEvent)
+                else QCursor.pos()
+            )
+            for row in getattr(menu, "_markup_rows", []):
+                row.sync_hover(global_pos)
+            return False
 
+        if event.type() == QEvent.Type.Leave:
+            for row in getattr(menu, "_markup_rows", []):
+                row.sync_hover(None)
+            return False
 
         return False
 
@@ -539,7 +427,7 @@ class _HighlightSplitMenuItem(QWidget):
 
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
-        self.setAutoFillBackground(True)
+        self.setAutoFillBackground(False)
 
         self.setMinimumHeight(26)
 
@@ -550,6 +438,10 @@ class _HighlightSplitMenuItem(QWidget):
         self._hovered = False
 
         self.set_hovered(False)
+
+        color_menu.aboutToShow.connect(lambda: self.set_hovered(True))
+
+        color_menu.aboutToHide.connect(self._sync_hover_from_cursor)
 
 
 
@@ -583,12 +475,50 @@ class _HighlightSplitMenuItem(QWidget):
         self._arrow = _HighlightSubmenuArrow(self, self)
         layout.addWidget(self._arrow, 0, Qt.AlignmentFlag.AlignVCenter)
 
+    def showEvent(self, event) -> None:
+        self.set_hovered(False)
+        self._parent_menu.setActiveAction(None)
+        super().showEvent(event)
+
     def show_color_submenu(self) -> None:
         if self._color_menu.isVisible():
             return
         self.set_hovered(True)
         anchor = self._arrow.mapToGlobal(QPoint(self._arrow.width(), 0))
         self._color_menu.popup(anchor)
+
+    def _hover_blocked(self) -> bool:
+        return bool(getattr(self._parent_menu, "_block_markup_hover", False))
+
+    def _is_under_cursor(self, global_pos: QPoint) -> bool:
+        local = self.mapFromGlobal(global_pos)
+        return self.rect().contains(local)
+
+    def _sync_hover_from_cursor(self) -> None:
+        if self._color_menu.isVisible():
+            self.set_hovered(True)
+            return
+        self.sync_hover(QCursor.pos())
+
+    def sync_hover(self, global_pos: QPoint | None) -> None:
+        if self._color_menu.isVisible():
+            self.set_hovered(True)
+            return
+        if global_pos is None or self._hover_blocked():
+            self.set_hovered(False)
+            return
+        self.set_hovered(self._is_under_cursor(global_pos))
+
+    def _row_style(self, background: str) -> str:
+        return (
+            "QWidget#markupMenuRow {"
+            f"  background-color: {background};"
+            "  margin-top: -4px;"
+            "  margin-bottom: -4px;"
+            "  margin-left: -12px;"
+            "  margin-right: -24px;"
+            "}"
+        )
 
     def set_hovered(self, hovered: bool) -> None:
 
@@ -600,20 +530,17 @@ class _HighlightSplitMenuItem(QWidget):
 
         if hovered:
 
-            self.setStyleSheet(
-                f"QWidget#markupMenuRow {{ background-color: {_MENU_ITEM_HOVER_BG}; }}"
-            )
+            self.setStyleSheet(self._row_style(_MENU_ITEM_HOVER_BG))
         else:
-            self.setStyleSheet(
-                f"QWidget#markupMenuRow {{ background-color: {_MENU_ITEM_NORMAL_BG}; }}"
-            )
+            self.setStyleSheet(self._row_style(_MENU_ITEM_NORMAL_BG))
 
 
 
     def enterEvent(self, event) -> None:
 
-        if _markup_menu_hover_armed(self._parent_menu):
-
+        if self._hover_blocked():
+            self._parent_menu.setActiveAction(None)
+        else:
             self.set_hovered(True)
 
         super().enterEvent(event)
@@ -738,10 +665,6 @@ def _add_colored_markup_menu_row(
     row.apply_default.connect(_apply_default)
     row_action.setDefaultWidget(row)
 
-    hover_filter = _HighlightRowHoverFilter(menu, color_menu, row)
-    menu.installEventFilter(hover_filter)
-    color_menu.installEventFilter(hover_filter)
-
     def _sync_row_width() -> None:
         menu_width = menu.sizeHint().width()
         if menu_width > 0:
@@ -821,6 +744,9 @@ def build_text_selection_context_menu(
     menu = QMenu(parent)
     menu.setStyleSheet(TEXT_SELECTION_MENU_STYLE)
     menu._markup_rows = []
+    menu._block_markup_hover = True
+    menu._markup_hover_filter = _MarkupMenuHoverFilter(menu)
+    menu.installEventFilter(menu._markup_hover_filter)
     menu.aboutToShow.connect(lambda: _reset_markup_menu_hover(menu))
     add_text_highlight_menu_actions(
         menu,

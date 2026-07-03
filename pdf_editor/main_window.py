@@ -7,11 +7,20 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 
 from PyQt6.QtCore import QPoint, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence, QShortcut, QShowEvent
+from PyQt6.QtGui import (
+  QAction,
+  QCursor,
+  QDesktopServices,
+  QIcon,
+  QKeySequence,
+  QShortcut,
+  QShowEvent,
+)
 from PyQt6.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt6.QtWidgets import (
     QApplication,
@@ -34,8 +43,17 @@ from PyQt6.QtWidgets import (
     QWidgetAction,
 )
 
-from pdf_editor.document import PdfDocument, SearchHit, SUPPORTED_FILE_FILTER, format_file_size
+from pdf_editor.document import (
+  PdfDocument,
+  PdfPasswordRequired,
+  PdfPasswordRejected,
+  SearchHit,
+  SUPPORTED_FILE_FILTER,
+  configure_mupdf_messages,
+  format_file_size,
+)
 from pdf_editor.page_clipboard import PageClipboard
+from pdf_editor.password_dialog import SetPasswordDialog, prompt_pdf_password
 from pdf_editor.page_viewer import PageViewer
 from pdf_editor.reduce_size_dialog import ReduceSizeDialog
 from pdf_editor.resources import (
@@ -277,6 +295,30 @@ def _ask_save_modified(parent: QWidget, title: str, text: str) -> CloseSaveChoic
     return CloseSaveChoice.CANCEL
 
 
+def open_pdf_document(parent: QWidget, path: str) -> PdfDocument | None:
+    password: str | None = None
+    wrong = False
+    while True:
+        try:
+            doc = PdfDocument()
+            doc.open_file(path, password=password)
+            return doc
+        except PdfPasswordRejected:
+            wrong = True
+            password = prompt_pdf_password(parent, path, wrong=True)
+            if password is None:
+                return None
+        except PdfPasswordRequired:
+            password = prompt_pdf_password(parent, path, wrong=wrong)
+            if password is None:
+                return None
+            wrong = False
+
+
+def resolve_pdf_password_for(parent: QWidget) -> Callable[[str, bool], str | None]:
+    return lambda path, wrong: prompt_pdf_password(parent, path, wrong=wrong)
+
+
 class TabSearchBar(QWidget):
   """Search controls aligned with the document tab row."""
 
@@ -353,6 +395,9 @@ class TitleBar(QWidget):
     super().__init__(window)
     self._window = window
     self._drag_offset: QPoint | None = None
+    self._maximized_drag = False
+    self._press_local_y = 0.0
+    self._normal_frame_geo = None
     self.setObjectName("appTitleBar")
     self.setFixedHeight(32)
 
@@ -365,20 +410,24 @@ class TitleBar(QWidget):
     icon = window.windowIcon()
     if not icon.isNull():
       icon_label.setPixmap(icon.pixmap(16, 16))
+    icon_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
     layout.addWidget(icon_label)
 
     title = QLabel(APP_NAME)
     title.setStyleSheet("font-weight: 600;")
+    title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
     layout.addWidget(title)
 
     version = QLabel(version_label())
     version.setStyleSheet("color: #666666; font-size: 12px; padding-top: 1px;")
+    version.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
     layout.addWidget(version)
 
     layout.addStretch(1)
 
     style = window.style()
     self.btn_close = QPushButton()
+    self.btn_close.setObjectName("titleBarCloseButton")
     for pixmap, handler, btn in (
       (QStyle.StandardPixmap.SP_TitleBarMinButton, window.showMinimized, QPushButton()),
       (QStyle.StandardPixmap.SP_TitleBarMaxButton, self._toggle_maximize, QPushButton()),
@@ -394,26 +443,54 @@ class TitleBar(QWidget):
     if self._window.isMaximized():
       self._window.showNormal()
     else:
+      self._normal_frame_geo = self._window.frameGeometry()
       self._window.showMaximized()
+
+  def _restore_from_maximized_at(self, local_y: float) -> None:
+    if self._normal_frame_geo is not None:
+      width = self._normal_frame_geo.width()
+    else:
+      normal_geo = self._window.normalGeometry()
+      width = normal_geo.width() if normal_geo.isValid() else self._window.width()
+
+    cursor = QCursor.pos()
+    self._window.showNormal()
+    self._window.move(
+      cursor.x() - width // 2,
+      cursor.y() - int(local_y),
+    )
+    self._drag_offset = QCursor.pos() - self._window.frameGeometry().topLeft()
+
+  def _release_mouse_grab(self) -> None:
+    if self.mouseGrabber() is self:
+      self.releaseMouse()
 
   def mousePressEvent(self, event) -> None:
     if event.button() == Qt.MouseButton.LeftButton:
-      self._drag_offset = (
-        event.globalPosition().toPoint() - self._window.frameGeometry().topLeft()
-      )
+      global_pos = event.globalPosition().toPoint()
+      if self._window.isMaximized():
+        self._maximized_drag = True
+        self._press_local_y = event.position().y()
+        self._drag_offset = None
+        self.grabMouse()
+      else:
+        self._maximized_drag = False
+        self._drag_offset = global_pos - self._window.frameGeometry().topLeft()
     super().mousePressEvent(event)
 
   def mouseMoveEvent(self, event) -> None:
-    if (
-      self._drag_offset is not None
-      and event.buttons() & Qt.MouseButton.LeftButton
-      and not self._window.isMaximized()
-    ):
-      self._window.move(event.globalPosition().toPoint() - self._drag_offset)
+    if event.buttons() & Qt.MouseButton.LeftButton:
+      if self._window.isMaximized() and self._maximized_drag:
+        self._restore_from_maximized_at(self._press_local_y)
+        self._maximized_drag = False
+      elif self._drag_offset is not None and not self._window.isMaximized():
+        self._window.move(QCursor.pos() - self._drag_offset)
     super().mouseMoveEvent(event)
 
   def mouseReleaseEvent(self, event) -> None:
     self._drag_offset = None
+    self._maximized_drag = False
+    self._release_mouse_grab()
     super().mouseReleaseEvent(event)
 
   def mouseDoubleClickEvent(self, event) -> None:
@@ -894,7 +971,11 @@ class DocumentTab(QWidget):
     was_empty = page_count_before == 0
     if len(paths) <= _INSERT_INITIAL_BATCH:
       try:
-        added = self.document.insert_files_at(index, paths)
+        added = self.document.insert_files_at(
+          index,
+          paths,
+          resolve_pdf_password=resolve_pdf_password_for(self),
+        )
         if added:
           focus = self._insert_focus_index(
             index,
@@ -963,7 +1044,12 @@ class DocumentTab(QWidget):
   ) -> int:
     if token != self._file_insert_token:
       return 0
-    added = self.document.insert_files_at(index, paths, record_undo=record_undo)
+    added = self.document.insert_files_at(
+      index,
+      paths,
+      record_undo=record_undo,
+      resolve_pdf_password=resolve_pdf_password_for(self),
+    )
     if added <= 0:
       return 0
     if focus is None:
@@ -1220,6 +1306,13 @@ class MainWindow(QMainWindow):
       self._act_cut.setEnabled(can_copy)
     if hasattr(self, "_act_paste"):
       self._act_paste.setEnabled(can_paste)
+    can_password = bool(tab and tab.document.page_count > 0)
+    if hasattr(self, "_act_set_password"):
+      self._act_set_password.setEnabled(can_password)
+    if hasattr(self, "_act_remove_password"):
+      self._act_remove_password.setEnabled(
+        can_password and tab.document.has_password_protection()
+      )
     can_add = bool(tab and tab.document.page_count > 0)
     if hasattr(self, "_act_add"):
       self._act_add.setEnabled(can_add)
@@ -1341,6 +1434,16 @@ class MainWindow(QMainWindow):
     edit_menu.addAction(self._act_paste)
 
     edit_menu.addSeparator()
+
+    self._act_set_password = QAction("비밀번호 설정...", self)
+    self._act_set_password.triggered.connect(self._set_document_password)
+    edit_menu.addAction(self._act_set_password)
+
+    self._act_remove_password = QAction("비밀번호 제거", self)
+    self._act_remove_password.triggered.connect(self._clear_document_password)
+    edit_menu.addAction(self._act_remove_password)
+
+    edit_menu.addSeparator()
     act_reduce = QWidgetAction(self)
     reduce_btn = QPushButton("용량 줄이기...")
     reduce_btn.setFlat(True)
@@ -1441,6 +1544,12 @@ class MainWindow(QMainWindow):
       }}
       #appTitleBar QPushButton:pressed {{
         background-color: #d0d0d0;
+      }}
+      #appTitleBar QPushButton#titleBarCloseButton:hover {{
+        background-color: #eea0a0;
+      }}
+      #appTitleBar QPushButton#titleBarCloseButton:pressed {{
+        background-color: #e07070;
       }}
       #tabSearchBar QLineEdit {{
         border: 1px solid #c8c8c8;
@@ -1573,8 +1682,9 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "열기 오류", "지원하지 않는 파일 형식입니다.")
         return False
       try:
-        doc = PdfDocument()
-        doc.open_file(path)
+        doc = open_pdf_document(self, path)
+        if doc is None:
+          return False
         tab = self._add_tab(doc, _tab_title_for_filename(os.path.basename(path)))
         QTimer.singleShot(0, lambda: tab.go_to_page(0, fit_page=True))
         self._update_edit_actions()
@@ -1592,7 +1702,11 @@ class MainWindow(QMainWindow):
         failed.append((path, "지원하지 않는 파일 형식입니다."))
         continue
       try:
-        added = doc.insert_files_at(doc.page_count, [path])
+        added = doc.insert_files_at(
+          doc.page_count,
+          [path],
+          resolve_pdf_password=resolve_pdf_password_for(self),
+        )
         if added == 0:
           failed.append((path, "페이지를 추가할 수 없습니다."))
         else:
@@ -1797,6 +1911,43 @@ class MainWindow(QMainWindow):
     else:
       subprocess.run(["lp", pdf_path], check=False)
 
+  def _set_document_password(self) -> None:
+    tab = self._current_tab()
+    if tab is None or tab.document.page_count == 0:
+      QMessageBox.information(self, "PDF 비밀번호", "페이지가 있는 문서를 열어주세요.")
+      return
+    dialog = SetPasswordDialog(self)
+    if dialog.exec() != QDialog.DialogCode.Accepted:
+      return
+    try:
+      user_password, owner_password = dialog.passwords()
+      tab.document.set_password_protection(user_password, owner_password)
+      self._update_edit_actions()
+      self.statusBar().showMessage(
+        "비밀번호가 설정되었습니다. 저장하면 암호가 적용된 PDF로 저장됩니다."
+      )
+    except Exception as exc:
+      QMessageBox.critical(self, "PDF 비밀번호", str(exc))
+
+  def _clear_document_password(self) -> None:
+    tab = self._current_tab()
+    if tab is None or not tab.document.has_password_protection():
+      return
+    reply = QMessageBox.question(
+      self,
+      "PDF 비밀번호",
+      "비밀번호를 제거하시겠습니까?\n저장하면 암호 없는 PDF로 저장됩니다.",
+      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+      QMessageBox.StandardButton.No,
+    )
+    if reply != QMessageBox.StandardButton.Yes:
+      return
+    tab.document.clear_password_protection()
+    self._update_edit_actions()
+    self.statusBar().showMessage(
+      "비밀번호가 제거되었습니다. 저장하면 암호 없는 PDF로 저장됩니다."
+    )
+
   def _open_reduce_size_dialog(self) -> None:
     tab = self._current_tab()
     if tab is None or tab.document.page_count == 0:
@@ -1916,6 +2067,7 @@ class MainWindow(QMainWindow):
 
 def run(argv: list[str] | None = None) -> None:
   init_platform()
+  configure_mupdf_messages()
   app = QApplication(sys.argv)
   app.setApplicationName(APP_NAME)
   app.setApplicationDisplayName(titled_name())

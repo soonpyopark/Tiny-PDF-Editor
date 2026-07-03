@@ -25,6 +25,12 @@ SUPPORTED_FILE_FILTER = (
 
 
 @dataclass(frozen=True)
+class PdfPasswordOptions:
+    user_password: str
+    owner_password: str | None = None
+
+
+@dataclass(frozen=True)
 class SearchHit:
     page_index: int
     rect: fitz.Rect
@@ -85,6 +91,20 @@ PDF_SAVE_KWARGS: dict[str, object] = {
 }
 
 
+class PdfPasswordRequired(ValueError):
+    """PDF needs a password before it can be read."""
+
+
+class PdfPasswordRejected(PdfPasswordRequired):
+    """Provided PDF password was incorrect."""
+
+
+def configure_mupdf_messages() -> None:
+    """Hide raw MuPDF stderr messages; callers handle failures in the UI."""
+    fitz.TOOLS.mupdf_display_errors(False)
+    fitz.TOOLS.mupdf_display_warnings(False)
+
+
 def format_file_size(num_bytes: int) -> str:
     mb = num_bytes / (1024 * 1024)
     if mb >= 0.1:
@@ -103,6 +123,8 @@ class PdfDocument:
         self._undo_stack: list[bytes] = []
         self._redo_stack: list[bytes] = []
         self._restoring_history = False
+        self._password_options: PdfPasswordOptions | None = None
+        self._source_had_encryption = False
 
     @property
     def rendering_paused(self) -> bool:
@@ -132,23 +154,148 @@ class PdfDocument:
             return os.path.basename(self._source_path)
         return "새 문서"
 
-    def open_file(self, path: str) -> None:
+    @staticmethod
+    def _metadata_shows_encryption(doc: fitz.Document) -> bool:
+        try:
+            metadata = doc.metadata
+        except (ValueError, AttributeError):
+            return False
+        if not metadata:
+            return False
+        encryption = metadata.get("encryption")
+        return bool(encryption and str(encryption) not in ("None", ""))
+
+    @staticmethod
+    def _doc_reports_encryption(doc: fitz.Document) -> bool:
+        if doc.needs_pass:
+            return True
+        if getattr(doc, "is_encrypted", False):
+            return True
+        return PdfDocument._metadata_shows_encryption(doc)
+
+    @staticmethod
+    def _pdf_bytes_encrypted(pdf_bytes: bytes) -> bool:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        try:
+            return PdfDocument._doc_reports_encryption(doc)
+        finally:
+            doc.close()
+
+    @staticmethod
+    def _open_pdf_bytes(pdf_bytes: bytes, password: str | None = None) -> fitz.Document:
+        fitz.TOOLS.mupdf_warnings(reset=True)
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        if doc.needs_pass:
+            if password is None:
+                doc.close()
+                raise PdfPasswordRequired("비밀번호가 필요합니다.")
+            if not doc.authenticate(password):
+                doc.close()
+                raise PdfPasswordRejected("비밀번호가 올바르지 않습니다.")
+        if doc.is_pdf:
+            try:
+                doc.repair()
+            except Exception:
+                pass
+            if doc.is_repaired:
+                try:
+                    repaired = fitz.open(
+                        stream=PdfDocument._raw_doc_bytes(doc),
+                        filetype="pdf",
+                    )
+                    doc.close()
+                    return repaired
+                except Exception:
+                    pass
+        return doc
+
+    @staticmethod
+    def _open_pdf_path(path: str, password: str | None = None) -> fitz.Document:
+        return PdfDocument._open_pdf_bytes(Path(path).read_bytes(), password=password)
+
+    @staticmethod
+    def _blank_page_pixmap(width: float, height: float, zoom: float) -> fitz.Pixmap:
+        tmp = fitz.open()
+        try:
+            page = tmp.new_page(width=width, height=height)
+            shape = page.new_shape()
+            shape.draw_rect(page.rect)
+            shape.finish(color=(0.93, 0.93, 0.93), fill=(0.93, 0.93, 0.93))
+            shape.commit()
+            return page.get_pixmap(
+                matrix=fitz.Matrix(zoom, zoom),
+                alpha=False,
+                annots=False,
+            )
+        finally:
+            tmp.close()
+
+    def open_file(self, path: str, *, password: str | None = None) -> None:
         path = str(Path(path))
         ext = Path(path).suffix.lower()
         if ext in PDF_EXTENSIONS:
             pdf_bytes = Path(path).read_bytes()
-            new_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            del pdf_bytes
+            had_encryption = PdfDocument._pdf_bytes_encrypted(pdf_bytes)
+            new_doc = PdfDocument._open_pdf_bytes(pdf_bytes, password=password)
+            if password is not None:
+                had_encryption = True
+            if PdfDocument._metadata_shows_encryption(new_doc):
+                had_encryption = True
             self._source_path = str(Path(path).resolve())
+            self._source_had_encryption = had_encryption
+            self._password_options = (
+                PdfPasswordOptions(user_password=password)
+                if password is not None
+                else None
+            )
         elif ext in IMAGE_EXTENSIONS:
             new_doc = PdfDocument._open_image_as_document(path)
             self._source_path = None
+            self._source_had_encryption = False
+            self._password_options = None
         else:
             raise ValueError(f"지원하지 않는 파일 형식입니다: {ext}")
         self._doc.close()
         self._doc = new_doc
         self._modified = False
         self.clear_history()
+
+    def has_password_protection(self) -> bool:
+        return self._password_options is not None or self._source_had_encryption
+
+    def set_password_protection(
+        self,
+        user_password: str,
+        owner_password: str | None = None,
+    ) -> None:
+        if not user_password:
+            raise ValueError("비밀번호를 입력하세요.")
+        if len(user_password) > 40:
+            raise ValueError("비밀번호는 40자 이하여야 합니다.")
+        if owner_password and len(owner_password) > 40:
+            raise ValueError("소유자 비밀번호는 40자 이하여야 합니다.")
+        self._password_options = PdfPasswordOptions(
+            user_password=user_password,
+            owner_password=owner_password,
+        )
+        self._source_had_encryption = True
+        self._touch()
+
+    def clear_password_protection(self) -> None:
+        self._password_options = None
+        self._source_had_encryption = False
+        self._touch()
+
+    def _save_kwargs(self) -> dict[str, object]:
+        kwargs = dict(PDF_SAVE_KWARGS)
+        if self._password_options is None:
+            kwargs["encryption"] = fitz.mupdf.PDF_ENCRYPT_NONE
+            return kwargs
+        kwargs["encryption"] = fitz.mupdf.PDF_ENCRYPT_AES_256
+        kwargs["user_pw"] = self._password_options.user_password
+        owner = self._password_options.owner_password
+        kwargs["owner_pw"] = owner if owner else self._password_options.user_password
+        return kwargs
 
     @staticmethod
     def _open_image_as_document(path: str) -> fitz.Document:
@@ -163,6 +310,8 @@ class PdfDocument:
         self._doc.close()
         self._doc = fitz.open()
         self._source_path = None
+        self._password_options = None
+        self._source_had_encryption = False
         self._modified = False
         self.clear_history()
 
@@ -191,7 +340,7 @@ class PdfDocument:
             if not payload:
                 self._doc = fitz.open()
             else:
-                self._doc = fitz.open(stream=payload, filetype="pdf")
+                self._doc = PdfDocument._open_pdf_bytes(payload)
             self._touch()
         finally:
             self._restoring_history = False
@@ -239,13 +388,13 @@ class PdfDocument:
             target_path = Path(target)
             staging = self._staging_path(target_path)
             try:
-                self._doc.save(str(staging), **PDF_SAVE_KWARGS)
+                self._doc.save(str(staging), **self._save_kwargs())
                 os.replace(str(staging), target)
             except Exception:
                 staging.unlink(missing_ok=True)
                 raise
         else:
-            self._doc.save(target, **PDF_SAVE_KWARGS)
+            self._doc.save(target, **self._save_kwargs())
 
         self._source_path = target
         self._modified = False
@@ -255,7 +404,7 @@ class PdfDocument:
         if len(self._doc) == 0:
             return _EMPTY_SNAPSHOT
         buffer = io.BytesIO()
-        self._doc.save(buffer, **PDF_SAVE_KWARGS)
+        self._doc.save(buffer, **self._save_kwargs())
         return buffer.getvalue()
 
     def _snapshot_bytes(self) -> bytes:
@@ -263,9 +412,15 @@ class PdfDocument:
         return self.save_to_bytes()
 
     @staticmethod
-    def _serialize_doc_bytes(doc: fitz.Document) -> bytes:
+    def _raw_doc_bytes(doc: fitz.Document) -> bytes:
         buffer = io.BytesIO()
-        doc.save(buffer, **PDF_SAVE_KWARGS)
+        doc.save(buffer, **PDF_SAVE_KWARGS, encryption=fitz.mupdf.PDF_ENCRYPT_NONE)
+        return buffer.getvalue()
+
+    def _serialize_doc_bytes(self, doc: fitz.Document | None = None) -> bytes:
+        target = doc if doc is not None else self._doc
+        buffer = io.BytesIO()
+        target.save(buffer, **self._save_kwargs())
         return buffer.getvalue()
 
     def current_file_size(self) -> int:
@@ -278,7 +433,7 @@ class PdfDocument:
         payload = self.save_to_bytes()
         if not payload:
             return fitz.open()
-        return fitz.open(stream=payload, filetype="pdf")
+        return PdfDocument._open_pdf_bytes(payload)
 
     @staticmethod
     def _safe_pixmap_from_xref(doc: fitz.Document, xref: int) -> fitz.Pixmap | None:
@@ -2019,12 +2174,25 @@ class PdfDocument:
         height_cm = rect.height * 2.54 / 72
         return round(width_cm, 2), round(height_cm, 2)
 
+    @staticmethod
+    def _render_failed_after_mupdf() -> bool:
+        warnings = fitz.TOOLS.mupdf_warnings(reset=True).lower()
+        return any(token in warnings for token in ("corrupt", "format error", "cannot read"))
+
     def render_page_pixmap(self, index: int, zoom: float = 1.0) -> fitz.Pixmap:
         if self.rendering_paused:
             raise RuntimeError("rendering paused")
         page = self._doc[index]
         matrix = fitz.Matrix(zoom, zoom)
-        return page.get_pixmap(matrix=matrix, alpha=False, annots=False)
+        try:
+            fitz.TOOLS.mupdf_warnings(reset=True)
+            pix = page.get_pixmap(matrix=matrix, alpha=False, annots=False)
+            if self._render_failed_after_mupdf():
+                return self._blank_page_pixmap(page.rect.width, page.rect.height, zoom)
+            return pix
+        except Exception:
+            fitz.TOOLS.mupdf_warnings(reset=True)
+            return self._blank_page_pixmap(page.rect.width, page.rect.height, zoom)
 
     def render_thumbnail_pixmap(self, index: int, max_width: int = 120) -> fitz.Pixmap:
         if self.rendering_paused:
@@ -2032,7 +2200,15 @@ class PdfDocument:
         page = self._doc[index]
         scale = max_width / page.rect.width
         matrix = fitz.Matrix(scale, scale)
-        return page.get_pixmap(matrix=matrix, alpha=False, annots=False)
+        try:
+            fitz.TOOLS.mupdf_warnings(reset=True)
+            pix = page.get_pixmap(matrix=matrix, alpha=False, annots=False)
+            if self._render_failed_after_mupdf():
+                return self._blank_page_pixmap(page.rect.width, page.rect.height, scale)
+            return pix
+        except Exception:
+            fitz.TOOLS.mupdf_warnings(reset=True)
+            return self._blank_page_pixmap(page.rect.width, page.rect.height, scale)
 
     def delete_pages(self, indices: list[int], *, record_undo: bool = True) -> None:
         if not indices:
@@ -2109,6 +2285,7 @@ class PdfDocument:
         file_paths: list[str],
         *,
         record_undo: bool = True,
+        resolve_pdf_password: Callable[[str, bool], str | None] | None = None,
     ) -> int:
         """Insert PDF pages or images at *index*. Returns number of pages added."""
         index = max(0, min(index, len(self._doc)))
@@ -2123,7 +2300,11 @@ class PdfDocument:
             if record_undo and added == 0:
                 self._record_undo_checkpoint()
             if ext in PDF_EXTENSIONS:
-                added += self._insert_pdf_at(index + added, file_path)
+                added += self._insert_pdf_at(
+                    index + added,
+                    file_path,
+                    resolve_pdf_password=resolve_pdf_password,
+                )
             elif ext in IMAGE_EXTENSIONS:
                 self._insert_image_at(index + added, file_path)
                 added += 1
@@ -2151,9 +2332,39 @@ class PdfDocument:
             self._doc.new_page(pno=index, width=rect.width, height=rect.height)
         self._touch()
 
-    def _insert_pdf_at(self, index: int, pdf_path: str) -> int:
-        src = fitz.open(pdf_path)
+    def _insert_pdf_at(
+        self,
+        index: int,
+        pdf_path: str,
+        *,
+        password: str | None = None,
+        resolve_pdf_password: Callable[[str, bool], str | None] | None = None,
+    ) -> int:
+        pdf_bytes = Path(pdf_path).read_bytes()
+        file_had_encryption = PdfDocument._pdf_bytes_encrypted(pdf_bytes)
+        while True:
+            try:
+                src = PdfDocument._open_pdf_bytes(pdf_bytes, password=password)
+                break
+            except PdfPasswordRejected:
+                if resolve_pdf_password is None:
+                    raise
+                password = resolve_pdf_password(pdf_path, True)
+                if password is None:
+                    return 0
+            except PdfPasswordRequired:
+                if resolve_pdf_password is None:
+                    raise
+                password = resolve_pdf_password(pdf_path, False)
+                if password is None:
+                    return 0
         try:
+            if (
+                file_had_encryption
+                or password is not None
+                or PdfDocument._metadata_shows_encryption(src)
+            ):
+                self._source_had_encryption = True
             page_count = len(src)
             if page_count:
                 self._insert_pdf_pages(
@@ -2225,7 +2436,7 @@ class PdfDocument:
     def export_pages_to_pdf(self, indices: list[int], path: str) -> None:
         out = self._open_pdf_for_page_indices(indices)
         try:
-            out.save(path, **PDF_SAVE_KWARGS)
+            out.save(path, **self._save_kwargs())
         finally:
             out.close()
 

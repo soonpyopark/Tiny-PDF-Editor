@@ -42,8 +42,10 @@ from pdf_editor.highlight_colors import (
 from pdf_editor.pixmap_utils import pixmap_from_fitz
 from pdf_editor.text_highlight_menu import build_text_selection_context_menu
 
-ZOOM_PRESETS = [25, 50, 75, 100, 125, 150, 200, 250]
-MAX_ZOOM = 2.5
+ZOOM_PRESETS = [25, 50, 75, 100, 125, 150, 200, 250, 300, 350, 400, 500, 600]
+MAX_ZOOM_PERCENT = 600
+MAX_ZOOM = MAX_ZOOM_PERCENT / 100.0
+ZOOM_STEP_FACTOR = 1.1
 PREVIEW_BACKGROUND = "#efefef"
 EMPTY_PREVIEW_HINT = (
     "병합할 이미지나 PDF 를 좌측 썸네일 화면으로\n"
@@ -821,9 +823,7 @@ class PageViewer(QWidget):
         self._current_index = 0
         self._zoom = 1.0
         self._fit_mode: str | None = "page"
-        self._uniform_zoom: float | None = None
-        self._pending_uniform_zoom_lock = False
-        self._initial_fit_scale: float | None = None
+        self._fit_zoom_scale = 1.0
         self._search_page_rects: list[fitz.Rect] = []
         self._search_active_index = -1
         self._cross_page_selection: CrossPageSelection | None = None
@@ -987,8 +987,8 @@ class PageViewer(QWidget):
         self._document = document
         self._current_index = 0
         self._fit_mode = "page"
-        self._uniform_zoom = None
-        self._pending_uniform_zoom_lock = bool(document and document.page_count > 0)
+        self._fit_zoom_scale = 1.0
+        self._zoom = 1.0
         self.clear_cross_page_selection()
         self.refresh()
         if document and document.page_count > 0:
@@ -1100,32 +1100,30 @@ class PageViewer(QWidget):
                 QTimer.singleShot(0, self._prime_continuation_selection)
 
     def set_zoom_percent(self, percent: float) -> None:
-        self._initial_fit_scale = None
-        self._uniform_zoom = None
-        self._pending_uniform_zoom_lock = False
-        self._fit_mode = None
-        self._zoom = max(0.1, min(percent / 100.0, MAX_ZOOM))
+        target = max(0.1, min(percent / 100.0, MAX_ZOOM))
+        if self._fit_mode:
+            base = self._base_fit_zoom()
+            self._fit_zoom_scale = target / base if base > 0 else 1.0
+        else:
+            self._zoom = target
         self._sync_zoom_controls()
         self._render_current_page()
 
+    def _scale_zoom(self, factor: float) -> None:
+        self.set_zoom_percent(self._current_display_zoom() * 100 * factor)
+
     def fit_width(self) -> None:
-        self._initial_fit_scale = None
-        self._uniform_zoom = None
-        self._pending_uniform_zoom_lock = False
+        self._fit_zoom_scale = 1.0
         self._fit_mode = "width"
         self._render_current_page()
 
     def fit_height(self) -> None:
-        self._initial_fit_scale = None
-        self._uniform_zoom = None
-        self._pending_uniform_zoom_lock = False
+        self._fit_zoom_scale = 1.0
         self._fit_mode = "height"
         self._render_current_page()
 
     def fit_page(self) -> None:
-        self._initial_fit_scale = None
-        self._uniform_zoom = None
-        self._pending_uniform_zoom_lock = True
+        self._fit_zoom_scale = 1.0
         self._fit_mode = "page"
         self._render_current_page()
 
@@ -1238,7 +1236,7 @@ class PageViewer(QWidget):
         if (
             self._document
             and self._document.page_count > 0
-            and (self._fit_mode or self._pending_uniform_zoom_lock)
+            and self._fit_mode
         ):
             self._render_current_page()
 
@@ -1318,8 +1316,8 @@ class PageViewer(QWidget):
 
     def _handle_preview_wheel(self, delta_y: int, modifiers: Qt.KeyboardModifier) -> bool:
         if modifiers & Qt.KeyboardModifier.ControlModifier:
-            step = 10 if delta_y > 0 else -10
-            self.set_zoom_percent(self._current_display_zoom() * 100 + step)
+            factor = ZOOM_STEP_FACTOR if delta_y > 0 else 1.0 / ZOOM_STEP_FACTOR
+            self._scale_zoom(factor)
             return True
         if not self._document or self._document.page_count == 0:
             return False
@@ -1420,13 +1418,13 @@ class PageViewer(QWidget):
         self.btn_zoom_out = QPushButton("-")
         self.btn_zoom_out.setFixedSize(compact_btn, btn_height)
         self.btn_zoom_out.clicked.connect(
-            lambda: self.set_zoom_percent(self._current_display_zoom() * 100 - 10)
+            lambda: self._scale_zoom(1.0 / ZOOM_STEP_FACTOR)
         )
         layout.addWidget(self.btn_zoom_out)
 
         self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
         self.zoom_slider.setMinimum(10)
-        self.zoom_slider.setMaximum(250)
+        self.zoom_slider.setMaximum(MAX_ZOOM_PERCENT)
         self.zoom_slider.setValue(100)
         self.zoom_slider.setFixedWidth(88)
         self.zoom_slider.valueChanged.connect(self._on_slider_changed)
@@ -1435,7 +1433,7 @@ class PageViewer(QWidget):
         self.btn_zoom_in = QPushButton("+")
         self.btn_zoom_in.setFixedSize(compact_btn, btn_height)
         self.btn_zoom_in.clicked.connect(
-            lambda: self.set_zoom_percent(self._current_display_zoom() * 100 + 10)
+            lambda: self._scale_zoom(ZOOM_STEP_FACTOR)
         )
         layout.addWidget(self.btn_zoom_in)
 
@@ -1462,14 +1460,7 @@ class PageViewer(QWidget):
         self.set_current_index(value - 1)
 
     def _on_slider_changed(self, value: int) -> None:
-        self._initial_fit_scale = None
-        self._uniform_zoom = None
-        self._pending_uniform_zoom_lock = False
-        if self._fit_mode is not None:
-            self._fit_mode = None
-        self._zoom = min(value / 100.0, MAX_ZOOM)
-        self._sync_zoom_controls(skip_slider=True)
-        self._render_current_page()
+        self.set_zoom_percent(float(value))
 
     def _on_zoom_combo_changed(self, text: str) -> None:
         cleaned = text.replace("%", "").strip()
@@ -1483,17 +1474,34 @@ class PageViewer(QWidget):
 
     def _current_display_zoom(self) -> float:
         """Zoom shown in controls; matches fit modes when active."""
-        if self._fit_mode:
-            return self._effective_zoom()
-        if self._uniform_zoom is not None:
-            return self._uniform_zoom
+        return self._effective_zoom()
+
+    def _base_fit_zoom(self) -> float:
+        if not self._document or self._document.page_count == 0:
+            return 1.0
+        rect = self._document.get_page_rect(self._current_index)
+        viewport = self.scroll_area.viewport().size()
+        margin = 24
+        if self._fit_mode == "width":
+            return max(0.1, (viewport.width() - margin) / rect.width)
+        if self._fit_mode == "height":
+            return max(0.1, (viewport.height() - margin) / rect.height)
+        if self._fit_mode == "page":
+            width_fit = (viewport.width() - margin) / rect.width
+            height_fit = (viewport.height() - margin) / rect.height
+            return max(0.1, min(width_fit, height_fit))
         return self._zoom
+
+    def _effective_zoom(self) -> float:
+        if self._fit_mode:
+            return min(self._base_fit_zoom() * self._fit_zoom_scale, MAX_ZOOM)
+        return min(self._zoom, MAX_ZOOM)
 
     def _sync_zoom_controls(self, skip_slider: bool = False) -> None:
         percent = int(round(self._current_display_zoom() * 100))
         if not skip_slider:
             self.zoom_slider.blockSignals(True)
-            self.zoom_slider.setValue(max(10, min(250, percent)))
+            self.zoom_slider.setValue(max(10, min(MAX_ZOOM_PERCENT, percent)))
             self.zoom_slider.blockSignals(False)
         self.zoom_combo.blockSignals(True)
         self.zoom_combo.setCurrentText(f"{percent}%")
@@ -1528,26 +1536,6 @@ class PageViewer(QWidget):
         else:
             self.size_label.setText("")
 
-    def _effective_zoom(self) -> float:
-        if not self._document or self._document.page_count == 0:
-            return 1.0
-        rect = self._document.get_page_rect(self._current_index)
-        viewport = self.scroll_area.viewport().size()
-        margin = 24
-        if self._uniform_zoom is not None:
-            return min(self._uniform_zoom, MAX_ZOOM)
-        if self._fit_mode == "width":
-            fit = min(max(0.1, (viewport.width() - margin) / rect.width), MAX_ZOOM)
-        elif self._fit_mode == "height":
-            fit = min(max(0.1, (viewport.height() - margin) / rect.height), MAX_ZOOM)
-        elif self._fit_mode == "page":
-            width_fit = (viewport.width() - margin) / rect.width
-            height_fit = (viewport.height() - margin) / rect.height
-            fit = min(max(0.1, min(width_fit, height_fit)), MAX_ZOOM)
-        else:
-            return min(self._zoom, MAX_ZOOM)
-        return fit
-
     def _update_preview_stack(self) -> None:
         has_pages = bool(self._document and self._document.page_count > 0)
         self.preview_stack.setCurrentIndex(1 if has_pages else 0)
@@ -1565,16 +1553,8 @@ class PageViewer(QWidget):
             return
 
         zoom = self._effective_zoom()
-        if self._pending_uniform_zoom_lock:
-            self._uniform_zoom = zoom
-            self._fit_mode = None
+        if self._fit_mode is None:
             self._zoom = zoom
-            self._pending_uniform_zoom_lock = False
-            zoom = self._uniform_zoom
-        elif self._fit_mode is None and self._uniform_zoom is None:
-            self._zoom = zoom
-        elif self._uniform_zoom is not None:
-            zoom = self._uniform_zoom
         self._sync_zoom_controls()
 
         pix = self._document.render_page_pixmap(self._current_index, zoom)

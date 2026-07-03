@@ -7,6 +7,7 @@ import sys
 import winreg
 from pathlib import Path
 
+from pdf_editor.resources import installed_pdf_file_icon_path
 from pdf_editor.version import APP_NAME
 
 _CAPABILITIES_KEY = r"Software\TinyPDFEditor\Capabilities"
@@ -34,6 +35,13 @@ def _applications_key() -> str:
 
 def _open_command() -> str:
     return f'"{exe_path()}" "%1"'
+
+
+def _default_icon_value() -> str:
+    icon_path = installed_pdf_file_icon_path()
+    if icon_path is not None:
+        return f'"{icon_path}",0'
+    return f'"{exe_path()}",0'
 
 
 def _set_value(root: int, subkey: str, name: str, value: str) -> None:
@@ -91,7 +99,6 @@ def register_pdf_association() -> None:
     if not is_windows():
         raise OSError("Windows에서만 사용할 수 있습니다.")
 
-    exe = str(exe_path())
     command = _open_command()
     app_key = _applications_key()
 
@@ -145,7 +152,13 @@ def register_pdf_association() -> None:
         winreg.HKEY_CURRENT_USER,
         rf"Software\Classes\{_PROGID}\DefaultIcon",
         "",
-        f'"{exe}",0',
+        _default_icon_value(),
+    )
+    _set_value(
+        winreg.HKEY_CURRENT_USER,
+        rf"Software\Classes\Applications\{_exe_name()}\DefaultIcon",
+        "",
+        _default_icon_value(),
     )
     _set_value(
         winreg.HKEY_CURRENT_USER,

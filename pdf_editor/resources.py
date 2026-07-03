@@ -18,6 +18,23 @@ def branding_path(name: str) -> Path:
     return _PACKAGE_DIR / "branding" / name
 
 
+def installed_pdf_file_icon_path() -> Path | None:
+    """Stable on-disk path for Windows shell PDF file icons."""
+    name = "pdf_file_icon.ico"
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        for candidate in (
+            exe_dir / name,
+            exe_dir / "_internal" / "pdf_editor" / "branding" / name,
+        ):
+            if candidate.is_file():
+                return candidate.resolve()
+    icon_path = branding_path(name)
+    if icon_path.is_file():
+        return icon_path.resolve()
+    return None
+
+
 def init_platform() -> None:
     """Run before QApplication so Windows uses the app icon on the taskbar."""
     if sys.platform != "win32":

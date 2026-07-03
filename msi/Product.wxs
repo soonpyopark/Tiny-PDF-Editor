@@ -10,12 +10,22 @@
   <Package Name="Tiny PDF Editor"
            Manufacturer="Tiny PDF Editor"
            Version="$(var.ProductVersion)"
+           ProductCode="$(var.ProductCode)"
            UpgradeCode="A3C7E1F4-9B2D-4E6A-8C0F-1D5E7B9A2C4E"
            Scope="perUser"
            Codepage="65001"
            Compressed="yes">
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Tiny PDF Editor is already installed." />
+    <!--
+      Existing install (same UpgradeCode) is fully removed before new files
+      are laid down (afterInstallValidate). Reinstalling the same app version
+      also replaces the previous MSI (AllowSameVersionUpgrades).
+    -->
+    <MajorUpgrade
+      DowngradeErrorMessage="더 새로운 버전의 Tiny PDF Editor가 이미 설치되어 있습니다."
+      AllowSameVersionUpgrades="yes"
+      Schedule="afterInstallValidate"
+      MigrateFeatures="yes" />
     <MediaTemplate EmbedCab="yes" />
 
     <Property Id="ARPHELPLINK" Value="https://note4all.tistory.com" />
@@ -70,7 +80,11 @@
       </RegistryKey>
 
       <RegistryKey Root="HKCU" Key="Software\Classes\TinyPDFEditor.pdf\DefaultIcon">
-        <RegistryValue Type="string" Value="[INSTALLFOLDER]Tiny PDF Editor.exe,0" />
+        <RegistryValue Type="string" Value="[INSTALLFOLDER]pdf_file_icon.ico,0" />
+      </RegistryKey>
+
+      <RegistryKey Root="HKCU" Key="Software\Classes\Applications\Tiny PDF Editor.exe\DefaultIcon">
+        <RegistryValue Type="string" Value="[INSTALLFOLDER]pdf_file_icon.ico,0" />
       </RegistryKey>
 
       <RegistryKey Root="HKCU" Key="Software\Classes\TinyPDFEditor.pdf\shell\open\command">
