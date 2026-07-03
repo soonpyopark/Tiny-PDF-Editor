@@ -78,6 +78,34 @@ function copyPdfFileIconToAppRoot(appDir) {
   log("copied pdf_file_icon.ico to app root");
 }
 
+function pythonStdlibExtension(name) {
+  const script = `import sys; from pathlib import Path; print(Path(sys.base_prefix) / "DLLs" / ${JSON.stringify(name)})`;
+  const extensionPath = execSync(`python -c ${JSON.stringify(script)}`, {
+    encoding: "utf8",
+    cwd: ROOT,
+  }).trim();
+  if (!fs.existsSync(extensionPath)) {
+    throw new Error(`Missing Python stdlib extension: ${extensionPath}`);
+  }
+  return extensionPath;
+}
+
+function pyInstallerBinaryArg(sourcePath) {
+  return `--add-binary "${sourcePath}${path.delimiter}."`;
+}
+
+function ensureBundledStdlibExtensions(appDir) {
+  const internalDir = path.join(appDir, "_internal");
+  const required = ["_socket.pyd"];
+  for (const name of required) {
+    const bundled = path.join(internalDir, name);
+    if (!fs.existsSync(bundled)) {
+      throw new Error(`PyInstaller bundle missing required extension: ${name}`);
+    }
+  }
+  log("verified bundled stdlib extensions");
+}
+
 export function buildPortableApp() {
   fs.mkdirSync(PYI_DIST, { recursive: true });
   fs.mkdirSync(PYI_WORK, { recursive: true });
@@ -93,6 +121,9 @@ export function buildPortableApp() {
     addData.push(`${APP_ICON_PNG};pdf_editor/branding`);
   }
 
+  const appDir = path.join(PYI_DIST, "PDFEditor");
+  const socketPyd = pythonStdlibExtension("_socket.pyd");
+
   const args = [
     "python -m PyInstaller",
     "--noconfirm",
@@ -104,16 +135,19 @@ export function buildPortableApp() {
     `--specpath "${BUILD_DIR}"`,
     `--icon "${APP_ICON}"`,
     ...addData.map((entry) => `--add-data "${entry}"`),
+    pyInstallerBinaryArg(socketPyd),
     "--hidden-import fitz",
     "--hidden-import _socket",
     "--hidden-import socket",
+    "--exclude-module multiprocessing",
     "--collect-all PyQt6",
     "--collect-all pymupdf",
     "main.py",
   ];
 
   run(args.join(" "));
-  copyPdfFileIconToAppRoot(path.join(PYI_DIST, "PDFEditor"));
+  ensureBundledStdlibExtensions(appDir);
+  copyPdfFileIconToAppRoot(appDir);
 }
 
 function fileHash(filePath) {
