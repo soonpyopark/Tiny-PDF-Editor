@@ -24,6 +24,9 @@ const APP_LOGO = path.join(BRANDING_DIR, "app_logo.png");
 const APP_ICON_PNG = path.join(BRANDING_DIR, "app_icon.png");
 const MAX_RELEASES = 3;
 const isUpdate = process.argv.includes("--update");
+const isMain =
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 function log(msg) {
   console.log(`[build] ${msg}`);
@@ -54,7 +57,7 @@ function formatTimestamp(date = new Date()) {
   return `${yy}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
-function ensurePythonDeps() {
+export function ensurePythonDeps() {
   run("python -m pip install -r requirements.txt pyinstaller --quiet");
 }
 
@@ -69,7 +72,7 @@ function ensureBrandingAssets() {
   }
 }
 
-function buildPortableApp() {
+export function buildPortableApp() {
   fs.mkdirSync(PYI_DIST, { recursive: true });
   fs.mkdirSync(PYI_WORK, { recursive: true });
 
@@ -408,9 +411,11 @@ function main() {
   mainFull();
 }
 
-try {
-  main();
-} catch (error) {
-  console.error("[build] failed:", error.message ?? error);
-  process.exit(1);
+if (isMain) {
+  try {
+    main();
+  } catch (error) {
+    console.error("[build] failed:", error.message ?? error);
+    process.exit(1);
+  }
 }

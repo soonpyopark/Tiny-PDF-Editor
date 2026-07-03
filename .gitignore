@@ -1,5 +1,7 @@
 .build/
 dist/
+/Tiny PDF Editor/
+msi/*.msi
 __pycache__/
 *.py[cod]
 *.spec

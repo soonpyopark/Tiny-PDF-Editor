@@ -1,6 +1,20 @@
 # 배포판 사용 안내
 
-## 실행 방법
+## 설치판 (MSI)
+
+1. `npm run build:msi`로 `msi` 폴더에 설치 파일을 만듭니다.
+2. `msi/Tiny PDF Editor v{버전}.msi`를 더블 클릭해 설치합니다.
+3. 관리자 권한 없이 **현재 사용자** 계정에 설치됩니다 (`%LocalAppData%`).
+4. 설치 시 PDF 파일 연결(HKCU 레지스트리)과 시작 메뉴 바로가기가 등록됩니다.
+
+WiX CLI 7 이상이 필요합니다.
+
+```text
+winget install WiXToolset.WiXCLI
+wix eula accept wix7
+```
+
+## 포터블 실행 (폴더 배포)
 
 1. 배포 **폴더 전체**를 USB 또는 원하는 위치에 복사합니다.
 2. 폴더 안의 `{프로젝트명}_YYMMDD_HHMMSS.exe` 파일을 더블 클릭합니다.

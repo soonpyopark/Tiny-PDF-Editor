@@ -1,0 +1,70 @@
+MIT License
+
+Tiny PDF Editor v1.0.3
+
+Copyright (c) 2026 Tiny PDF Editor contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+Third-Party Components (배포판 / exe 포함 시)
+================================================================================
+
+Tiny PDF Editor 배포판(Windows exe 및 `_internal` 폴더)에는 아래 오픈소스
+라이브러리가 함께 포함됩니다. 소스 코드(MIT)와 달리, **실행 파일을
+블로그·웹·USB 등으로 재배포**할 때는 각 라이브러리 라이선스도 준수해야
+합니다.
+
+1. PyMuPDF (pymupdf)
+   - License: GNU Affero General Public License v3.0 (AGPL-3.0)
+     또는 Artifex Commercial License
+   - Website: https://pymupdf.readthedocs.io/
+   - PDF 렌더링·편집·압축·텍스트 추출에 사용됩니다.
+   - AGPL-3.0 조건 하에서 exe를 배포하는 경우, 해당 조건(소스 제공 의무 등)을
+     확인하세요. 상업적 재배포 시 Artifex 상용 라이선스가 필요할 수 있습니다.
+
+2. PyQt6
+   - License: GNU General Public License v3.0 (GPL-3.0)
+     또는 The Qt Company Commercial License
+   - Website: https://www.riverbankcomputing.com/software/pyqt/
+   - GUI(창, 메뉴, 썸네일, 미리보기, 대화상자)에 사용됩니다.
+   - GPL-3.0 조건 하에서 exe를 배포하는 경우, 해당 조건을 확인하세요.
+     상업적 재배포 시 Qt 상용 라이선스가 필요할 수 있습니다.
+
+3. Python 및 PyInstaller 번들 구성 요소
+   - Python 인터프리터 및 표준 라이브러리: Python Software Foundation License (PSF)
+   - PyInstaller로 묶인 기타 의존성: 각 프로젝트의 라이선스(PSF, LGPL, BSD 등)를 따릅니다.
+
+4. NumPy / Pillow (번들에 포함될 수 있음)
+   - NumPy: BSD 3-Clause License — PyMuPDF·빌드 과정에서 포함될 수 있습니다.
+   - Pillow (PIL): HPND License — 이미지 처리 경로에서 포함될 수 있습니다.
+   - Website: https://numpy.org/ , https://python-pillow.org/
+
+================================================================================
+배포 시 권장 사항
+================================================================================
+
+- 배포 패키지에 본 LICENSE 파일, README.md, DISTRIBUTE.md를 함께 포함하세요.
+  (`npm run build:dist:exe` 빌드 시 `dist/` 폴더에 자동 복사됩니다.)
+- 블로그 등에서 다운로드 링크를 제공할 때, 위 서드파티 라이선스 고지를
+  게시물 또는 다운로드 페이지에 명시하는 것을 권장합니다.
+- 본 저장소의 MIT 라이선스는 Tiny PDF Editor **소스 코드**에 적용됩니다.
+  exe 재배포 시 MIT만으로는 PyMuPDF·PyQt6 의무가 대체되지 않습니다.
+
+================================================================================
