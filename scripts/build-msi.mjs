@@ -18,6 +18,7 @@ const STAGE_DIR = path.join(ROOT, STAGE_NAME);
 const MSI_DIR = path.join(ROOT, "msi");
 const PRODUCT_WXS = path.join(MSI_DIR, "Product.wxs");
 const EXE_NAME = "Tiny PDF Editor.exe";
+let wixCmd = "wix";
 
 function log(msg) {
   console.log(`[msi] ${msg}`);
@@ -46,14 +47,40 @@ function toMsiVersion(version) {
   return parts.slice(0, 4).join(".");
 }
 
-function ensureWix() {
+function formatTimestamp(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const yy = String(date.getFullYear()).slice(2);
+  return `${yy}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function resolveWixCmd() {
   try {
     execSync("wix --version", { stdio: "pipe" });
+    return "wix";
   } catch {
-    throw new Error(
-      "WiX CLI not found. Install: winget install WiXToolset.WiXCLI\nThen run: wix eula accept wix7",
-    );
+    // winget default install path when WiX is not on PATH
   }
+
+  const programFiles = process.env["ProgramFiles"] ?? "C:\\Program Files";
+  const candidates = [
+    path.join(programFiles, "WiX Toolset v7.0", "bin", "wix.exe"),
+    path.join(programFiles, "WiX Toolset v6.0", "bin", "wix.exe"),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return `"${candidate}"`;
+    }
+  }
+
+  throw new Error(
+    "WiX CLI not found. Install: winget install WiXToolset.WiXCLI\nThen run: wix eula accept wix7",
+  );
+}
+
+function ensureWix() {
+  wixCmd = resolveWixCmd();
+  execSync(`${wixCmd} --version`, { stdio: "pipe" });
 }
 
 function stageForMsi() {
@@ -75,14 +102,15 @@ function stageForMsi() {
 function buildMsi() {
   const version = readVersion();
   const productVersion = toMsiVersion(version);
-  const outputName = `Tiny PDF Editor v${version}.msi`;
+  const timestamp = formatTimestamp();
+  const outputName = `Tiny PDF Editor v${version}_${timestamp}.msi`;
   const outputPath = path.join(MSI_DIR, outputName);
 
   fs.mkdirSync(MSI_DIR, { recursive: true });
   fs.rmSync(outputPath, { force: true });
 
   run(
-    `wix build "${PRODUCT_WXS}" -d ProductVersion=${productVersion} -ext WixToolset.UI.wixext -o "${outputPath}"`,
+    `${wixCmd} build "${PRODUCT_WXS}" -d ProductVersion=${productVersion} -ext WixToolset.UI.wixext -o "${outputPath}"`,
   );
 
   const sizeMb = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);

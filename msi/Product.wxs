@@ -27,6 +27,7 @@
       <Files Include="Tiny PDF Editor/**" />
       <ComponentRef Id="PdfFileAssociation" />
       <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
     </Feature>
 
     <StandardDirectory Id="LocalAppDataFolder">
@@ -36,6 +37,8 @@
     <StandardDirectory Id="ProgramMenuFolder">
       <Directory Id="ApplicationProgramsFolder" Name="Tiny PDF Editor" />
     </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder" />
 
     <Component Id="PdfFileAssociation" Directory="INSTALLFOLDER" Guid="F2A8C4D6-1E3B-4F5A-9C7D-8E0B2A4C6D8E">
       <RegistryKey Root="HKCU" Key="Software\Classes\Applications\Tiny PDF Editor.exe">
@@ -92,6 +95,20 @@
                      Value="1"
                      KeyPath="yes" />
       <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+    </Component>
+
+    <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="D7E3F5A9-4C6B-4D8E-9F0A-2B4C6D8E0F12">
+      <Shortcut Id="DesktopShortcut"
+                Name="Tiny PDF Editor"
+                Description="Tiny PDF Editor"
+                Target="[INSTALLFOLDER]Tiny PDF Editor.exe"
+                WorkingDirectory="INSTALLFOLDER" />
+      <RegistryValue Root="HKCU"
+                     Key="Software\Tiny PDF Editor\Tiny PDF Editor"
+                     Name="desktop_shortcut"
+                     Type="integer"
+                     Value="1"
+                     KeyPath="yes" />
     </Component>
   </Package>
 </Wix>

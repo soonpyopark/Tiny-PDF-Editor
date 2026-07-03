@@ -3,7 +3,7 @@
 ## 설치판 (MSI)
 
 1. `npm run build:msi`로 `msi` 폴더에 설치 파일을 만듭니다.
-2. `msi/Tiny PDF Editor v{버전}.msi`를 더블 클릭해 설치합니다.
+2. `msi/Tiny PDF Editor v{버전}_YYMMDD_HHMMSS.msi`를 더블 클릭해 설치합니다.
 3. 관리자 권한 없이 **현재 사용자** 계정에 설치됩니다 (`%LocalAppData%`).
 4. 설치 시 PDF 파일 연결(HKCU 레지스트리)과 시작 메뉴 바로가기가 등록됩니다.
 
