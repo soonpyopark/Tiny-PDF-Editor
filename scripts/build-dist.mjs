@@ -105,6 +105,8 @@ export function buildPortableApp() {
     `--icon "${APP_ICON}"`,
     ...addData.map((entry) => `--add-data "${entry}"`),
     "--hidden-import fitz",
+    "--hidden-import _socket",
+    "--hidden-import socket",
     "--collect-all PyQt6",
     "--collect-all pymupdf",
     "main.py",
