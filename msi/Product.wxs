@@ -3,6 +3,8 @@
   Tiny PDF Editor MSI (per-user, HKCU PDF association).
   Build: npm run build:msi
   Requires WiX CLI 7+ (winget install WiXToolset.WiXCLI) and: wix eula accept wix7
+
+  Payload is staged to msi/Tiny PDF Editor/ before linking (same folder as this .wxs).
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">

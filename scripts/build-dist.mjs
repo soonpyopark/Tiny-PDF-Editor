@@ -90,8 +90,100 @@ function pythonStdlibExtension(name) {
   return extensionPath;
 }
 
-function pyInstallerBinaryArg(sourcePath) {
-  return `--add-binary "${sourcePath}${path.delimiter}."`;
+function toSpecPath(filePath) {
+  return path.resolve(filePath).replace(/\\/g, "/");
+}
+
+function writePyInstallerSpec({ root, mainPy, appIcon, socketPyd, datas }) {
+  const specPath = path.join(BUILD_DIR, "PDFEditor.spec");
+  const dataEntries = datas
+    .map(
+      ([source, dest]) =>
+        `    (${JSON.stringify(toSpecPath(source))}, ${JSON.stringify(dest)}),`,
+    )
+    .join("\n");
+
+  const spec = `# -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_all
+
+binaries = [(${JSON.stringify(toSpecPath(socketPyd))}, ".")]
+datas = [
+${dataEntries}
+]
+hiddenimports = ["fitz", "_socket", "socket"]
+
+tmp_ret = collect_all("PyQt6")
+datas += tmp_ret[0]
+binaries += tmp_ret[1]
+hiddenimports += tmp_ret[2]
+
+tmp_ret = collect_all("pymupdf")
+datas += tmp_ret[0]
+binaries += tmp_ret[1]
+hiddenimports += tmp_ret[2]
+
+a = Analysis(
+    [${JSON.stringify(toSpecPath(mainPy))}],
+    pathex=[${JSON.stringify(toSpecPath(root))}],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=["multiprocessing"],
+    noarchive=False,
+)
+
+a.scripts = [
+    script
+    for script in a.scripts
+    if "pyi_rth_multiprocessing" not in script[0]
+]
+
+pyz = PYZ(a.pure)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name="PDFEditor",
+    debug=False,
+    strip=False,
+    upx=True,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=[${JSON.stringify(toSpecPath(appIcon))}],
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name="PDFEditor",
+)
+`;
+
+  fs.writeFileSync(specPath, spec, "utf8");
+  return specPath;
+}
+
+function ensureSocketInBundle(appDir, socketPyd) {
+  const internalDir = path.join(appDir, "_internal");
+  fs.mkdirSync(internalDir, { recursive: true });
+  const dest = path.join(internalDir, "_socket.pyd");
+  if (!fs.existsSync(dest) || fileHash(dest) !== fileHash(socketPyd)) {
+    fs.copyFileSync(socketPyd, dest);
+    log("ensured _socket.pyd in bundle");
+  }
 }
 
 function ensureBundledStdlibExtensions(appDir) {
@@ -106,47 +198,41 @@ function ensureBundledStdlibExtensions(appDir) {
   log("verified bundled stdlib extensions");
 }
 
+export function finalizePortableAppBundle(appDir) {
+  const socketPyd = pythonStdlibExtension("_socket.pyd");
+  ensureSocketInBundle(appDir, socketPyd);
+  ensureBundledStdlibExtensions(appDir);
+}
+
 export function buildPortableApp() {
   fs.mkdirSync(PYI_DIST, { recursive: true });
   fs.mkdirSync(PYI_WORK, { recursive: true });
 
   ensureBrandingAssets();
 
-  const addData = [
-    `${APP_LOGO};pdf_editor/branding`,
-    `${APP_ICON};pdf_editor/branding`,
-    `${PDF_FILE_ICON};pdf_editor/branding`,
+  const datas = [
+    [APP_LOGO, "pdf_editor/branding"],
+    [APP_ICON, "pdf_editor/branding"],
+    [PDF_FILE_ICON, "pdf_editor/branding"],
   ];
   if (fs.existsSync(APP_ICON_PNG)) {
-    addData.push(`${APP_ICON_PNG};pdf_editor/branding`);
+    datas.push([APP_ICON_PNG, "pdf_editor/branding"]);
   }
 
   const appDir = path.join(PYI_DIST, "PDFEditor");
   const socketPyd = pythonStdlibExtension("_socket.pyd");
+  const specPath = writePyInstallerSpec({
+    root: ROOT,
+    mainPy: path.join(ROOT, "main.py"),
+    appIcon: APP_ICON,
+    socketPyd,
+    datas,
+  });
 
-  const args = [
-    "python -m PyInstaller",
-    "--noconfirm",
-    "--onedir",
-    "--windowed",
-    '--name "PDFEditor"',
-    `--distpath "${PYI_DIST}"`,
-    `--workpath "${PYI_WORK}"`,
-    `--specpath "${BUILD_DIR}"`,
-    `--icon "${APP_ICON}"`,
-    ...addData.map((entry) => `--add-data "${entry}"`),
-    pyInstallerBinaryArg(socketPyd),
-    "--hidden-import fitz",
-    "--hidden-import _socket",
-    "--hidden-import socket",
-    "--exclude-module multiprocessing",
-    "--collect-all PyQt6",
-    "--collect-all pymupdf",
-    "main.py",
-  ];
-
-  run(args.join(" "));
-  ensureBundledStdlibExtensions(appDir);
+  run(
+    `python -m PyInstaller --noconfirm "${specPath}" --distpath "${PYI_DIST}" --workpath "${PYI_WORK}"`,
+  );
+  finalizePortableAppBundle(appDir);
   copyPdfFileIconToAppRoot(appDir);
 }
 

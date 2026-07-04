@@ -9,13 +9,13 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildPortableApp, ensurePythonDeps } from "./build-dist.mjs";
+import { buildPortableApp, ensurePythonDeps, finalizePortableAppBundle } from "./build-dist.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const PYI_DIST = path.join(ROOT, ".build", "pyinstaller-dist");
 const STAGE_NAME = "Tiny PDF Editor";
-const STAGE_DIR = path.join(ROOT, STAGE_NAME);
+const STAGE_DIR = path.join(ROOT, "msi", STAGE_NAME);
 const MSI_DIR = path.join(ROOT, "msi");
 const PRODUCT_WXS = path.join(MSI_DIR, "Product.wxs");
 const EXE_NAME = "Tiny PDF Editor.exe";
@@ -97,6 +97,7 @@ function stageForMsi() {
     path.join(STAGE_DIR, "PDFEditor.exe"),
     path.join(STAGE_DIR, EXE_NAME),
   );
+  finalizePortableAppBundle(STAGE_DIR);
   log(`staged: ${STAGE_DIR}`);
 }
 
