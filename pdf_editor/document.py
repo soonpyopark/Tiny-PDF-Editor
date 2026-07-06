@@ -1000,6 +1000,53 @@ class PdfDocument:
         )
 
     @staticmethod
+    def _embedded_image_effective_dpi(
+        width: int,
+        height: int,
+        display_rect: fitz.Rect,
+    ) -> float:
+        if width <= 0 or height <= 0 or display_rect.width <= 0 or display_rect.height <= 0:
+            return 0.0
+        return min(
+            width / display_rect.width * 72,
+            height / display_rect.height * 72,
+        )
+
+    def get_page_creation_dpi(self, index: int) -> int | None:
+        """Area-weighted effective DPI of raster images embedded on one page."""
+        page = self._doc[index]
+        try:
+            images = page.get_images(full=True)
+        except Exception:
+            return None
+
+        weighted_dpi = 0.0
+        total_area = 0.0
+        for img in images:
+            xref = int(img[0])
+            width = int(img[2]) if len(img) > 2 else 0
+            height = int(img[3]) if len(img) > 3 else 0
+            if width <= 0 or height <= 0:
+                continue
+            try:
+                rects = page.get_image_rects(xref)
+            except Exception:
+                continue
+            for rect in rects:
+                if self._is_micro_image_rect(rect):
+                    continue
+                dpi = self._embedded_image_effective_dpi(width, height, rect)
+                if dpi <= 0:
+                    continue
+                area = rect.width * rect.height
+                weighted_dpi += dpi * area
+                total_area += area
+
+        if total_area <= 0:
+            return None
+        return int(round(weighted_dpi / total_area))
+
+    @staticmethod
     def _downsample_pixmap(pix: fitz.Pixmap, target_w: int, target_h: int) -> fitz.Pixmap:
         scale = min(target_w / pix.width, target_h / pix.height, 1.0)
         if scale >= 1.0:

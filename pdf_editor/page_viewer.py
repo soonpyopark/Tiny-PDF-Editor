@@ -1507,6 +1507,17 @@ class PageViewer(QWidget):
         self.zoom_combo.setCurrentText(f"{percent}%")
         self.zoom_combo.blockSignals(False)
 
+    def _update_size_label(self) -> None:
+        if not self._document or self._document.page_count == 0:
+            self.size_label.setText("")
+            return
+        w, h = self._document.get_page_size_cm(self._current_index)
+        creation_dpi = self._document.get_page_creation_dpi(self._current_index)
+        if creation_dpi is None:
+            self.size_label.setText(f"{w} x {h} cm")
+        else:
+            self.size_label.setText(f"{w} x {h} cm  {creation_dpi} DPI")
+
     def _update_page_info(self) -> None:
         total = self._document.page_count if self._document else 0
         has_pages = total > 0
@@ -1530,11 +1541,7 @@ class PageViewer(QWidget):
         ):
             btn.setEnabled(has_pages)
 
-        if has_pages and self._document:
-            w, h = self._document.get_page_size_cm(self._current_index)
-            self.size_label.setText(f"{w} x {h} cm")
-        else:
-            self.size_label.setText("")
+        self._update_size_label()
 
     def _update_preview_stack(self) -> None:
         has_pages = bool(self._document and self._document.page_count > 0)

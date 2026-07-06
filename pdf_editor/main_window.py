@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
-import tempfile
 import time
 from collections.abc import Callable
 from enum import Enum
@@ -54,6 +52,7 @@ from pdf_editor.document import (
 )
 from pdf_editor.page_clipboard import PageClipboard
 from pdf_editor.password_dialog import SetPasswordDialog, prompt_pdf_password
+from pdf_editor.print_utils import print_document
 from pdf_editor.page_viewer import PageViewer
 from pdf_editor.reduce_size_dialog import ReduceSizeDialog
 from pdf_editor.resources import (
@@ -1897,19 +1896,9 @@ class MainWindow(QMainWindow):
       return
 
     try:
-      with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-        tmp_path = tmp.name
-      tab.document.save(tmp_path)
-      self._print_pdf_windows(tmp_path)
-      Path(tmp_path).unlink(missing_ok=True)
+      print_document(tab.document, printer)
     except Exception as exc:
       QMessageBox.critical(self, "인쇄 오류", str(exc))
-
-  def _print_pdf_windows(self, pdf_path: str) -> None:
-    if sys.platform == "win32":
-      os.startfile(pdf_path, "print")
-    else:
-      subprocess.run(["lp", pdf_path], check=False)
 
   def _set_document_password(self) -> None:
     tab = self._current_tab()
