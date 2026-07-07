@@ -506,6 +506,7 @@ class DocumentTab(QWidget):
     self.document = document
     self._markup_entry_count = len(document.get_text_markup_entries())
     self._file_insert_token = 0
+    self._insert_on_complete: Callable[[], None] | None = None
 
     layout = QHBoxLayout(self)
     layout.setContentsMargins(0, 0, 0, 0)
@@ -956,7 +957,13 @@ class DocumentTab(QWidget):
     except Exception as exc:
       QMessageBox.critical(self, "페이지 이동 오류", str(exc))
 
-  def _on_insert(self, index: int, paths: list[str]) -> None:
+  def _on_insert(
+    self,
+    index: int,
+    paths: list[str],
+    *,
+    on_complete: Callable[[], None] | None = None,
+  ) -> None:
     if not paths:
       paths, _ = QFileDialog.getOpenFileNames(
         self,
@@ -991,10 +998,13 @@ class DocumentTab(QWidget):
           self.go_to_page(focus, fit_page=was_empty)
           self.highlight_panel.refresh()
         self._notify_history_changed()
+        if on_complete:
+          on_complete()
       except Exception as exc:
         QMessageBox.critical(self, "삽입 오류", str(exc))
       return
 
+    self._insert_on_complete = on_complete
     self._file_insert_token += 1
     token = self._file_insert_token
     try:
@@ -1022,10 +1032,11 @@ class DocumentTab(QWidget):
             token=token,
           ),
         )
-      elif added:
+      else:
         self._finish_insert_files(token)
     except Exception as exc:
       self._file_insert_token += 1
+      self._insert_on_complete = None
       self.viewer.hide_busy_message()
       QMessageBox.critical(self, "삽입 오류", str(exc))
 
@@ -1109,6 +1120,7 @@ class DocumentTab(QWidget):
       self._finish_insert_files(token)
     except Exception as exc:
       self._file_insert_token += 1
+      self._insert_on_complete = None
       self.viewer.hide_busy_message()
       QMessageBox.critical(self, "삽입 오류", str(exc))
       self._notify_history_changed()
@@ -1119,6 +1131,10 @@ class DocumentTab(QWidget):
     self.viewer.hide_busy_message()
     self.highlight_panel.refresh()
     self._notify_history_changed()
+    on_complete = self._insert_on_complete
+    self._insert_on_complete = None
+    if on_complete:
+      on_complete()
 
   def _on_insert_blank(self, index: int) -> None:
     try:
@@ -1693,50 +1709,61 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "열기 오류", str(exc))
         return False
 
-    doc = PdfDocument()
-    opened: list[str] = []
+    supported: list[str] = []
     failed: list[tuple[str, str]] = []
     for path in paths:
       if not PdfDocument.is_supported_file(path):
         failed.append((path, "지원하지 않는 파일 형식입니다."))
-        continue
-      try:
-        added = doc.insert_files_at(
-          doc.page_count,
-          [path],
-          resolve_pdf_password=resolve_pdf_password_for(self),
-        )
-        if added == 0:
-          failed.append((path, "페이지를 추가할 수 없습니다."))
-        else:
-          opened.append(path)
-      except Exception as exc:
-        failed.append((path, str(exc)))
+      else:
+        supported.append(path)
 
-    if not opened:
-      details = "\n".join(f"{os.path.basename(path)}: {message}" for path, message in failed)
+    if not supported:
+      details = "\n".join(
+        f"{os.path.basename(path)}: {message}" for path, message in failed
+      )
       QMessageBox.critical(self, "열기 오류", details or "열 수 있는 파일이 없습니다.")
-      doc._doc.close()
       return False
 
-    doc._source_path = (
-      str(Path(opened[0]).resolve()) if len(opened) == 1 else None
-    )
-    doc._modified = False
-    doc.clear_history()
+    doc = PdfDocument()
+    tab = self._add_tab(doc, _tab_title_for_opened_files(supported))
 
-    tab = self._add_tab(doc, _tab_title_for_opened_files(opened))
-    QTimer.singleShot(0, lambda: tab.go_to_page(0, fit_page=True))
-    self._update_edit_actions()
-    self.statusBar().showMessage(f"{len(opened)}개 파일, {doc.page_count}페이지를 열었습니다.")
+    def finalize_open() -> None:
+      if doc.page_count == 0:
+        tab_index = self.tabs.indexOf(tab)
+        if tab_index >= 0:
+          self.tabs.removeTab(tab_index)
+        details = "\n".join(
+          f"{os.path.basename(path)}: {message}" for path, message in failed
+        )
+        QMessageBox.critical(
+          self,
+          "열기 오류",
+          details or "열 수 있는 파일이 없습니다.",
+        )
+        if self.tabs.count() == 0:
+          self._new_tab()
+        return
 
-    if failed:
-      details = "\n".join(f"{os.path.basename(path)}: {message}" for path, message in failed)
-      QMessageBox.warning(
-        self,
-        "일부 파일을 열 수 없음",
-        f"{len(failed)}개 파일을 열지 못했습니다.\n\n{details}",
+      doc._source_path = (
+        str(Path(supported[0]).resolve()) if len(supported) == 1 else None
       )
+      doc._modified = False
+      doc.clear_history()
+      self._update_edit_actions()
+      self.statusBar().showMessage(
+        f"{len(supported)}개 파일, {doc.page_count}페이지를 열었습니다."
+      )
+      if failed:
+        details = "\n".join(
+          f"{os.path.basename(path)}: {message}" for path, message in failed
+        )
+        QMessageBox.warning(
+          self,
+          "일부 파일을 열 수 없음",
+          f"{len(failed)}개 파일을 열지 못했습니다.\n\n{details}",
+        )
+
+    tab._on_insert(0, supported, on_complete=finalize_open)
     return True
 
   def _open_file(self) -> None:
