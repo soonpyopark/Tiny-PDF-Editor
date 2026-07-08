@@ -354,9 +354,9 @@ class TabSearchBar(QWidget):
     layout.addWidget(self.search_result_label)
 
     self.search_status = QLabel("[ 0 / 0 ]")
-    self.search_status.setFixedWidth(72)
+    self.search_status.setFixedWidth(85)
     self.search_status.setAlignment(
-      Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+      Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
     )
     layout.addWidget(self.search_status)
 
@@ -473,6 +473,8 @@ class DocumentTab(QWidget):
     )
 
     self._left_panel = left
+    self._panel_collapsed = False
+    self._active_nav_index = int(SideNavTab.THUMBNAILS)
     self._apply_panel_width_limits(set_default_size=True)
     if self.splitter.count() > 1:
       self.splitter.handle(0).setEnabled(False)
@@ -527,15 +529,33 @@ class DocumentTab(QWidget):
     QTimer.singleShot(0, lambda idx=current: self.highlight_panel.scroll_to_current_context(idx))
 
   def _on_side_nav_tab_changed(self, index: int) -> None:
+    if index == self._active_nav_index and not self._panel_collapsed:
+      self._set_panel_collapsed(True)
+      return
+    self._active_nav_index = index
+    if self._panel_collapsed:
+      self._set_panel_collapsed(False)
     self.content_stack.setCurrentIndex(index)
     if index == int(SideNavTab.THUMBNAILS):
       QTimer.singleShot(0, self.thumbnails._restore_after_tab_show)
     elif index == int(SideNavTab.HIGHLIGHTS):
       self._restore_highlights_panel_viewport()
 
-  def _switch_to_highlights_panel(self) -> None:
-    if self.side_nav.current_tab() == SideNavTab.HIGHLIGHTS:
+  def _set_panel_collapsed(self, collapsed: bool) -> None:
+    if self._panel_collapsed == collapsed:
       return
+    self._panel_collapsed = collapsed
+    self.content_stack.setVisible(not collapsed)
+    self._apply_panel_width_limits()
+    if not collapsed and self.side_nav.current_tab() == SideNavTab.THUMBNAILS:
+      QTimer.singleShot(0, self.thumbnails._restore_after_tab_show)
+
+  def _switch_to_highlights_panel(self) -> None:
+    if self.side_nav.current_tab() == SideNavTab.HIGHLIGHTS and not self._panel_collapsed:
+      return
+    self._active_nav_index = int(SideNavTab.HIGHLIGHTS)
+    if self._panel_collapsed:
+      self._set_panel_collapsed(False)
     self.side_nav.set_current_tab(SideNavTab.HIGHLIGHTS)
     self.content_stack.setCurrentIndex(int(SideNavTab.HIGHLIGHTS))
     self._restore_highlights_panel_viewport()
@@ -725,8 +745,11 @@ class DocumentTab(QWidget):
     )
 
   def _apply_panel_width_limits(self, set_default_size: bool = False) -> None:
-    thumb_w, _, _ = self.thumbnails.get_panel_width_range()
-    fixed_w = LEFT_SIDE_NAV_WIDTH + thumb_w
+    if getattr(self, "_panel_collapsed", False):
+      fixed_w = LEFT_SIDE_NAV_WIDTH
+    else:
+      thumb_w, _, _ = self.thumbnails.get_panel_width_range()
+      fixed_w = LEFT_SIDE_NAV_WIDTH + thumb_w
     if self._left_panel.width() != fixed_w:
       self._left_panel.setFixedWidth(fixed_w)
 

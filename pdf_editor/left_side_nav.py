@@ -4,18 +4,19 @@ from __future__ import annotations
 
 from enum import IntEnum
 
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRectF, QPointF
+from PyQt6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import QButtonGroup, QPushButton, QVBoxLayout, QWidget
 
 LEFT_SIDE_NAV_WIDTH = 44
 SIDE_PANEL_DIVIDER_COLOR = "#cccccc"
-_NAV_ICON_WIDTH = 15
+_NAV_ICON_WIDTH = 18
 _NAV_ICON_HEIGHT = 18
 _NAV_BUTTON_HEIGHT = 40
 _NAV_ACTIVE_BG = QColor("#e4e4e4")
 _NAV_BORDER = QColor(SIDE_PANEL_DIVIDER_COLOR)
 _NAV_ICON = QColor("#333333")
+_NAV_HIGHLIGHT_ACCENT = QColor("#ffd54a")
 
 
 class SideNavTab(IntEnum):
@@ -47,50 +48,85 @@ class _NavTabButton(QPushButton):
         icon_rect = self.rect()
         icon_rect.setSize(QSize(_NAV_ICON_WIDTH, _NAV_ICON_HEIGHT))
         icon_rect.moveCenter(self.rect().center())
-
-        pen = QPen(_NAV_ICON, 1.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
+        rectf = QRectF(icon_rect)
 
         if self._tab == SideNavTab.THUMBNAILS:
-            _paint_thumbnail_icon(painter, icon_rect)
+            _paint_thumbnail_icon(painter, rectf)
         else:
-            _paint_highlight_icon(painter, icon_rect)
+            _paint_highlight_icon(painter, rectf)
 
         painter.end()
 
 
-def _paint_thumbnail_icon(painter: QPainter, rect) -> None:
-    fold = max(4, rect.width() // 5)
-    body = rect.adjusted(0, 0, -1, -1)
-    painter.drawRect(body)
-    fold_left = body.right() - fold + 1
-    painter.drawLine(fold_left, body.top(), body.right(), body.top())
-    painter.drawLine(fold_left, body.top(), body.right(), body.top() + fold)
-    painter.drawLine(fold_left, body.top(), fold_left, body.top() + fold)
+def _paint_thumbnail_icon(painter: QPainter, rect: QRectF) -> None:
+    """Outline gallery: a large frame with a small image mark inside."""
+    stroke = QPen(_NAV_ICON, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(stroke)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+
+    frame = rect.adjusted(0.75, 0.75, -0.75, -0.75)
+    radius = rect.width() * 0.16
+    painter.drawRoundedRect(frame, radius, radius)
+
+    w, h = frame.width(), frame.height()
+    dot_r = w * 0.1
+    painter.drawEllipse(
+        QPointF(frame.left() + w * 0.34, frame.top() + h * 0.32),
+        dot_r,
+        dot_r,
+    )
+
+    base_y = frame.bottom() - 1.0
+    ridge = QPolygonF(
+        [
+            QPointF(frame.left() + w * 0.08, base_y),
+            QPointF(frame.left() + w * 0.4, frame.top() + h * 0.5),
+            QPointF(frame.left() + w * 0.58, frame.top() + h * 0.68),
+            QPointF(frame.left() + w * 0.78, frame.top() + h * 0.42),
+            QPointF(frame.right() - w * 0.06, base_y),
+        ]
+    )
+    painter.drawPolyline(ridge)
 
 
-def _paint_highlight_icon(painter: QPainter, rect) -> None:
+def _paint_highlight_icon(painter: QPainter, rect: QRectF) -> None:
+    """Outline highlighter marker drawn diagonally, with a colored underline."""
     x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
-    bubble = rect.adjusted(0, 0, 0, -2)
-    radius = max(3, w // 6)
-    painter.drawRoundedRect(bubble, radius, radius)
-    tail_x = x + w * 0.28
-    tail_y = bubble.bottom()
-    painter.drawLine(int(tail_x), tail_y, int(tail_x - 2), tail_y + 2)
-    painter.drawLine(int(tail_x - 2), tail_y + 2, int(tail_x + 3), tail_y)
 
-    line_pen = QPen(_NAV_ICON, 1.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
-    painter.setPen(line_pen)
-    inset = max(3, w // 6)
-    inset_x = x + inset
-    line_w = w - inset * 2
-    line_y1 = y + h * 0.38
-    line_y2 = y + h * 0.52
-    line_y3 = y + h * 0.66
-    painter.drawLine(inset_x, int(line_y1), inset_x + line_w, int(line_y1))
-    painter.drawLine(inset_x, int(line_y2), inset_x + int(line_w * 0.72), int(line_y2))
-    painter.drawLine(inset_x, int(line_y3), inset_x + int(line_w * 0.85), int(line_y3))
+    stroke = QPen(_NAV_ICON, 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+
+    painter.save()
+    painter.translate(rect.center().x(), rect.center().y() - h * 0.08)
+    painter.rotate(45)
+    pen_w = w * 0.5
+    pen_h = h * 0.88
+    barrel_h = pen_h * 0.46
+    barrel = QRectF(-pen_w / 2, -pen_h / 2, pen_w, barrel_h)
+    collar_top = barrel.bottom()
+    collar_h = pen_h * 0.12
+    nib_bottom = pen_h / 2
+
+    painter.setPen(stroke)
+    painter.drawRoundedRect(barrel, pen_w * 0.28, pen_w * 0.28)
+
+    nib = QPolygonF(
+        [
+            QPointF(-pen_w / 2, collar_top),
+            QPointF(pen_w / 2, collar_top),
+            QPointF(pen_w / 2, collar_top + collar_h),
+            QPointF(pen_w * 0.26, nib_bottom),
+            QPointF(-pen_w * 0.26, nib_bottom),
+            QPointF(-pen_w / 2, collar_top + collar_h),
+        ]
+    )
+    painter.drawPolygon(nib)
+    painter.restore()
+
+    accent_pen = QPen(_NAV_HIGHLIGHT_ACCENT, 2.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+    painter.setPen(accent_pen)
+    underline_y = y + h - 0.5
+    painter.drawLine(QPointF(x + w * 0.1, underline_y), QPointF(x + w * 0.9, underline_y))
 
 
 class LeftSideNavBar(QWidget):

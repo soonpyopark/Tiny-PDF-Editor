@@ -51,14 +51,14 @@ _EXCEL_EXPORT_BTN_STYLE = """
 
 _PANEL_SURFACE_STYLE = """
     HighlightPanel {
-        background-color: #ffffff;
+        background-color: transparent;
     }
     QScrollArea#markupPanelScroll {
-        background-color: #ffffff;
+        background-color: transparent;
         border: none;
     }
     QWidget#markupPanelBody {
-        background-color: #ffffff;
+        background-color: transparent;
     }
 """
 
