@@ -9,10 +9,9 @@ from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 
-from PyQt6.QtCore import QPoint, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import (
   QAction,
-  QCursor,
   QDesktopServices,
   QIcon,
   QKeySequence,
@@ -34,7 +33,6 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QStatusBar,
-    QStyle,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -56,7 +54,6 @@ from pdf_editor.print_utils import print_document
 from pdf_editor.page_viewer import PageViewer
 from pdf_editor.reduce_size_dialog import ReduceSizeDialog
 from pdf_editor.resources import (
-  apply_windows_window_icon,
   init_platform,
   load_app_icon,
 )
@@ -93,7 +90,6 @@ from pdf_editor.version import (
   AUTHOR_URL,
   __version__,
   titled_name,
-  version_label,
 )
 from pdf_editor.windows_file_assoc import (
   is_pdf_association_registered,
@@ -103,7 +99,6 @@ from pdf_editor.windows_file_assoc import (
   unregister_pdf_association,
 )
 
-APP_BORDER_COLOR = "#333333"
 APP_WINDOW_BACKGROUND = "#eeeeee"
 APP_BORDER_WIDTH = 1
 DEFAULT_WINDOW_WIDTH = 1024 + LEFT_SIDE_NAV_WIDTH + THUMB_PANEL_EXTRA_WIDTH
@@ -385,117 +380,6 @@ class TabSearchBar(QWidget):
   def _on_search_text_changed(self, text: str) -> None:
     if not text.strip():
       self.search_requested.emit("")
-
-
-class TitleBar(QWidget):
-  """Title row: icon, app name, and window controls."""
-
-  def __init__(self, window: QMainWindow) -> None:
-    super().__init__(window)
-    self._window = window
-    self._drag_offset: QPoint | None = None
-    self._maximized_drag = False
-    self._press_local_y = 0.0
-    self._normal_frame_geo = None
-    self.setObjectName("appTitleBar")
-    self.setFixedHeight(32)
-
-    layout = QHBoxLayout(self)
-    layout.setContentsMargins(8, 0, 0, 0)
-    layout.setSpacing(8)
-
-    icon_label = QLabel()
-    icon_label.setFixedSize(16, 16)
-    icon = window.windowIcon()
-    if not icon.isNull():
-      icon_label.setPixmap(icon.pixmap(16, 16))
-    icon_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-    layout.addWidget(icon_label)
-
-    title = QLabel(APP_NAME)
-    title.setStyleSheet("font-weight: 600;")
-    title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-    layout.addWidget(title)
-
-    version = QLabel(version_label())
-    version.setStyleSheet("color: #666666; font-size: 12px; padding-top: 1px;")
-    version.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-    layout.addWidget(version)
-
-    layout.addStretch(1)
-
-    style = window.style()
-    self.btn_close = QPushButton()
-    self.btn_close.setObjectName("titleBarCloseButton")
-    for pixmap, handler, btn in (
-      (QStyle.StandardPixmap.SP_TitleBarMinButton, window.showMinimized, QPushButton()),
-      (QStyle.StandardPixmap.SP_TitleBarMaxButton, self._toggle_maximize, QPushButton()),
-      (QStyle.StandardPixmap.SP_TitleBarCloseButton, window.close, self.btn_close),
-    ):
-      btn.setIcon(style.standardIcon(pixmap))
-      btn.setFixedSize(46, 32)
-      btn.setFlat(True)
-      btn.clicked.connect(handler)
-      layout.addWidget(btn)
-
-  def _toggle_maximize(self) -> None:
-    if self._window.isMaximized():
-      self._window.showNormal()
-    else:
-      self._normal_frame_geo = self._window.frameGeometry()
-      self._window.showMaximized()
-
-  def _restore_from_maximized_at(self, local_y: float) -> None:
-    if self._normal_frame_geo is not None:
-      width = self._normal_frame_geo.width()
-    else:
-      normal_geo = self._window.normalGeometry()
-      width = normal_geo.width() if normal_geo.isValid() else self._window.width()
-
-    cursor = QCursor.pos()
-    self._window.showNormal()
-    self._window.move(
-      cursor.x() - width // 2,
-      cursor.y() - int(local_y),
-    )
-    self._drag_offset = QCursor.pos() - self._window.frameGeometry().topLeft()
-
-  def _release_mouse_grab(self) -> None:
-    if self.mouseGrabber() is self:
-      self.releaseMouse()
-
-  def mousePressEvent(self, event) -> None:
-    if event.button() == Qt.MouseButton.LeftButton:
-      global_pos = event.globalPosition().toPoint()
-      if self._window.isMaximized():
-        self._maximized_drag = True
-        self._press_local_y = event.position().y()
-        self._drag_offset = None
-        self.grabMouse()
-      else:
-        self._maximized_drag = False
-        self._drag_offset = global_pos - self._window.frameGeometry().topLeft()
-    super().mousePressEvent(event)
-
-  def mouseMoveEvent(self, event) -> None:
-    if event.buttons() & Qt.MouseButton.LeftButton:
-      if self._window.isMaximized() and self._maximized_drag:
-        self._restore_from_maximized_at(self._press_local_y)
-        self._maximized_drag = False
-      elif self._drag_offset is not None and not self._window.isMaximized():
-        self._window.move(QCursor.pos() - self._drag_offset)
-    super().mouseMoveEvent(event)
-
-  def mouseReleaseEvent(self, event) -> None:
-    self._drag_offset = None
-    self._maximized_drag = False
-    self._release_mouse_grab()
-    super().mouseReleaseEvent(event)
-
-  def mouseDoubleClickEvent(self, event) -> None:
-    if event.button() == Qt.MouseButton.LeftButton:
-      self._toggle_maximize()
-    super().mouseDoubleClickEvent(event)
 
 
 class DocumentTab(QWidget):
@@ -1212,10 +1096,6 @@ class MainWindow(QMainWindow):
   def __init__(self, launch_paths: list[str] | None = None) -> None:
     super().__init__()
     self.setObjectName("mainWindow")
-    self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-    self.setWindowFlags(
-      Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
-    )
     self.setWindowTitle(titled_name())
     self.setMinimumSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
     self.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
@@ -1236,22 +1116,14 @@ class MainWindow(QMainWindow):
     self._search_bar.search_prev.connect(self._search_prev)
     self.tabs.setCornerWidget(self._search_bar, Qt.Corner.TopRightCorner)
 
-    self._content_frame = QWidget()
-    content_layout = QVBoxLayout(self._content_frame)
-    content_layout.setContentsMargins(
-        APP_BORDER_WIDTH, 0, APP_BORDER_WIDTH, 0
-    )
-    content_layout.setSpacing(0)
-    content_layout.addWidget(self.tabs)
-    self.setCentralWidget(self._content_frame)
+    self.setCentralWidget(self.tabs)
 
     self._search_hits: list[SearchHit] = []
     self._search_index = -1
     self._search_query = ""
-    self._title_bar: TitleBar | None = None
 
     self._build_menu()
-    self._setup_title_bar()
+    self._apply_window_styles()
     self.setStatusBar(QStatusBar())
     self._setup_status_credit()
     self.statusBar().setSizeGripEnabled(True)
@@ -1266,11 +1138,9 @@ class MainWindow(QMainWindow):
       QTimer.singleShot(0, self._open_pending_launch_paths)
     else:
       self._new_tab()
-    QTimer.singleShot(0, self._update_search_bar_inset)
 
   def resizeEvent(self, event) -> None:
     super().resizeEvent(event)
-    self._update_search_bar_inset()
     tab = self._current_tab()
     if tab is not None:
       tab._apply_panel_width_limits()
@@ -1286,20 +1156,20 @@ class MainWindow(QMainWindow):
           geo.y() + max(0, (geo.height() - self.height()) // 2),
         )
       self._centered_on_show = True
-    self._update_search_bar_inset()
     tab = self._current_tab()
     if tab is not None:
       QTimer.singleShot(0, tab._apply_panel_width_limits)
-    QTimer.singleShot(0, lambda: apply_windows_window_icon(self))
+    self._update_window_title()
 
-  def _update_search_bar_inset(self) -> None:
-    if self._title_bar is None:
+  def _update_window_title(self) -> None:
+    tab = self._current_tab()
+    if tab is None:
+      self.setWindowTitle(titled_name())
       return
-    tabs_right = self.tabs.mapToGlobal(QPoint(self.tabs.width(), 0)).x()
-    close_center = self._title_bar.btn_close.mapToGlobal(
-      QPoint(self._title_bar.btn_close.width() // 2, 0)
-    ).x()
-    self._search_bar.set_right_inset(int(tabs_right - close_center))
+    name = tab.document.display_name
+    if tab.document.modified:
+      name = f"{name}*"
+    self.setWindowTitle(f"{name} - {titled_name()}")
 
   def _current_tab(self) -> DocumentTab | None:
     widget = self.tabs.currentWidget()
@@ -1331,6 +1201,7 @@ class MainWindow(QMainWindow):
     can_add = bool(tab and tab.document.page_count > 0)
     if hasattr(self, "_act_add"):
       self._act_add.setEnabled(can_add)
+    self._update_window_title()
 
   def _copy_current_tab(self) -> None:
     tab = self._current_tab()
@@ -1506,36 +1377,12 @@ class MainWindow(QMainWindow):
     credit.setCursor(Qt.CursorShape.PointingHandCursor)
     self.statusBar().addPermanentWidget(credit)
 
-  def _setup_title_bar(self) -> None:
-    menu_bar = self.menuBar()
-    menu_bar.setNativeMenuBar(False)
-
-    chrome = QWidget()
-    chrome_layout = QVBoxLayout(chrome)
-    chrome_layout.setContentsMargins(
-        APP_BORDER_WIDTH, APP_BORDER_WIDTH, APP_BORDER_WIDTH, 0
-    )
-    chrome_layout.setSpacing(0)
-    self._title_bar = TitleBar(self)
-    chrome_layout.addWidget(self._title_bar)
-    chrome_layout.addWidget(menu_bar)
-    self.setMenuWidget(chrome)
-
+  def _apply_window_styles(self) -> None:
+    self.menuBar().setNativeMenuBar(False)
     self.setStyleSheet(
       f"""
       #mainWindow {{
         background-color: {APP_WINDOW_BACKGROUND};
-      }}
-      #appTitleBar {{
-        background-color: #f3f3f3;
-        border-bottom: 1px solid #d6d6d6;
-      }}
-      #mainWindow QMenuBar {{
-        background-color: #f3f3f3;
-      }}
-      #mainWindow QStatusBar {{
-        background-color: #f0f0f0;
-        margin: 0px {APP_BORDER_WIDTH}px {APP_BORDER_WIDTH}px {APP_BORDER_WIDTH}px;
       }}
       #statusCredit {{
         color: #666666;
@@ -1549,22 +1396,6 @@ class MainWindow(QMainWindow):
       #statusCredit a:hover {{
         color: #1a73e8;
         text-decoration: underline;
-      }}
-      #appTitleBar QPushButton {{
-        border: none;
-        border-radius: 0;
-      }}
-      #appTitleBar QPushButton:hover {{
-        background-color: #e8e8e8;
-      }}
-      #appTitleBar QPushButton:pressed {{
-        background-color: #d0d0d0;
-      }}
-      #appTitleBar QPushButton#titleBarCloseButton:hover {{
-        background-color: #eea0a0;
-      }}
-      #appTitleBar QPushButton#titleBarCloseButton:pressed {{
-        background-color: #e07070;
       }}
       #tabSearchBar QLineEdit {{
         border: 1px solid #c8c8c8;
@@ -1588,6 +1419,7 @@ class MainWindow(QMainWindow):
 
   def _on_tab_changed(self, _index: int) -> None:
     self._update_edit_actions()
+    self._update_window_title()
     if self._search_query:
       self._run_search(self._search_query)
     else:
