@@ -1201,6 +1201,10 @@ class MainWindow(QMainWindow):
     can_add = bool(tab and tab.document.page_count > 0)
     if hasattr(self, "_act_add"):
       self._act_add.setEnabled(can_add)
+    if hasattr(self, "_act_rotate_all_cw"):
+      self._act_rotate_all_cw.setEnabled(can_add)
+    if hasattr(self, "_act_rotate_all_ccw"):
+      self._act_rotate_all_ccw.setEnabled(can_add)
     self._update_window_title()
 
   def _copy_current_tab(self) -> None:
@@ -1320,16 +1324,6 @@ class MainWindow(QMainWindow):
     edit_menu.addAction(self._act_paste)
 
     edit_menu.addSeparator()
-
-    self._act_set_password = QAction("비밀번호 설정...", self)
-    self._act_set_password.triggered.connect(self._set_document_password)
-    edit_menu.addAction(self._act_set_password)
-
-    self._act_remove_password = QAction("비밀번호 제거", self)
-    self._act_remove_password.triggered.connect(self._clear_document_password)
-    edit_menu.addAction(self._act_remove_password)
-
-    edit_menu.addSeparator()
     act_reduce = QWidgetAction(self)
     reduce_btn = QPushButton("용량 줄이기...")
     reduce_btn.setFlat(True)
@@ -1348,6 +1342,24 @@ class MainWindow(QMainWindow):
     act_delete.setShortcut(QKeySequence.StandardKey.Delete)
     act_delete.triggered.connect(self._delete_selected)
     edit_menu.addAction(act_delete)
+
+    self._act_rotate_all_cw = QAction("모든 페이지 시계방향 회전", self)
+    self._act_rotate_all_cw.triggered.connect(self._rotate_all_pages_cw)
+    edit_menu.addAction(self._act_rotate_all_cw)
+
+    self._act_rotate_all_ccw = QAction("모든 페이지 반시계방향 회전", self)
+    self._act_rotate_all_ccw.triggered.connect(self._rotate_all_pages_ccw)
+    edit_menu.addAction(self._act_rotate_all_ccw)
+
+    security_menu = self.menuBar().addMenu("보안(&S)")
+
+    self._act_set_password = QAction("비밀번호 설정...", self)
+    self._act_set_password.triggered.connect(self._set_document_password)
+    security_menu.addAction(self._act_set_password)
+
+    self._act_remove_password = QAction("비밀번호 제거", self)
+    self._act_remove_password.triggered.connect(self._clear_document_password)
+    security_menu.addAction(self._act_remove_password)
 
     view_menu = self.menuBar().addMenu("보기(&V)")
     act_fit_width = QAction("너비 맞추기", self)
@@ -1879,6 +1891,18 @@ class MainWindow(QMainWindow):
     if tab.viewer.try_remove_selected_highlight():
       return
     tab._on_delete(tab.thumbnails.selected_indices())
+
+  def _rotate_all_pages(self, degrees: int) -> None:
+    tab = self._current_tab()
+    if not tab or tab.document.page_count == 0:
+      return
+    tab._on_rotate(list(range(tab.document.page_count)), degrees)
+
+  def _rotate_all_pages_cw(self) -> None:
+    self._rotate_all_pages(90)
+
+  def _rotate_all_pages_ccw(self) -> None:
+    self._rotate_all_pages(-90)
 
   def _close_tab(self, index: int) -> None:
     widget = self.tabs.widget(index)
