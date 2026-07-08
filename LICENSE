@@ -31,11 +31,13 @@ Tiny PDF Editor 배포판(Windows exe·MSI 및 `_internal` 폴더)에는 아래 
 블로그·웹·USB 등으로 재배포**할 때는 각 라이브러리 라이선스도 준수해야
 합니다.
 
+프로젝트 홈페이지: https://note4all.tistory.com
+
 1. PyMuPDF (pymupdf)
    - License: GNU Affero General Public License v3.0 (AGPL-3.0)
      또는 Artifex Commercial License
    - Website: https://pymupdf.readthedocs.io/
-   - PDF 렌더링·편집·압축·텍스트 추출·암호 처리에 사용됩니다.
+   - PDF 렌더링·편집·압축·텍스트 추출·암호 처리·텍스트 덮어쓰기에 사용됩니다.
    - AGPL-3.0 조건 하에서 exe·MSI를 배포하는 경우, 해당 조건(소스 제공 의무 등)을
      확인하세요. 상업적 재배포 시 Artifex 상용 라이선스가 필요할 수 있습니다.
 
@@ -51,7 +53,7 @@ Tiny PDF Editor 배포판(Windows exe·MSI 및 `_internal` 폴더)에는 아래 
 3. openpyxl
    - License: MIT License
    - Website: https://openpyxl.readthedocs.io/
-   - 형광펜·밑줄 목록을 Excel(`.xlsx`)로 내보낼 때 사용됩니다.
+   - 형광펜·밑줄 목록을 Excel(`.xlsx`)로보낼 때 사용됩니다.
 
 4. Python 및 PyInstaller 번들 구성 요소
    - Python 인터프리터 및 표준 라이브러리: Python Software Foundation License (PSF)
@@ -64,6 +66,14 @@ Tiny PDF Editor 배포판(Windows exe·MSI 및 `_internal` 폴더)에는 아래 
    - Website: https://numpy.org/ , https://python-pillow.org/
 
 ================================================================================
+런타임 의존성 (배포판에 포함되지 않음)
+================================================================================
+
+- Windows 시스템 글꼴(예: 맑은 고딕, 굴림, 바탕): 한글 등 CJK 텍스트 덮어쓰기
+  편집 시 Windows에 설치된 글꼴 파일을 참조합니다. 해당 글꼴의 사용 조건은
+  Microsoft 및 글꼴 제작자의 라이선스를 따릅니다.
+
+================================================================================
 배포 시 권장 사항
 ================================================================================
 
@@ -71,6 +81,8 @@ Tiny PDF Editor 배포판(Windows exe·MSI 및 `_internal` 폴더)에는 아래 
   (`npm run build:dist:exe` 빌드 시 `dist/` 폴더에 자동 복사됩니다.)
 - MSI 설치판을 배포할 때도 블로그·다운로드 페이지에 본 LICENSE의 서드파티 고지를
   명시하는 것을 권장합니다.
+- MSI 설치 과정의 사용권 계약(`msi/License.rtf`)에는
+  https://note4all.tistory.com 이 표시됩니다.
 - 블로그 등에서 다운로드 링크를 제공할 때, 위 서드파티 라이선스 고지를
   게시물 또는 다운로드 페이지에 명시하는 것을 권장합니다.
 - 본 저장소의 MIT 라이선스는 Tiny PDF Editor **소스 코드**에 적용됩니다.

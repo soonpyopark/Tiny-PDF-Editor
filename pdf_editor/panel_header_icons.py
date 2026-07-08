@@ -56,6 +56,45 @@ def expand_all_icon() -> QIcon:
     return QIcon(pixmap)
 
 
+def chevron_icon(direction: str, *, color: QColor | None = None) -> QIcon:
+    """A single chevron pointing 'left' or 'right', centered in the pixmap."""
+    pixmap = _blank_pixmap()
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = _line_pen(1.6)
+    if color is not None:
+        pen.setColor(color)
+    painter.setPen(pen)
+    center = _ICON_PX / 2
+    reach = 3.5
+    if direction == "left":
+        tip_x = center - reach / 2
+        base_x = center + reach / 2
+    else:
+        tip_x = center + reach / 2
+        base_x = center - reach / 2
+    painter.drawLine(round(base_x), round(center - reach), round(tip_x), round(center))
+    painter.drawLine(round(base_x), round(center + reach), round(tip_x), round(center))
+    painter.end()
+    return QIcon(pixmap)
+
+
+def close_icon(*, color: QColor | None = None, size: int = _ICON_PX) -> QIcon:
+    """An 'X' mark centered in the pixmap."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = _line_pen(1.8)
+    pen.setColor(color if color is not None else _ICON_COLOR)
+    painter.setPen(pen)
+    inset = size * 0.28
+    painter.drawLine(round(inset), round(inset), round(size - inset), round(size - inset))
+    painter.drawLine(round(size - inset), round(inset), round(inset), round(size - inset))
+    painter.end()
+    return QIcon(pixmap)
+
+
 def excel_export_icon() -> QIcon:
     """Spreadsheet grid with a green accent cell."""
     pixmap = _blank_pixmap()

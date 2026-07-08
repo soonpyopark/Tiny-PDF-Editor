@@ -9,9 +9,21 @@ from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import (
+  QEasingCurve,
+  QPoint,
+  QPropertyAnimation,
+  QSize,
+  Qt,
+  QTimer,
+  QUrl,
+  QVariantAnimation,
+  pyqtSignal,
+)
 from PyQt6.QtGui import (
   QAction,
+  QColor,
+  QCursor,
   QDesktopServices,
   QIcon,
   QKeySequence,
@@ -75,6 +87,7 @@ from pdf_editor.side_panel_header import (
   SidePanelHeaderBar,
   make_panel_divider,
 )
+from pdf_editor.panel_header_icons import chevron_icon, close_icon
 from pdf_editor.thumbnail_panel import (
   DEFAULT_THUMB_SCALE_LEVEL,
   THUMB_PANEL_EXTRA_WIDTH,
@@ -118,6 +131,38 @@ _REDUCE_MENU_BTN_STYLE = """
     }
     QPushButton:hover {
         background-color: #e8f0fe;
+    }
+"""
+
+_PANEL_TOGGLE_TAB_STYLE = """
+    QPushButton#panelToggleTab {
+        background-color: #e4e4e4;
+        border: 1px solid #cccccc;
+        border-left: none;
+        border-top-right-radius: 7px;
+        border-bottom-right-radius: 7px;
+        color: #555555;
+        font-size: 13px;
+        font-weight: bold;
+        padding: 0px;
+    }
+    QPushButton#panelToggleTab:hover {
+        background-color: #d3d3d3;
+        color: #222222;
+    }
+"""
+
+_FULLSCREEN_EXIT_BTN_STYLE = """
+    QPushButton#fullscreenExitBtn {
+        background-color: rgba(70, 70, 70, 0.82);
+        color: #ffffff;
+        border: none;
+        border-radius: 17px;
+        font-size: 16px;
+        font-weight: bold;
+    }
+    QPushButton#fullscreenExitBtn:hover {
+        background-color: rgba(20, 20, 20, 0.92);
     }
 """
 
@@ -474,18 +519,94 @@ class DocumentTab(QWidget):
 
     self._left_panel = left
     self._panel_collapsed = False
+    self._fullscreen_active = False
     self._active_nav_index = int(SideNavTab.THUMBNAILS)
+
+    self._panel_anim = QVariantAnimation(self)
+    self._panel_anim.setDuration(200)
+    self._panel_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+    self._panel_anim.valueChanged.connect(self._on_panel_anim_value)
+    self._panel_anim.finished.connect(self._on_panel_anim_finished)
+    self._panel_anim_hide_content = False
+    self._panel_anim_hide_panel = False
     self._apply_panel_width_limits(set_default_size=True)
     if self.splitter.count() > 1:
       self.splitter.handle(0).setEnabled(False)
     layout.addWidget(self.splitter)
 
+    self._build_panel_toggle_button()
+
     self._connect_signals()
+
+  def _build_panel_toggle_button(self) -> None:
+    self.panel_toggle_btn = QPushButton(self.viewer)
+    self.panel_toggle_btn.setObjectName("panelToggleTab")
+    self.panel_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    self.panel_toggle_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    self.panel_toggle_btn.setFixedSize(14, 48)
+    self.panel_toggle_btn.setIconSize(QSize(12, 12))
+    self.panel_toggle_btn.setStyleSheet(_PANEL_TOGGLE_TAB_STYLE)
+    self.panel_toggle_btn.clicked.connect(self._toggle_panel_collapsed)
+    self.panel_toggle_btn.move(0, 20)
+    self._update_panel_toggle_icon()
+    self.panel_toggle_btn.show()
+    self.panel_toggle_btn.raise_()
+
+  def _toggle_panel_collapsed(self) -> None:
+    if getattr(self, "_fullscreen_active", False):
+      self._set_fullscreen_panel_visible(not self._left_panel.isVisible())
+      return
+    self._set_panel_collapsed(not self._panel_collapsed)
+
+  def set_fullscreen_active(self, active: bool) -> None:
+    """Enter/leave fullscreen: hide the left panel but keep the toggle tab."""
+    self._panel_anim.stop()
+    self._fullscreen_active = active
+    if active:
+      self._pre_fullscreen_collapsed = self._panel_collapsed
+      self._left_panel.setVisible(False)
+      self._panel_collapsed = True
+    else:
+      collapsed = getattr(self, "_pre_fullscreen_collapsed", False)
+      self._left_panel.setVisible(True)
+      self._panel_collapsed = collapsed
+      self.content_stack.setVisible(not collapsed)
+      self._apply_panel_width_limits()
+    self._update_panel_toggle_icon()
+    self.panel_toggle_btn.raise_()
+
+  def _set_fullscreen_panel_visible(self, visible: bool) -> None:
+    """Slide the whole left panel in/out while in fullscreen via the toggle tab."""
+    self._panel_collapsed = not visible
+    self._update_panel_toggle_icon()
+    if visible:
+      self._left_panel.setFixedWidth(0)
+      self._left_panel.setVisible(True)
+      self.content_stack.setVisible(True)
+      self._start_panel_anim(self._panel_target_width(False))
+      if self.side_nav.current_tab() == SideNavTab.THUMBNAILS:
+        QTimer.singleShot(0, self.thumbnails._restore_after_tab_show)
+      else:
+        self._restore_highlights_panel_viewport()
+    else:
+      self._start_panel_anim(0, hide_content_after=True, hide_panel_after=True)
+    self.panel_toggle_btn.raise_()
+
+  def _update_panel_toggle_icon(self) -> None:
+    if not hasattr(self, "panel_toggle_btn"):
+      return
+    direction = "right" if self._panel_collapsed else "left"
+    self.panel_toggle_btn.setIcon(chevron_icon(direction))
+    self.panel_toggle_btn.setToolTip(
+      "패널 펼치기" if self._panel_collapsed else "패널 접기"
+    )
+    self.panel_toggle_btn.raise_()
 
   def _connect_signals(self) -> None:
     self.thumbnails.page_selected.connect(self._on_thumb_selected)
     self.viewer.page_changed.connect(self._on_viewer_page_changed)
     self.viewer.page_canvas.text_highlight_added.connect(self._on_text_highlight_added)
+    self.viewer.page_canvas.text_edited.connect(self._on_text_edited)
     self.highlight_panel.entry_selected.connect(self._on_highlight_panel_entry_selected)
     self.highlight_panel.markup_changed.connect(self._on_text_highlight_added)
     self.viewer.page_canvas.markup_clicked.connect(self._on_markup_clicked)
@@ -541,14 +662,62 @@ class DocumentTab(QWidget):
     elif index == int(SideNavTab.HIGHLIGHTS):
       self._restore_highlights_panel_viewport()
 
+  def _panel_target_width(self, collapsed: bool) -> int:
+    if collapsed:
+      return LEFT_SIDE_NAV_WIDTH
+    thumb_w, _, _ = self.thumbnails.get_panel_width_range()
+    return LEFT_SIDE_NAV_WIDTH + thumb_w
+
+  def _start_panel_anim(
+    self,
+    target_w: int,
+    *,
+    hide_content_after: bool = False,
+    hide_panel_after: bool = False,
+  ) -> None:
+    self._panel_anim_hide_content = hide_content_after
+    self._panel_anim_hide_panel = hide_panel_after
+    self._panel_anim.stop()
+    self._panel_anim.setStartValue(int(self._left_panel.width()))
+    self._panel_anim.setEndValue(int(target_w))
+    self._panel_anim.start()
+
+  def _on_panel_anim_value(self, value) -> None:
+    w = int(value)
+    self._left_panel.setFixedWidth(w)
+    total = self.splitter.width()
+    if total <= 0:
+      total = self.width()
+    if total <= 0:
+      total = DEFAULT_WINDOW_WIDTH
+    self.splitter.blockSignals(True)
+    self.splitter.setSizes([w, max(200, total - w)])
+    self.splitter.blockSignals(False)
+    self.panel_toggle_btn.raise_()
+
+  def _on_panel_anim_finished(self) -> None:
+    if self._panel_anim_hide_content:
+      self.content_stack.setVisible(False)
+    if self._panel_anim_hide_panel:
+      self._left_panel.setVisible(False)
+    self._panel_anim_hide_content = False
+    self._panel_anim_hide_panel = False
+    self._apply_panel_width_limits()
+
   def _set_panel_collapsed(self, collapsed: bool) -> None:
     if self._panel_collapsed == collapsed:
       return
     self._panel_collapsed = collapsed
-    self.content_stack.setVisible(not collapsed)
-    self._apply_panel_width_limits()
-    if not collapsed and self.side_nav.current_tab() == SideNavTab.THUMBNAILS:
-      QTimer.singleShot(0, self.thumbnails._restore_after_tab_show)
+    self._update_panel_toggle_icon()
+    if not collapsed:
+      self.content_stack.setVisible(True)
+      self._start_panel_anim(self._panel_target_width(False))
+      if self.side_nav.current_tab() == SideNavTab.THUMBNAILS:
+        QTimer.singleShot(0, self.thumbnails._restore_after_tab_show)
+    else:
+      self._start_panel_anim(
+        self._panel_target_width(True), hide_content_after=True
+      )
 
   def _switch_to_highlights_panel(self) -> None:
     if self.side_nav.current_tab() == SideNavTab.HIGHLIGHTS and not self._panel_collapsed:
@@ -713,28 +882,33 @@ class DocumentTab(QWidget):
     self.btn_thumb_zoom_in.setToolTip(f"썸네일 확대 ({level}/{max_level})")
 
   def _setup_page_navigation_shortcuts(self) -> None:
-    prev_keys = (
-      Qt.Key.Key_Left,
-      Qt.Key.Key_Up,
-      Qt.Key.Key_PageUp,
+    up_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Up), self)
+    up_shortcut.activated.connect(
+      lambda: self.viewer.scroll_by_key(up=True, page=False)
     )
-    next_keys = (
-      Qt.Key.Key_Right,
-      Qt.Key.Key_Down,
-      Qt.Key.Key_PageDown,
+    page_up_shortcut = QShortcut(QKeySequence(Qt.Key.Key_PageUp), self)
+    page_up_shortcut.activated.connect(
+      lambda: self.viewer.scroll_by_key(up=True, page=True)
+    )
+    down_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Down), self)
+    down_shortcut.activated.connect(
+      lambda: self.viewer.scroll_by_key(up=False, page=False)
+    )
+    page_down_shortcut = QShortcut(QKeySequence(Qt.Key.Key_PageDown), self)
+    page_down_shortcut.activated.connect(
+      lambda: self.viewer.scroll_by_key(up=False, page=True)
     )
 
-    for key in prev_keys:
-      shortcut = QShortcut(QKeySequence(key), self)
-      shortcut.activated.connect(
-        lambda: self.viewer.set_current_index(self.viewer.current_index() - 1)
+    left_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Left), self)
+    left_shortcut.activated.connect(
+      lambda: self.viewer.set_current_index(
+        self.viewer.current_index() - 1, scroll_to_bottom=True
       )
-
-    for key in next_keys:
-      shortcut = QShortcut(QKeySequence(key), self)
-      shortcut.activated.connect(
-        lambda: self.viewer.set_current_index(self.viewer.current_index() + 1)
-      )
+    )
+    right_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Right), self)
+    right_shortcut.activated.connect(
+      lambda: self.viewer.set_current_index(self.viewer.current_index() + 1)
+    )
 
     first_page = QShortcut(QKeySequence("Ctrl+Shift+Left"), self)
     first_page.activated.connect(lambda: self.viewer.set_current_index(0))
@@ -745,6 +919,9 @@ class DocumentTab(QWidget):
     )
 
   def _apply_panel_width_limits(self, set_default_size: bool = False) -> None:
+    anim = getattr(self, "_panel_anim", None)
+    if anim is not None and anim.state() == QVariantAnimation.State.Running:
+      return
     if getattr(self, "_panel_collapsed", False):
       fixed_w = LEFT_SIDE_NAV_WIDTH
     else:
@@ -779,6 +956,12 @@ class DocumentTab(QWidget):
     self.thumbnails.blockSignals(True)
     self.thumbnails.set_current_index(index)
     self.thumbnails.blockSignals(False)
+
+  def _on_text_edited(self) -> None:
+    index = self.viewer.current_index()
+    self.thumbnails.refresh(index)
+    self.viewer.refresh()
+    self._notify_history_changed()
 
   def _on_text_highlight_added(self) -> None:
     before_count = self._markup_entry_count
@@ -1155,6 +1338,8 @@ class MainWindow(QMainWindow):
     QShortcut(QKeySequence("F3"), self, self._search_next)
     QShortcut(QKeySequence("Shift+F3"), self, self._search_prev)
 
+    self._setup_fullscreen_controls()
+
     self._pending_launch_paths = list(launch_paths or [])
     self._optimize_running = False
     if self._pending_launch_paths:
@@ -1395,6 +1580,14 @@ class MainWindow(QMainWindow):
     act_fit_page.triggered.connect(lambda: self._current_tab() and self._current_tab().viewer.fit_page())
     view_menu.addAction(act_fit_page)
 
+    view_menu.addSeparator()
+    self._act_fullscreen = QAction("전체 화면", self)
+    self._act_fullscreen.setCheckable(True)
+    self._act_fullscreen.setShortcut(QKeySequence("F11"))
+    self._act_fullscreen.triggered.connect(self._toggle_fullscreen)
+    view_menu.addAction(self._act_fullscreen)
+    self.addAction(self._act_fullscreen)
+
     help_menu = self.menuBar().addMenu("도움말(&H)")
     act_about = QAction("About", self)
     act_about.triggered.connect(toggle_about_splash)
@@ -1451,6 +1644,122 @@ class MainWindow(QMainWindow):
 
   def _focus_search(self) -> None:
     self._search_bar.focus_search()
+
+  def _setup_fullscreen_controls(self) -> None:
+    self._fullscreen_escape = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+    self._fullscreen_escape.activated.connect(self._exit_fullscreen)
+    self._fullscreen_escape.setEnabled(False)
+
+    self._fullscreen_exit_btn = QPushButton(self)
+    self._fullscreen_exit_btn.setObjectName("fullscreenExitBtn")
+    self._fullscreen_exit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    self._fullscreen_exit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    self._fullscreen_exit_btn.setFixedSize(34, 34)
+    self._fullscreen_exit_btn.setIcon(close_icon(color=QColor("#ffffff"), size=16))
+    self._fullscreen_exit_btn.setIconSize(QSize(16, 16))
+    self._fullscreen_exit_btn.setToolTip("전체 화면 해제 (ESC)")
+    self._fullscreen_exit_btn.setStyleSheet(_FULLSCREEN_EXIT_BTN_STYLE)
+    self._fullscreen_exit_btn.clicked.connect(self._exit_fullscreen)
+    self._fullscreen_exit_btn.hide()
+
+    self._fullscreen_exit_btn_visible = False
+    self._fullscreen_exit_anim = QPropertyAnimation(
+      self._fullscreen_exit_btn, b"pos", self
+    )
+    self._fullscreen_exit_anim.setDuration(220)
+    self._fullscreen_exit_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    self._fullscreen_cursor_timer = QTimer(self)
+    self._fullscreen_cursor_timer.setInterval(120)
+    self._fullscreen_cursor_timer.timeout.connect(self._check_fullscreen_cursor)
+
+  def _fullscreen_exit_btn_target_y(self) -> int:
+    return 28
+
+  def _fullscreen_exit_btn_x(self) -> int:
+    return (self.width() - self._fullscreen_exit_btn.width()) // 2
+
+  def _position_fullscreen_exit_btn(self) -> None:
+    btn = self._fullscreen_exit_btn
+    btn.move(self._fullscreen_exit_btn_x(), self._fullscreen_exit_btn_target_y())
+
+  def _slide_in_fullscreen_exit_btn(self) -> None:
+    btn = self._fullscreen_exit_btn
+    x = self._fullscreen_exit_btn_x()
+    target_y = self._fullscreen_exit_btn_target_y()
+    start_y = -btn.height()
+    self._fullscreen_exit_anim.stop()
+    if not btn.isVisible():
+      btn.move(x, start_y)
+      btn.show()
+    self._fullscreen_exit_anim.setStartValue(QPoint(x, btn.y()))
+    self._fullscreen_exit_anim.setEndValue(QPoint(x, target_y))
+    self._fullscreen_exit_anim.start()
+    btn.raise_()
+
+  def _check_fullscreen_cursor(self) -> None:
+    if not self.isFullScreen():
+      return
+    pos = self.mapFromGlobal(QCursor.pos())
+    reveal_band = 60
+    within_band = 0 <= pos.y() <= reveal_band and 0 <= pos.x() <= self.width()
+    if within_band:
+      if not self._fullscreen_exit_btn_visible:
+        self._fullscreen_exit_btn_visible = True
+        self._slide_in_fullscreen_exit_btn()
+    elif self._fullscreen_exit_btn_visible:
+      self._fullscreen_exit_btn_visible = False
+      self._fullscreen_exit_anim.stop()
+      self._fullscreen_exit_btn.hide()
+
+  def _toggle_fullscreen(self) -> None:
+    if self.isFullScreen():
+      self._exit_fullscreen()
+    else:
+      self._enter_fullscreen()
+
+  def _set_tabs_fullscreen(self, active: bool) -> None:
+    for index in range(self.tabs.count()):
+      widget = self.tabs.widget(index)
+      if isinstance(widget, DocumentTab):
+        widget.set_fullscreen_active(active)
+
+  def _set_viewers_status_centered(self, centered: bool) -> None:
+    for index in range(self.tabs.count()):
+      widget = self.tabs.widget(index)
+      if isinstance(widget, DocumentTab):
+        widget.viewer.set_status_bar_centered(centered)
+
+  def _enter_fullscreen(self) -> None:
+    self.menuBar().hide()
+    self.statusBar().hide()
+    self.tabs.tabBar().hide()
+    self._search_bar.hide()
+    self._set_tabs_fullscreen(True)
+    self._set_viewers_status_centered(True)
+    if hasattr(self, "_act_fullscreen"):
+      self._act_fullscreen.setChecked(True)
+    self._fullscreen_escape.setEnabled(True)
+    self.showFullScreen()
+    self._fullscreen_cursor_timer.start()
+
+  def _exit_fullscreen(self) -> None:
+    if not self.isFullScreen():
+      return
+    self._fullscreen_cursor_timer.stop()
+    self._fullscreen_exit_anim.stop()
+    self._fullscreen_exit_btn_visible = False
+    self._fullscreen_exit_btn.hide()
+    self._fullscreen_escape.setEnabled(False)
+    self.showNormal()
+    self.menuBar().show()
+    self.statusBar().show()
+    self.tabs.tabBar().show()
+    self._search_bar.show()
+    self._set_tabs_fullscreen(False)
+    self._set_viewers_status_centered(False)
+    if hasattr(self, "_act_fullscreen"):
+      self._act_fullscreen.setChecked(False)
 
   def _on_tab_changed(self, _index: int) -> None:
     self._update_edit_actions()

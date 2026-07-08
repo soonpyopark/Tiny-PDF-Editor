@@ -113,7 +113,7 @@ function buildMsi() {
   fs.rmSync(outputPath, { force: true });
 
   run(
-    `${wixCmd} build "${PRODUCT_WXS}" -d ProductVersion=${productVersion} -d ProductCode=${productCode} -ext WixToolset.UI.wixext -o "${outputPath}"`,
+    `${wixCmd} build "${PRODUCT_WXS}" -d ProductVersion=${productVersion} -d ProductCode=${productCode} -bindpath "${MSI_DIR}" -ext WixToolset.UI.wixext -o "${outputPath}"`,
   );
 
   const sizeMb = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);

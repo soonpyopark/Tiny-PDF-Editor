@@ -1086,6 +1086,171 @@ class PdfDocument:
         return page.get_text("text", clip=rect).strip()
 
     @staticmethod
+    def _srgb_int_to_rgb(color: int) -> tuple[float, float, float]:
+        return (
+            ((color >> 16) & 0xFF) / 255.0,
+            ((color >> 8) & 0xFF) / 255.0,
+            (color & 0xFF) / 255.0,
+        )
+
+    @staticmethod
+    def _needs_cjk_font(text: str) -> bool:
+        return any(ord(ch) > 0x2000 for ch in text)
+
+    @staticmethod
+    def _resolve_edit_font(text: str) -> tuple[str, str | None]:
+        """Return (fontname, fontfile). Uses a Korean-capable font for CJK text."""
+        if PdfDocument._needs_cjk_font(text):
+            for name, path in (
+                ("malgun", r"C:\\Windows\\Fonts\\malgun.ttf"),
+                ("gulim", r"C:\\Windows\\Fonts\\gulim.ttc"),
+                ("batang", r"C:\\Windows\\Fonts\\batang.ttc"),
+            ):
+                if os.path.exists(path):
+                    return name, path
+            return "korea", None
+        return "helv", None
+
+    def find_text_line_at(
+        self, page_index: int, x: float, y: float
+    ) -> dict | None:
+        """Return the text line under page-space point (x, y), or None.
+
+        The result carries everything needed to overlay an inline editor and to
+        overwrite the line: bbox, text, representative font size/color, and the
+        text baseline origin.
+        """
+        if not (0 <= page_index < len(self._doc)):
+            return None
+        page = self._doc[page_index]
+        point = fitz.Point(x, y)
+        try:
+            data = page.get_text("dict")
+        except Exception:
+            return None
+        for block in data.get("blocks", []):
+            if block.get("type", 0) != 0:
+                continue
+            for line in block.get("lines", []):
+                spans = [s for s in line.get("spans", []) if s.get("text")]
+                if not spans:
+                    continue
+                bbox = fitz.Rect(line["bbox"])
+                if bbox.is_empty or bbox.is_infinite:
+                    continue
+                if not bbox.contains(point):
+                    continue
+                text = "".join(span["text"] for span in spans)
+                if not text.strip():
+                    continue
+                first = spans[0]
+                origin = first.get("origin", (bbox.x0, bbox.y1))
+                return {
+                    "rect": (bbox.x0, bbox.y0, bbox.x1, bbox.y1),
+                    "text": text,
+                    "size": float(first.get("size", bbox.height)),
+                    "color": int(first.get("color", 0)),
+                    "origin": (float(origin[0]), float(origin[1])),
+                }
+        return None
+
+    def _sample_background_color(
+        self, page, rect: fitz.Rect
+    ) -> tuple[float, float, float]:
+        """Sample a pixel just outside the text line to reuse as redaction fill."""
+        candidates = [
+            (rect.x0, rect.y0 - 1.5),
+            (rect.x1 + 1.5, (rect.y0 + rect.y1) / 2),
+            (rect.x0 - 1.5, (rect.y0 + rect.y1) / 2),
+        ]
+        page_rect = page.rect
+        for cx, cy in candidates:
+            if not (page_rect.x0 <= cx <= page_rect.x1 and page_rect.y0 <= cy <= page_rect.y1):
+                continue
+            clip = fitz.Rect(cx, cy, cx + 1, cy + 1)
+            try:
+                pix = page.get_pixmap(clip=clip, alpha=False)
+            except Exception:
+                continue
+            if pix.width and pix.height:
+                px = pix.pixel(0, 0)
+                return (px[0] / 255.0, px[1] / 255.0, px[2] / 255.0)
+        return (1.0, 1.0, 1.0)
+
+    def overwrite_text_line(
+        self,
+        page_index: int,
+        rect: tuple[float, float, float, float],
+        origin: tuple[float, float],
+        new_text: str,
+        size: float,
+        color: int,
+        *,
+        record_undo: bool = True,
+    ) -> bool:
+        """Replace a single text line: redact the original, insert *new_text*."""
+        if not (0 <= page_index < len(self._doc)):
+            return False
+        page = self._doc[page_index]
+        line_rect = fitz.Rect(rect)
+        if line_rect.is_empty or line_rect.is_infinite:
+            return False
+
+        if record_undo:
+            self._record_undo_checkpoint()
+
+        fill = self._sample_background_color(page, line_rect)
+        redact_rect = fitz.Rect(line_rect)
+        redact_rect.y0 -= 1
+        redact_rect.y1 += 1
+        page.add_redact_annot(redact_rect, fill=fill)
+        try:
+            page.apply_redactions(images=getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0))
+        except TypeError:
+            page.apply_redactions()
+
+        text = new_text.rstrip("\n")
+        if text.strip():
+            rgb = self._srgb_int_to_rgb(color)
+            point = fitz.Point(origin)
+            self._write_line_text(page, point, text, size, rgb)
+
+        self._touch()
+        return True
+
+    def _write_line_text(
+        self,
+        page,
+        origin: fitz.Point,
+        text: str,
+        size: float,
+        rgb: tuple[float, float, float],
+    ) -> None:
+        """Draw *text* at baseline *origin* using a Unicode/CJK-capable font."""
+        fontname, fontfile = self._resolve_edit_font(text)
+        font = None
+        try:
+            font = fitz.Font(fontfile=fontfile) if fontfile else fitz.Font(fontname)
+        except Exception:
+            try:
+                font = fitz.Font("helv")
+            except Exception:
+                font = None
+        if font is not None:
+            try:
+                writer = fitz.TextWriter(page.rect)
+                writer.append(origin, text, font=font, fontsize=size)
+                writer.write_text(page, color=rgb)
+                return
+            except Exception:
+                pass
+        # Last-resort fallback for pure-ASCII text.
+        try:
+            page.insert_text(origin, text, fontsize=size, color=rgb, fontname="helv")
+        except Exception:
+            pass
+
+    @staticmethod
     def _word_line_id(word) -> tuple[int, int]:
         return int(word[5]), int(word[6])
 
@@ -1395,6 +1560,7 @@ class PdfDocument:
 
         if record_undo:
             self._record_undo_checkpoint()
+        self._delete_markup_type_in_rect(page, page_rect, fitz.PDF_ANNOT_UNDERLINE)
         annot = page.add_highlight_annot(quads)
         annot.set_colors(stroke=color_rgb)
         annot.set_opacity(0.45)
@@ -1430,6 +1596,7 @@ class PdfDocument:
                 self._undo_stack.pop(0)
             self._redo_stack.clear()
         page = self._doc[page_index]
+        self._delete_markup_type_in_rect(page, page_rect, fitz.PDF_ANNOT_UNDERLINE)
         for annot in PdfDocument._iter_page_annots(page):
             if annot.type[0] != fitz.PDF_ANNOT_HIGHLIGHT:
                 continue
@@ -1879,6 +2046,20 @@ class PdfDocument:
                 break
         return deleted
 
+    @staticmethod
+    def _delete_markup_type_in_rect(page, page_rect: fitz.Rect, annot_type: int) -> bool:
+        """Delete annots of *annot_type* intersecting *page_rect* (no undo checkpoint)."""
+        xrefs = {
+            annot.xref
+            for annot in PdfDocument._iter_page_annots(page)
+            if annot.type[0] == annot_type
+            and PdfDocument._highlight_annot_page_rect(annot).intersects(page_rect)
+        }
+        if not xrefs:
+            return False
+        PdfDocument._delete_page_annots_by_xrefs(page, xrefs)
+        return True
+
     def remove_text_markup_entry(self, entry: TextMarkupEntry) -> bool:
         """Remove the highlight or underline represented by a panel list entry."""
         if entry.group_id:
@@ -2025,6 +2206,7 @@ class PdfDocument:
             return False
         if record_undo:
             self._record_undo_checkpoint()
+        self._delete_markup_type_in_rect(page, page_rect, fitz.PDF_ANNOT_HIGHLIGHT)
         annot = page.add_underline_annot(quads)
         annot.set_colors(stroke=color_rgb)
         if markup_group_id is not None and origin_page_index is not None:
@@ -2059,6 +2241,7 @@ class PdfDocument:
                 self._undo_stack.pop(0)
             self._redo_stack.clear()
         page = self._doc[page_index]
+        self._delete_markup_type_in_rect(page, page_rect, fitz.PDF_ANNOT_HIGHLIGHT)
         for annot in PdfDocument._iter_page_annots(page):
             if annot.type[0] != fitz.PDF_ANNOT_UNDERLINE:
                 continue

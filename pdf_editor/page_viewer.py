@@ -3,7 +3,17 @@
 from __future__ import annotations
 
 import fitz
-from PyQt6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QPoint,
+    QPropertyAnimation,
+    QRect,
+    QSize,
+    Qt,
+    QTimer,
+    pyqtSignal,
+)
 from PyQt6.QtGui import QColor, QFont, QIcon, QKeyEvent, QPainter, QPen, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
@@ -12,6 +22,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -46,7 +57,58 @@ ZOOM_PRESETS = [25, 50, 75, 100, 125, 150, 200, 250, 300, 350, 400, 500, 600]
 MAX_ZOOM_PERCENT = 600
 MAX_ZOOM = MAX_ZOOM_PERCENT / 100.0
 ZOOM_STEP_FACTOR = 1.1
+ARROW_SCROLL_STEP = 90
+WHEEL_SCROLL_MULTIPLIER = 1.5
+SMOOTH_SCROLL_DURATION_MS = 260
 PREVIEW_BACKGROUND = "#efefef"
+PREVIEW_SCROLLBAR_STYLE = """
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 2px 2px 2px 0px;
+}
+QScrollBar::handle:vertical {
+    background: rgba(0, 0, 0, 0.28);
+    min-height: 36px;
+    border-radius: 5px;
+}
+QScrollBar::handle:vertical:hover {
+    background: rgba(0, 0, 0, 0.45);
+}
+QScrollBar::handle:vertical:pressed {
+    background: rgba(0, 0, 0, 0.55);
+}
+QScrollBar:horizontal {
+    background: transparent;
+    height: 10px;
+    margin: 0px 2px 2px 2px;
+}
+QScrollBar::handle:horizontal {
+    background: rgba(0, 0, 0, 0.28);
+    min-width: 36px;
+    border-radius: 5px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: rgba(0, 0, 0, 0.45);
+}
+QScrollBar::handle:horizontal:pressed {
+    background: rgba(0, 0, 0, 0.55);
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+    width: 0px;
+    height: 0px;
+    background: transparent;
+}
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical,
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {
+    background: transparent;
+}
+"""
 EMPTY_PREVIEW_HINT = (
     "병합할 이미지나 PDF 를 좌측 썸네일 화면으로\n"
     "드래그 앤 드랍으로 추가해주세요"
@@ -149,10 +211,30 @@ def _arrow_nav_icon(to_left: bool) -> QIcon:
     return QIcon(pixmap)
 
 
+class _InlineTextEditor(QLineEdit):
+    """Single-line editor overlaid on a text line for in-place overwrite."""
+
+    commit_requested = pyqtSignal()
+    cancel_requested = pyqtSignal()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        key = event.key()
+        if key == Qt.Key.Key_Escape:
+            self.cancel_requested.emit()
+            event.accept()
+            return
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.commit_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class PageCanvas(QLabel):
     """Rendered page with drag-to-select text overlay."""
 
     text_highlight_added = pyqtSignal()
+    text_edited = pyqtSignal()
     markup_clicked = pyqtSignal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -749,6 +831,18 @@ class PageCanvas(QLabel):
             self.update()
         super().mouseReleaseEvent(event)
 
+    def mouseDoubleClickEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._document is not None:
+            if self.mouseGrabber() == self:
+                self.releaseMouse()
+            self._anchor = None
+            self._cursor = None
+            self.clear_selection(clear_cross_page=True)
+            if self._viewer is not None and self._viewer.begin_text_edit(event.pos()):
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
+
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
         if (
@@ -854,6 +948,7 @@ class PageViewer(QWidget):
         self.scroll_area = QScrollArea()
         self.scroll_area.setStyleSheet(
             f"QScrollArea {{ {preview_bg} border: none; }}"
+            + PREVIEW_SCROLLBAR_STYLE
         )
         self.scroll_area.setWidgetResizable(False)
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -865,9 +960,19 @@ class PageViewer(QWidget):
         viewport.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         viewport.installEventFilter(self)
 
+        self._scroll_anim = QPropertyAnimation(
+            self.scroll_area.verticalScrollBar(), b"value", self
+        )
+        self._scroll_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._scroll_anim.setDuration(SMOOTH_SCROLL_DURATION_MS)
+        self._scroll_target: int | None = None
+
         self.page_canvas = PageCanvas()
         self.page_canvas.set_page_viewer(self)
         self.page_canvas.text_highlight_added.connect(self._apply_text_highlights_overlay)
+        self._inline_editor: _InlineTextEditor | None = None
+        self._text_edit_ctx: dict | None = None
+        self._text_edit_active = False
         self.scroll_area.setWidget(self.page_canvas)
         self.preview_stack.addWidget(self.scroll_area)
         self.preview_stack.setStyleSheet(preview_bg)
@@ -1080,17 +1185,27 @@ class PageViewer(QWidget):
         self.page_canvas._update_selection()
         self.page_canvas.update()
 
-    def set_current_index(self, index: int, *, preserve_cross_page: bool = False) -> None:
+    def set_current_index(
+        self,
+        index: int,
+        *,
+        preserve_cross_page: bool = False,
+        scroll_to_bottom: bool = False,
+    ) -> None:
         if not self._document or self._document.page_count == 0:
             return
         index = max(0, min(index, self._document.page_count - 1))
         if index != self._current_index:
+            self._cancel_text_edit()
+            self._stop_scroll_animation()
             if not preserve_cross_page:
                 self.clear_cross_page_selection()
             self._current_index = index
-            self.scroll_area.verticalScrollBar().setValue(0)
             self.scroll_area.horizontalScrollBar().setValue(0)
+            self.scroll_area.verticalScrollBar().setValue(0)
             self.refresh()
+            if scroll_to_bottom:
+                self._scroll_to_page_bottom()
             self.page_changed.emit(index)
             if self._awaiting_continuation:
                 QTimer.singleShot(0, self._prime_continuation_selection)
@@ -1141,6 +1256,101 @@ class PageViewer(QWidget):
         self._update_page_info()
         self._render_current_page()
 
+    def _ensure_inline_editor(self) -> _InlineTextEditor:
+        editor = self._inline_editor
+        if editor is None:
+            editor = _InlineTextEditor(self.page_canvas)
+            editor.setStyleSheet(
+                "QLineEdit {"
+                " background: #ffffff;"
+                " border: 1px solid #4a90d9;"
+                " padding: 0px 2px;"
+                " color: #000000;"
+                " selection-background-color: #4a90d9;"
+                " }"
+            )
+            editor.commit_requested.connect(self._commit_text_edit)
+            editor.cancel_requested.connect(self._cancel_text_edit)
+            editor.editingFinished.connect(self._on_editor_focus_lost)
+            editor.hide()
+            self._inline_editor = editor
+        else:
+            editor.setParent(self.page_canvas)
+        return editor
+
+    def begin_text_edit(self, canvas_pos: QPoint) -> bool:
+        if not self._document or self._document.page_count == 0:
+            return False
+        zoom = self._effective_zoom()
+        if zoom <= 0:
+            return False
+        page_x = canvas_pos.x() / zoom
+        page_y = canvas_pos.y() / zoom
+        info = self._document.find_text_line_at(self._current_index, page_x, page_y)
+        if not info:
+            return False
+
+        self._cancel_text_edit()
+        editor = self._ensure_inline_editor()
+        ctx = dict(info)
+        ctx["page_index"] = self._current_index
+        self._text_edit_ctx = ctx
+
+        x0, y0, x1, y1 = info["rect"]
+        left = int(round(x0 * zoom)) - 3
+        top = int(round(y0 * zoom)) - 2
+        width = max(48, int(round((x1 - x0) * zoom)) + 16)
+        height = max(20, int(round((y1 - y0) * zoom)) + 8)
+
+        font = QFont(editor.font())
+        font.setPixelSize(max(6, int(round(info["size"] * zoom))))
+        editor.setFont(font)
+        editor.setText(info["text"])
+        editor.setGeometry(left, top, width, height)
+        editor.show()
+        editor.raise_()
+        editor.setFocus()
+        editor.selectAll()
+        self._text_edit_active = True
+        return True
+
+    def _on_editor_focus_lost(self) -> None:
+        if self._text_edit_active:
+            self._commit_text_edit()
+
+    def _commit_text_edit(self) -> None:
+        if not self._text_edit_active:
+            return
+        self._text_edit_active = False
+        ctx = self._text_edit_ctx
+        editor = self._inline_editor
+        new_text = editor.text() if editor is not None else ""
+        if editor is not None:
+            editor.hide()
+        self._text_edit_ctx = None
+        if not ctx or not self._document:
+            return
+        if new_text == ctx["text"]:
+            return
+        ok = self._document.overwrite_text_line(
+            ctx["page_index"],
+            ctx["rect"],
+            ctx["origin"],
+            new_text,
+            ctx["size"],
+            ctx["color"],
+        )
+        if ok:
+            self.page_canvas.text_edited.emit()
+
+    def _cancel_text_edit(self) -> None:
+        if not self._text_edit_active:
+            return
+        self._text_edit_active = False
+        self._text_edit_ctx = None
+        if self._inline_editor is not None:
+            self._inline_editor.hide()
+
     def clear_search_highlights(self) -> None:
         self._search_page_rects = []
         self._search_active_index = -1
@@ -1160,6 +1370,7 @@ class PageViewer(QWidget):
             return
         page_index = max(0, min(page_index, self._document.page_count - 1))
         if page_index != self._current_index:
+            self._stop_scroll_animation()
             self._current_index = page_index
             self.scroll_area.verticalScrollBar().setValue(0)
             self.scroll_area.horizontalScrollBar().setValue(0)
@@ -1279,11 +1490,29 @@ class PageViewer(QWidget):
             self._go_last()
             event.accept()
             return
-        if key in (Qt.Key.Key_Left, Qt.Key.Key_Up, Qt.Key.Key_PageUp):
-            self.set_current_index(self._current_index - 1)
+        if key in (Qt.Key.Key_Up, Qt.Key.Key_PageUp):
+            step = (
+                self.scroll_area.verticalScrollBar().pageStep()
+                if key == Qt.Key.Key_PageUp
+                else ARROW_SCROLL_STEP
+            )
+            self._handle_preview_wheel(step, Qt.KeyboardModifier.NoModifier)
             event.accept()
             return
-        if key in (Qt.Key.Key_Right, Qt.Key.Key_Down, Qt.Key.Key_PageDown):
+        if key in (Qt.Key.Key_Down, Qt.Key.Key_PageDown):
+            step = (
+                self.scroll_area.verticalScrollBar().pageStep()
+                if key == Qt.Key.Key_PageDown
+                else ARROW_SCROLL_STEP
+            )
+            self._handle_preview_wheel(-step, Qt.KeyboardModifier.NoModifier)
+            event.accept()
+            return
+        if key == Qt.Key.Key_Left:
+            self.set_current_index(self._current_index - 1, scroll_to_bottom=True)
+            event.accept()
+            return
+        if key == Qt.Key.Key_Right:
             self.set_current_index(self._current_index + 1)
             event.accept()
             return
@@ -1299,15 +1528,57 @@ class PageViewer(QWidget):
     def _has_vertical_scroll(self) -> bool:
         return self.scroll_area.verticalScrollBar().maximum() > 0
 
+    def _stop_scroll_animation(self) -> None:
+        if self._scroll_anim.state() == QPropertyAnimation.State.Running:
+            self._scroll_anim.stop()
+        self._scroll_target = None
+
+    def _effective_scroll_value(self) -> int:
+        """Current scroll target while animating, else the live bar value."""
+        if (
+            self._scroll_target is not None
+            and self._scroll_anim.state() == QPropertyAnimation.State.Running
+        ):
+            return self._scroll_target
+        return self.scroll_area.verticalScrollBar().value()
+
     def _scroll_vertically(self, delta_y: int) -> None:
         bar = self.scroll_area.verticalScrollBar()
-        bar.setValue(bar.value() - delta_y)
+        base = self._effective_scroll_value()
+        target = max(bar.minimum(), min(bar.maximum(), base - delta_y))
+        if target == bar.value():
+            self._stop_scroll_animation()
+            return
+        self._scroll_target = target
+        self._scroll_anim.stop()
+        self._scroll_anim.setStartValue(bar.value())
+        self._scroll_anim.setEndValue(target)
+        self._scroll_anim.start()
+
+    def _scroll_to_page_bottom(self) -> None:
+        self._stop_scroll_animation()
+        bar = self.scroll_area.verticalScrollBar()
+        bar.setValue(bar.maximum())
+        QTimer.singleShot(0, lambda: bar.setValue(bar.maximum()))
+
+    def scroll_by_key(self, *, up: bool, page: bool) -> None:
+        """Scroll mode navigation: scroll within a page, turn at boundaries.
+
+        When crossing to the previous page, the previous page is shown from its
+        bottom so it scrolls upward into view.
+        """
+        step = (
+            self.scroll_area.verticalScrollBar().pageStep()
+            if page
+            else ARROW_SCROLL_STEP
+        )
+        self._handle_preview_wheel(step if up else -step, Qt.KeyboardModifier.NoModifier)
 
     def _change_page_by_wheel(self, delta_y: int) -> bool:
         if not self._document or self._document.page_count == 0:
             return False
         if delta_y > 0 and self._current_index > 0:
-            self.set_current_index(self._current_index - 1)
+            self.set_current_index(self._current_index - 1, scroll_to_bottom=True)
             return True
         if delta_y < 0 and self._current_index < self._document.page_count - 1:
             self.set_current_index(self._current_index + 1)
@@ -1323,12 +1594,13 @@ class PageViewer(QWidget):
             return False
         if self._has_vertical_scroll():
             bar = self.scroll_area.verticalScrollBar()
-            at_top = bar.value() <= bar.minimum()
-            at_bottom = bar.value() >= bar.maximum()
+            position = self._effective_scroll_value()
+            at_top = position <= bar.minimum()
+            at_bottom = position >= bar.maximum()
             if (delta_y > 0 and at_top) or (delta_y < 0 and at_bottom):
                 if self._change_page_by_wheel(delta_y):
                     return True
-            self._scroll_vertically(delta_y)
+            self._scroll_vertically(int(delta_y * WHEEL_SCROLL_MULTIPLIER))
             return True
         return self._change_page_by_wheel(delta_y)
 
@@ -1341,6 +1613,7 @@ class PageViewer(QWidget):
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(6, 3, 6, 3)
         layout.setSpacing(3)
+        self._status_layout = layout
 
         compact_btn = 24
         btn_height = 22
@@ -1349,6 +1622,7 @@ class PageViewer(QWidget):
 
         self.size_label = QLabel("")
         layout.addWidget(self.size_label)
+        self._status_lead_stretch_index = layout.count()
         layout.addStretch(1)
 
         self.btn_first = QPushButton()
@@ -1450,7 +1724,15 @@ class PageViewer(QWidget):
         self.zoom_combo.currentTextChanged.connect(self._on_zoom_combo_changed)
         layout.addWidget(self.zoom_combo)
 
+        self._status_trail_stretch_index = layout.count()
+        layout.addStretch(0)
+
         return bar
+
+    def set_status_bar_centered(self, centered: bool) -> None:
+        """Center the bottom controls (used in full-screen); hide the size label."""
+        self.size_label.setVisible(not centered)
+        self._status_layout.setStretch(self._status_trail_stretch_index, 1 if centered else 0)
 
     def _go_last(self) -> None:
         if self._document:

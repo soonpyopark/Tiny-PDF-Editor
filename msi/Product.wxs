@@ -34,6 +34,7 @@
 
     <ui:WixUI Id="WixUI_InstallDir" />
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
 
     <Feature Id="MainFeature" Title="Tiny PDF Editor" Level="1">
       <Files Include="Tiny PDF Editor/**" />

@@ -9,6 +9,7 @@
     "build:dist:exe": "node scripts/sync-version.mjs && node scripts/build-dist.mjs",
     "build:dist:exe:update": "node scripts/sync-version.mjs && node scripts/build-dist.mjs --update",
     "build:msi": "node scripts/build-msi.mjs",
-    "build:dist:msi": "node scripts/build-msi.mjs"
+    "build:dist:msi": "node scripts/build-msi.mjs",
+    "build:update_all": "node scripts/update-all.mjs"
   }
 }

@@ -153,8 +153,12 @@ class LeftSideNavBar(QWidget):
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
 
-        self.btn_thumbnails = _NavTabButton(SideNavTab.THUMBNAILS, "썸네일")
-        self.btn_highlights = _NavTabButton(SideNavTab.HIGHLIGHTS, "형광펜 & 밑줄")
+        self.btn_thumbnails = _NavTabButton(
+            SideNavTab.THUMBNAILS, "썸네일\n두번 클릭하면 메뉴가 사라집니다."
+        )
+        self.btn_highlights = _NavTabButton(
+            SideNavTab.HIGHLIGHTS, "형광펜 & 밑줄\n두번 클릭하면 메뉴가 사라집니다."
+        )
 
         for index, button in enumerate((self.btn_thumbnails, self.btn_highlights)):
             self._group.addButton(button, index)
