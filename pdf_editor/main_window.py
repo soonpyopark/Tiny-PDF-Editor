@@ -61,6 +61,7 @@ from pdf_editor.document import (
 )
 from pdf_editor.page_clipboard import PageClipboard
 from pdf_editor.password_dialog import SetPasswordDialog, prompt_pdf_password
+from pdf_editor.recent_files import RecentFilesStore
 from pdf_editor.print_utils import print_document
 from pdf_editor.page_viewer import PageViewer
 from pdf_editor.reduce_size_dialog import ReduceSizeDialog
@@ -1265,6 +1266,8 @@ class MainWindow(QMainWindow):
     self._search_index = -1
     self._search_query = ""
 
+    self._recent_files = RecentFilesStore()
+
     self._build_menu()
     self._apply_window_styles()
     self.setStatusBar(QStatusBar())
@@ -1384,6 +1387,10 @@ class MainWindow(QMainWindow):
     act_new.setShortcut(QKeySequence.StandardKey.New)
     act_new.triggered.connect(self._new_tab)
     menu.addAction(act_new)
+
+    self._recent_menu = menu.addMenu("최근 파일 열기")
+    self._recent_menu.aboutToShow.connect(self._rebuild_recent_menu)
+    self._rebuild_recent_menu()
 
     act_open = QAction("열기...", self)
     act_open.setShortcut(QKeySequence.StandardKey.Open)
@@ -1805,7 +1812,7 @@ class MainWindow(QMainWindow):
     if not self._open_paths(paths) and self.tabs.count() == 0:
       self._new_tab()
 
-  def _open_paths(self, paths: list[str]) -> bool:
+  def _open_paths(self, paths: list[str], *, initial_page: int | None = None) -> bool:
     if not paths:
       return False
 
@@ -1819,8 +1826,13 @@ class MainWindow(QMainWindow):
         if doc is None:
           return False
         tab = self._add_tab(doc, _tab_title_for_filename(os.path.basename(path)))
-        QTimer.singleShot(0, lambda: tab.go_to_page(0, fit_page=True))
+        resolved_page = (
+          self._recent_files.get_page(path) if initial_page is None else initial_page
+        )
+        page = max(0, min(resolved_page, max(0, doc.page_count - 1)))
+        QTimer.singleShot(0, lambda p=page: tab.go_to_page(p, fit_page=True))
         self._update_edit_actions()
+        self._record_recent_file(path, page)
         self.statusBar().showMessage(f"열림: {path}")
         return True
       except Exception as exc:
@@ -1867,6 +1879,8 @@ class MainWindow(QMainWindow):
       )
       doc._modified = False
       doc.clear_history()
+      if doc._source_path:
+        self._record_recent_file(doc._source_path)
       self._update_edit_actions()
       self.statusBar().showMessage(
         f"{len(supported)}개 파일, {doc.page_count}페이지를 열었습니다."
@@ -1889,6 +1903,50 @@ class MainWindow(QMainWindow):
     if not paths:
       return
     self._open_paths(paths)
+
+  def _rebuild_recent_menu(self) -> None:
+    menu = self._recent_menu
+    menu.clear()
+    self._recent_files.prune_missing()
+    entries = self._recent_files.entries()
+    if not entries:
+      empty = menu.addAction("최근 파일 없음")
+      empty.setEnabled(False)
+      return
+    for position, entry in enumerate(entries, start=1):
+      path = entry["path"]
+      label = f"{position}. {os.path.basename(path)}"
+      action = menu.addAction(label)
+      action.setToolTip(path)
+      action.triggered.connect(lambda _checked=False, p=path: self._open_recent_file(p))
+    menu.addSeparator()
+    clear_action = menu.addAction("모두 지우기")
+    clear_action.triggered.connect(self._clear_recent_files)
+
+  def _open_recent_file(self, path: str) -> None:
+    if not os.path.exists(path):
+      QMessageBox.warning(self, "최근 파일", "파일을 찾을 수 없습니다.\n최근 목록에서 제거합니다.")
+      self._recent_files.remove(path)
+      return
+    target_page = self._recent_files.get_page(path)
+    self._open_paths([path], initial_page=target_page)
+
+  def _clear_recent_files(self) -> None:
+    self._recent_files.clear()
+
+  def _record_recent_file(self, path: str, page: int = 0) -> None:
+    if Path(path).suffix.lower() != ".pdf":
+      return
+    self._recent_files.add(path, page)
+
+  def _persist_open_document_pages(self) -> None:
+    for index in range(self.tabs.count()):
+      widget = self.tabs.widget(index)
+      if not isinstance(widget, DocumentTab):
+        continue
+      source = widget.document.source_path
+      if source and Path(source).suffix.lower() == ".pdf":
+        self._recent_files.set_page(source, widget.viewer.current_index())
 
   def _manage_pdf_file_association(self) -> None:
     if not is_windows_platform():
@@ -2190,6 +2248,9 @@ class MainWindow(QMainWindow):
       if not self._handle_close_save_choice(widget, reply):
         return
     if isinstance(widget, DocumentTab):
+      source = widget.document.source_path
+      if source and Path(source).suffix.lower() == ".pdf":
+        self._recent_files.set_page(source, widget.viewer.current_index())
       widget._file_insert_token += 1
     self.tabs.removeTab(index)
     if self.tabs.count() == 0:
@@ -2208,6 +2269,7 @@ class MainWindow(QMainWindow):
         if not self._handle_close_save_choice(widget, reply):
           event.ignore()
           return
+    self._persist_open_document_pages()
     event.accept()
 
 
