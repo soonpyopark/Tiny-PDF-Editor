@@ -66,11 +66,25 @@ function syncReadme(version) {
   fs.writeFileSync(filePath, text, "utf8");
 }
 
+function syncMsiLicenseRtf(version) {
+  const filePath = path.join(ROOT, "msi", "License.rtf");
+  if (!fs.existsSync(filePath)) {
+    return;
+  }
+  let text = fs.readFileSync(filePath, "utf8");
+  text = text.replace(
+    /Tiny PDF Editor v[0-9][^\\]*\\par/,
+    `Tiny PDF Editor v${version}\\par`,
+  );
+  fs.writeFileSync(filePath, text, "utf8");
+}
+
 function main() {
   const version = readAppVersion();
   syncPackageJson(version);
   syncReadme(version);
   syncLicense(version);
+  syncMsiLicenseRtf(version);
   console.log(`[sync-version] synced v${version}`);
 }
 

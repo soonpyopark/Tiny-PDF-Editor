@@ -17,7 +17,6 @@ from PyQt6.QtCore import (
   Qt,
   QTimer,
   QUrl,
-  QVariantAnimation,
   pyqtSignal,
 )
 from PyQt6.QtGui import (
@@ -130,7 +129,7 @@ _REDUCE_MENU_BTN_STYLE = """
         margin: 0px;
     }
     QPushButton:hover {
-        background-color: #e8f0fe;
+        background-color: #cfe0fb;
     }
 """
 
@@ -521,14 +520,6 @@ class DocumentTab(QWidget):
     self._panel_collapsed = False
     self._fullscreen_active = False
     self._active_nav_index = int(SideNavTab.THUMBNAILS)
-
-    self._panel_anim = QVariantAnimation(self)
-    self._panel_anim.setDuration(200)
-    self._panel_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-    self._panel_anim.valueChanged.connect(self._on_panel_anim_value)
-    self._panel_anim.finished.connect(self._on_panel_anim_finished)
-    self._panel_anim_hide_content = False
-    self._panel_anim_hide_panel = False
     self._apply_panel_width_limits(set_default_size=True)
     if self.splitter.count() > 1:
       self.splitter.handle(0).setEnabled(False)
@@ -560,7 +551,6 @@ class DocumentTab(QWidget):
 
   def set_fullscreen_active(self, active: bool) -> None:
     """Enter/leave fullscreen: hide the left panel but keep the toggle tab."""
-    self._panel_anim.stop()
     self._fullscreen_active = active
     if active:
       self._pre_fullscreen_collapsed = self._panel_collapsed
@@ -576,20 +566,17 @@ class DocumentTab(QWidget):
     self.panel_toggle_btn.raise_()
 
   def _set_fullscreen_panel_visible(self, visible: bool) -> None:
-    """Slide the whole left panel in/out while in fullscreen via the toggle tab."""
+    """Show/hide the whole left panel while in fullscreen via the toggle tab."""
+    self._left_panel.setVisible(visible)
     self._panel_collapsed = not visible
-    self._update_panel_toggle_icon()
     if visible:
-      self._left_panel.setFixedWidth(0)
-      self._left_panel.setVisible(True)
       self.content_stack.setVisible(True)
-      self._start_panel_anim(self._panel_target_width(False))
+      self._apply_panel_width_limits()
       if self.side_nav.current_tab() == SideNavTab.THUMBNAILS:
         QTimer.singleShot(0, self.thumbnails._restore_after_tab_show)
       else:
         self._restore_highlights_panel_viewport()
-    else:
-      self._start_panel_anim(0, hide_content_after=True, hide_panel_after=True)
+    self._update_panel_toggle_icon()
     self.panel_toggle_btn.raise_()
 
   def _update_panel_toggle_icon(self) -> None:
@@ -662,62 +649,15 @@ class DocumentTab(QWidget):
     elif index == int(SideNavTab.HIGHLIGHTS):
       self._restore_highlights_panel_viewport()
 
-  def _panel_target_width(self, collapsed: bool) -> int:
-    if collapsed:
-      return LEFT_SIDE_NAV_WIDTH
-    thumb_w, _, _ = self.thumbnails.get_panel_width_range()
-    return LEFT_SIDE_NAV_WIDTH + thumb_w
-
-  def _start_panel_anim(
-    self,
-    target_w: int,
-    *,
-    hide_content_after: bool = False,
-    hide_panel_after: bool = False,
-  ) -> None:
-    self._panel_anim_hide_content = hide_content_after
-    self._panel_anim_hide_panel = hide_panel_after
-    self._panel_anim.stop()
-    self._panel_anim.setStartValue(int(self._left_panel.width()))
-    self._panel_anim.setEndValue(int(target_w))
-    self._panel_anim.start()
-
-  def _on_panel_anim_value(self, value) -> None:
-    w = int(value)
-    self._left_panel.setFixedWidth(w)
-    total = self.splitter.width()
-    if total <= 0:
-      total = self.width()
-    if total <= 0:
-      total = DEFAULT_WINDOW_WIDTH
-    self.splitter.blockSignals(True)
-    self.splitter.setSizes([w, max(200, total - w)])
-    self.splitter.blockSignals(False)
-    self.panel_toggle_btn.raise_()
-
-  def _on_panel_anim_finished(self) -> None:
-    if self._panel_anim_hide_content:
-      self.content_stack.setVisible(False)
-    if self._panel_anim_hide_panel:
-      self._left_panel.setVisible(False)
-    self._panel_anim_hide_content = False
-    self._panel_anim_hide_panel = False
-    self._apply_panel_width_limits()
-
   def _set_panel_collapsed(self, collapsed: bool) -> None:
     if self._panel_collapsed == collapsed:
       return
     self._panel_collapsed = collapsed
+    self.content_stack.setVisible(not collapsed)
+    self._apply_panel_width_limits()
     self._update_panel_toggle_icon()
-    if not collapsed:
-      self.content_stack.setVisible(True)
-      self._start_panel_anim(self._panel_target_width(False))
-      if self.side_nav.current_tab() == SideNavTab.THUMBNAILS:
-        QTimer.singleShot(0, self.thumbnails._restore_after_tab_show)
-    else:
-      self._start_panel_anim(
-        self._panel_target_width(True), hide_content_after=True
-      )
+    if not collapsed and self.side_nav.current_tab() == SideNavTab.THUMBNAILS:
+      QTimer.singleShot(0, self.thumbnails._restore_after_tab_show)
 
   def _switch_to_highlights_panel(self) -> None:
     if self.side_nav.current_tab() == SideNavTab.HIGHLIGHTS and not self._panel_collapsed:
@@ -919,9 +859,6 @@ class DocumentTab(QWidget):
     )
 
   def _apply_panel_width_limits(self, set_default_size: bool = False) -> None:
-    anim = getattr(self, "_panel_anim", None)
-    if anim is not None and anim.state() == QVariantAnimation.State.Running:
-      return
     if getattr(self, "_panel_collapsed", False):
       fixed_w = LEFT_SIDE_NAV_WIDTH
     else:
@@ -1496,12 +1433,17 @@ class MainWindow(QMainWindow):
         """
         QMenu#editMenu::item {
             padding: 6px 24px 6px 11px;
+            background-color: transparent;
+        }
+        QMenu#editMenu::item:selected {
+            background-color: #e8f0fe;
+            color: #000000;
         }
         QMenu#editMenu::item:nth-child(3) {
             padding: 0px;
         }
         QMenu#editMenu::item:nth-child(3):selected {
-            background-color: #e8f0fe;
+            background-color: #cfe0fb;
         }
         """
     )
