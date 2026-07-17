@@ -4,6 +4,7 @@ dist/
 /Tiny PDF Editor/
 msi/Tiny PDF Editor/
 msi/*.msi
+msi/app_icon.ico
 __pycache__/
 *.py[cod]
 *.spec

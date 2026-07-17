@@ -101,6 +101,16 @@ function stageForMsi() {
   log(`staged: ${STAGE_DIR}`);
 }
 
+function ensureArpProductIcon() {
+  const src = path.join(ROOT, "pdf_editor", "branding", "app_icon.ico");
+  const dest = path.join(MSI_DIR, "app_icon.ico");
+  if (!fs.existsSync(src)) {
+    throw new Error(`ARP product icon not found: ${src}`);
+  }
+  fs.copyFileSync(src, dest);
+  log(`ARP icon: ${dest}`);
+}
+
 function buildMsi() {
   const version = readVersion();
   const productVersion = toMsiVersion(version);
@@ -111,6 +121,7 @@ function buildMsi() {
 
   fs.mkdirSync(MSI_DIR, { recursive: true });
   fs.rmSync(outputPath, { force: true });
+  ensureArpProductIcon();
 
   run(
     `${wixCmd} build "${PRODUCT_WXS}" -d ProductVersion=${productVersion} -d ProductCode=${productCode} -bindpath "${MSI_DIR}" -ext WixToolset.UI.wixext -o "${outputPath}"`,

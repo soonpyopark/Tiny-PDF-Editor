@@ -31,6 +31,9 @@
     <MediaTemplate EmbedCab="yes" />
 
     <Property Id="ARPHELPLINK" Value="https://note4all.tistory.com" />
+    <!-- Shown in Control Panel → Programs and Features / Settings → Apps -->
+    <Icon Id="AppIcon.ico" SourceFile="app_icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
 
     <ui:WixUI Id="WixUI_InstallDir" />
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
