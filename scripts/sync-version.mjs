@@ -62,21 +62,28 @@ function syncReadme(version) {
     /Tiny PDF [Ee]ditor v[^_\n]+_YYMMDD_HHMMSS\.exe/g,
     `${releasePrefix}_YYMMDD_HHMMSS.exe`,
   );
+  text = text.replace(
+    /`Tiny PDF [Ee]ditor v[^`_]+_YYMMDD_HHMMSS\.msi`/g,
+    `\`${releasePrefix}_YYMMDD_HHMMSS.msi\``,
+  );
+  text = text.replace(
+    /Tiny PDF [Ee]ditor v[^_\n]+_YYMMDD_HHMMSS\.msi/g,
+    `${releasePrefix}_YYMMDD_HHMMSS.msi`,
+  );
 
   fs.writeFileSync(filePath, text, "utf8");
 }
 
 function syncMsiLicenseRtf(version) {
   const filePath = path.join(ROOT, "msi", "License.rtf");
-  if (!fs.existsSync(filePath)) {
-    return;
-  }
-  let text = fs.readFileSync(filePath, "utf8");
-  text = text.replace(
-    /Tiny PDF Editor v[0-9][^\\]*\\par/,
-    `Tiny PDF Editor v${version}\\par`,
-  );
-  fs.writeFileSync(filePath, text, "utf8");
+  const content =
+    "{\\rtf1\\ansi\\ansicpg65001\\deff0{\\fonttbl{\\f0\\fnil\\fcharset0 Segoe UI;}}\n" +
+    "\\viewkind4\\uc1\\pard\\sa200\\sl276\\slmult1\\f0\\fs22 Tiny PDF Editor v" +
+    version +
+    "\\par\n" +
+    "https://note4all.tistory.com\\par\n" +
+    "}\n";
+  fs.writeFileSync(filePath, content, "utf8");
 }
 
 function main() {

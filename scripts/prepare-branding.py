@@ -11,11 +11,22 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "assets" / "source_logo.png"
+ICON_SHEET = ROOT / "assets" / "icon_sheet.png"
+ICON_VARIANTS_DIR = ROOT / "assets" / "icon_variants"
 OUT_DIR = ROOT / "pdf_editor" / "branding"
 
 _SATURATION_THRESHOLD = 0.06
 _WHITE_BG_THRESHOLD = 232
 _ICON_CROP_PADDING = 4
+
+# Icon sheet crop boxes for monochrome small sizes (x0, y0, x1, y1).
+_BW_SHEET_BOXES = {
+    16: (908, 428, 992, 508),
+    24: (758, 415, 855, 510),
+    32: (615, 400, 730, 512),
+}
+
+_ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
 
 
 def find_source() -> Path:
@@ -250,7 +261,8 @@ def prepare_logo(source: Path) -> Image.Image:
     )
     if edge_alpha.size and edge_alpha.min() < 128:
         cropped = img.crop(img.getbbox() or (0, 0, img.width, img.height))
-        return Image.fromarray(_opaque_array(cropped))
+        # Keep existing transparency (e.g. rounded-corner app icons).
+        return cropped.convert("RGBA")
 
     return make_transparent_logo(source)
 
@@ -273,6 +285,76 @@ def make_ico_image(icon: Image.Image, size: int = 256) -> Image.Image:
     return canvas
 
 
+def extract_bw_from_sheet(sheet: Image.Image, box: tuple[int, int, int, int]) -> Image.Image:
+    """Crop a monochrome icon from the sheet and clear the checkerboard."""
+    crop = sheet.crop(box).convert("RGBA")
+    data = np.array(crop)
+    red = data[:, :, 0].astype(np.int16)
+    green = data[:, :, 1].astype(np.int16)
+    blue = data[:, :, 2].astype(np.int16)
+    sat = np.maximum(np.maximum(red, green), blue) - np.minimum(
+        np.minimum(red, green), blue
+    )
+    checker = (
+        (np.abs(red - green) <= 14)
+        & (np.abs(green - blue) <= 14)
+        & (red >= 95)
+        & (red <= 205)
+        & (sat <= 20)
+    )
+    data[:, :, 3] = np.where(checker, 0, 255).astype(np.uint8)
+    image = Image.fromarray(data)
+    bbox = image.getbbox()
+    return image.crop(bbox) if bbox else image
+
+
+def ensure_bw_variant_masters(sheet_path: Path = ICON_SHEET) -> dict[int, Image.Image]:
+    """Extract / refresh monochrome masters for 16/24/32 from the icon sheet."""
+    masters: dict[int, Image.Image] = {}
+    ICON_VARIANTS_DIR.mkdir(parents=True, exist_ok=True)
+    if not sheet_path.is_file():
+        for size in (16, 24, 32):
+            path = ICON_VARIANTS_DIR / f"bw_master_{size}.png"
+            if path.is_file():
+                masters[size] = Image.open(path).convert("RGBA")
+        return masters
+
+    sheet = Image.open(sheet_path).convert("RGBA")
+    for size, box in _BW_SHEET_BOXES.items():
+        master = extract_bw_from_sheet(sheet, box)
+        path = ICON_VARIANTS_DIR / f"bw_master_{size}.png"
+        master.save(path)
+        masters[size] = master
+    return masters
+
+
+def build_size_images(
+    color_icon: Image.Image,
+    bw_masters: dict[int, Image.Image],
+    sizes: tuple[int, ...] = _ICO_SIZES,
+) -> list[Image.Image]:
+    """Build per-size RGBA images: color for large, sheet mono for small."""
+    images: list[Image.Image] = []
+    for size in sizes:
+        source = bw_masters.get(size, color_icon) if size <= 32 else color_icon
+        images.append(make_ico_image(source, size))
+    return images
+
+
+def save_multi_size_ico(path: Path, images: list[Image.Image]) -> None:
+    """Write an .ico containing each pre-rendered size bitmap."""
+    if not images:
+        raise ValueError("No icon images to save")
+    # Pillow's ICO writer expects the largest bitmap first.
+    ordered = sorted(images, key=lambda image: image.width * image.height, reverse=True)
+    ordered[0].save(
+        path,
+        format="ICO",
+        sizes=[(image.width, image.height) for image in ordered],
+        append_images=ordered[1:],
+    )
+
+
 _PDF_FILE_ICON_BG = (255, 255, 255, 255)
 _PDF_FILE_ICON_MARGIN = 0.06
 
@@ -289,6 +371,20 @@ def make_pdf_file_icon_image(icon: Image.Image, size: int = 256) -> Image.Image:
     return canvas.convert("RGBA")
 
 
+def build_pdf_file_size_images(
+    color_icon: Image.Image,
+    bw_masters: dict[int, Image.Image],
+    sizes: tuple[int, ...] = _ICO_SIZES,
+) -> list[Image.Image]:
+    images: list[Image.Image] = []
+    for size in sizes:
+        if size <= 32 and size in bw_masters:
+            images.append(make_pdf_file_icon_image(bw_masters[size], size))
+        else:
+            images.append(make_pdf_file_icon_image(color_icon, size))
+    return images
+
+
 def main() -> None:
     source = find_source()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -300,24 +396,24 @@ def main() -> None:
     icon_png_path = OUT_DIR / "app_icon.png"
     fit_icon_png(logo, 256).save(icon_png_path)
 
+    bw_masters = ensure_bw_variant_masters()
+    app_images = build_size_images(logo, bw_masters)
     ico_path = OUT_DIR / "app_icon.ico"
-    make_ico_image(logo, 256).save(
-        ico_path,
-        format="ICO",
-        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
-    )
+    save_multi_size_ico(ico_path, app_images)
 
+    pdf_images = build_pdf_file_size_images(logo, bw_masters)
     pdf_file_icon_path = OUT_DIR / "pdf_file_icon.ico"
-    make_pdf_file_icon_image(logo, 256).save(
-        pdf_file_icon_path,
-        format="ICO",
-        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
-    )
+    save_multi_size_ico(pdf_file_icon_path, pdf_images)
 
     print(f"saved {logo_path} ({logo.size[0]}x{logo.size[1]})")
     print(f"saved {icon_png_path}")
-    print(f"saved {ico_path}")
-    print(f"saved {pdf_file_icon_path}")
+    print(f"saved {ico_path} ({len(app_images)} sizes)")
+    print(f"saved {pdf_file_icon_path} ({len(pdf_images)} sizes)")
+    if bw_masters:
+        print(
+            "mono small sizes from icon sheet: "
+            + ", ".join(str(size) for size in sorted(bw_masters))
+        )
 
 
 if __name__ == "__main__":

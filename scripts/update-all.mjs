@@ -1,38 +1,109 @@
 #!/usr/bin/env node
 /**
- * Upgrade all Python and Node dependencies used by Tiny PDF Editor.
+ * Tiny PDF Editor — update deps (and optionally rebuild MSI).
+ * Mirrors NAS4USB / My Desktop Calendar scripts/update-all.mjs
+ * (Python + npm stack; no editor-core stacks).
  *
- * - Runtime: requirements.txt (PyMuPDF, PyQt6, openpyxl, ...)
- * - Build/branding: pyinstaller, pillow, numpy
- * - Node: npm update (when package-lock.json exists)
- *
- * After upgrading, requirements.txt minimum versions (>=) are refreshed
- * to match the installed versions.
+ * Options:
+ *   --skip-git
+ *   --skip-npm
+ *   --skip-python
+ *   --build          run npm run build:dist:msi
+ *   --force          npm install --force; clear .build caches
+ *   --skip-cores     accepted for NAS4USB bat compatibility (no-op)
  */
-
-import { execSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(__dirname, "..");
-const REQUIREMENTS_PATH = path.join(ROOT, "requirements.txt");
+const root = path.resolve(__dirname, "..");
+const REQUIREMENTS_PATH = path.join(root, "requirements.txt");
 
 /** Packages used by build scripts but not listed in requirements.txt. */
 const EXTRA_PYTHON_PACKAGES = ["pyinstaller", "pillow", "numpy"];
 
-const isMain =
-  process.argv[1] &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-
-function log(msg) {
-  console.log(`[update-all] ${msg}`);
+/**
+ * @param {string[]} argv
+ */
+function parseArgs(argv) {
+  return {
+    skipGit: argv.includes("--skip-git"),
+    skipNpm: argv.includes("--skip-npm"),
+    skipPython: argv.includes("--skip-python"),
+    skipCores: argv.includes("--skip-cores"),
+    build: argv.includes("--build"),
+    force: argv.includes("--force"),
+  };
 }
 
-function run(cmd, options = {}) {
-  log(`> ${cmd}`);
-  execSync(cmd, { stdio: "inherit", cwd: ROOT, ...options });
+/**
+ * @param {string} label
+ * @param {string} command
+ * @param {string[]} args
+ */
+function run(label, command, args) {
+  console.log(`[update-all] ${label}…`);
+  const result = spawnSync(command, args, {
+    cwd: root,
+    stdio: "inherit",
+    shell: process.platform === "win32",
+  });
+  if (result.status !== 0) {
+    throw new Error(`${label} failed (exit ${result.status ?? 1})`);
+  }
+}
+
+async function clearForcedCaches() {
+  const targets = [
+    path.join(root, ".build", "pyinstaller-dist"),
+    path.join(root, ".build", "pyinstaller-work"),
+    path.join(root, "node_modules", ".cache"),
+  ];
+  for (const target of targets) {
+    try {
+      await fsp.rm(target, { recursive: true, force: true });
+      console.log(`[update-all] cleared ${path.relative(root, target)} (force)`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[update-all] could not clear ${target}: ${message}`);
+    }
+  }
+}
+
+async function gitPull() {
+  try {
+    await fsp.access(path.join(root, ".git"));
+  } catch {
+    console.log("[update-all] Not a git repo; skip git pull");
+    return;
+  }
+
+  const status = spawnSync("git", ["status", "--porcelain"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  if (status.stdout?.trim()) {
+    console.log("[update-all] Git working tree has local changes; skip git pull");
+    return;
+  }
+
+  run("git pull", "git", ["pull", "--ff-only"]);
+}
+
+/**
+ * @param {ReturnType<typeof parseArgs>} opts
+ */
+async function updateNpmStack(opts) {
+  if (opts.force) {
+    await clearForcedCaches();
+    run("npm install --force", "npm", ["install", "--force"]);
+  } else {
+    run("npm install", "npm", ["install"]);
+  }
+  run("npm update", "npm", ["update"]);
 }
 
 function readRequirementNames() {
@@ -55,12 +126,15 @@ function readRequirementNames() {
 
 function getInstalledVersion(packageName) {
   try {
-    const output = execSync(`python -m pip show ${packageName}`, {
-      cwd: ROOT,
+    const output = spawnSync("python", ["-m", "pip", "show", packageName], {
+      cwd: root,
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
+      shell: process.platform === "win32",
     });
-    const match = output.match(/^Version:\s*(.+)$/m);
+    if (output.status !== 0) {
+      return null;
+    }
+    const match = String(output.stdout || "").match(/^Version:\s*(.+)$/m);
     return match ? match[1].trim() : null;
   } catch {
     return null;
@@ -94,11 +168,13 @@ function syncRequirementsFile() {
     text.endsWith("\n") ? text : `${text}\n`,
     "utf8",
   );
-  log(`refreshed ${path.relative(ROOT, REQUIREMENTS_PATH)}`);
+  console.log(
+    `[update-all] refreshed ${path.relative(root, REQUIREMENTS_PATH)}`,
+  );
 }
 
 function printInstalledVersions(packages) {
-  log("installed versions:");
+  console.log("[update-all] installed Python versions:");
   for (const name of packages) {
     const version = getInstalledVersion(name);
     if (version) {
@@ -107,9 +183,8 @@ function printInstalledVersions(packages) {
   }
 }
 
-export function updateAllDependencies() {
-  log("upgrading pip");
-  run("python -m pip install --upgrade pip");
+function updatePythonStack() {
+  run("upgrade pip", "python", ["-m", "pip", "install", "--upgrade", "pip"]);
 
   const runtimePackages = readRequirementNames();
   const packages = [...new Set([...runtimePackages, ...EXTRA_PYTHON_PACKAGES])];
@@ -117,32 +192,65 @@ export function updateAllDependencies() {
     throw new Error("No Python packages found to upgrade.");
   }
 
-  log("upgrading Python packages");
-  run(`python -m pip install --upgrade ${packages.join(" ")}`);
+  run("upgrade Python packages", "python", [
+    "-m",
+    "pip",
+    "install",
+    "--upgrade",
+    ...packages,
+  ]);
 
   syncRequirementsFile();
   printInstalledVersions(packages);
+}
 
-  const lockPath = path.join(ROOT, "package-lock.json");
-  if (fs.existsSync(lockPath)) {
-    log("upgrading npm packages");
-    run("npm update");
-  } else {
-    log("skipped npm update (no package-lock.json)");
+async function main() {
+  const opts = parseArgs(process.argv.slice(2));
+
+  console.log("[update-all] ===== started =====");
+  console.log(`[update-all] Project root: ${root}`);
+
+  if (!opts.skipGit) {
+    await gitPull();
   }
 
-  log("done");
-}
-
-function main() {
-  try {
-    updateAllDependencies();
-  } catch (error) {
-    console.error("[update-all] failed:", error.message ?? error);
-    process.exit(1);
+  if (!opts.skipNpm) {
+    await updateNpmStack(opts);
   }
+
+  if (!opts.skipPython) {
+    updatePythonStack();
+  }
+
+  if (opts.skipCores) {
+    console.log(
+      "[update-all] --skip-cores: no editor cores in this project (ignored)",
+    );
+  }
+
+  run("sync-version", "npm", ["run", "sync-version"]);
+
+  const brandingScript = path.join(root, "scripts", "prepare-branding.py");
+  if (fs.existsSync(brandingScript)) {
+    try {
+      run("prepare branding", "python", ["scripts/prepare-branding.py"]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[update-all] prepare branding skipped: ${message}`);
+    }
+  }
+
+  if (opts.build) {
+    run("build dist msi", "npm", ["run", "build:dist:msi"]);
+  }
+
+  console.log("[update-all] ===== finished =====");
 }
 
-if (isMain) {
-  main();
-}
+main().catch((error) => {
+  console.error(
+    "[update-all] ERROR:",
+    error instanceof Error ? error.message : error,
+  );
+  process.exit(1);
+});
