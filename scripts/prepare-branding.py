@@ -298,29 +298,6 @@ def save_multi_size_ico(path: Path, images: list[Image.Image]) -> None:
     )
 
 
-_PDF_FILE_ICON_BG = (255, 255, 255, 255)
-_PDF_FILE_ICON_MARGIN = 0.06
-
-
-def make_pdf_file_icon_image(icon: Image.Image, size: int = 256) -> Image.Image:
-    """Opaque square icon for Windows PDF shell association."""
-    canvas = Image.new("RGBA", (size, size), _PDF_FILE_ICON_BG)
-    fitted = icon.convert("RGBA")
-    inner = max(16, int(size * (1 - 2 * _PDF_FILE_ICON_MARGIN)))
-    fitted.thumbnail((inner, inner), Image.Resampling.LANCZOS)
-    x = (size - fitted.width) // 2
-    y = (size - fitted.height) // 2
-    canvas.paste(fitted, (x, y), fitted)
-    return canvas.convert("RGBA")
-
-
-def build_pdf_file_size_images(
-    color_icon: Image.Image,
-    sizes: tuple[int, ...] = _ICO_SIZES,
-) -> list[Image.Image]:
-    return [make_pdf_file_icon_image(color_icon, size) for size in sizes]
-
-
 def main() -> None:
     source = find_source()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -332,18 +309,19 @@ def main() -> None:
     icon_png_path = OUT_DIR / "app_icon.png"
     fit_icon_png(logo, 256).save(icon_png_path)
 
+    # Same transparent rounded icon for app + PDF shell association
+    # (white canvas left a visible corner fringe on the desktop).
     app_images = build_size_images(logo)
     ico_path = OUT_DIR / "app_icon.ico"
     save_multi_size_ico(ico_path, app_images)
 
-    pdf_images = build_pdf_file_size_images(logo)
     pdf_file_icon_path = OUT_DIR / "pdf_file_icon.ico"
-    save_multi_size_ico(pdf_file_icon_path, pdf_images)
+    save_multi_size_ico(pdf_file_icon_path, app_images)
 
     print(f"saved {logo_path} ({logo.size[0]}x{logo.size[1]})")
     print(f"saved {icon_png_path}")
     print(f"saved {ico_path} ({len(app_images)} sizes)")
-    print(f"saved {pdf_file_icon_path} ({len(pdf_images)} sizes)")
+    print(f"saved {pdf_file_icon_path} ({len(app_images)} sizes)")
 
 
 if __name__ == "__main__":

@@ -73,6 +73,32 @@ function ensureBrandingAssets() {
   }
 }
 
+function invalidatePyInstallerExeIfIconChanged() {
+  const stampPath = path.join(PYI_WORK, "embedded-app-icon.sha256");
+  const iconHash = fileHash(APP_ICON);
+  const previous = fs.existsSync(stampPath)
+    ? fs.readFileSync(stampPath, "utf8").trim()
+    : "";
+  if (previous === iconHash) {
+    return;
+  }
+
+  // PyInstaller embeds the icon into the EXE at the EXE step. If only the
+  // .ico data file changes, incremental builds skip EXE and keep the old
+  // taskbar/shell icon — force that step to run again.
+  const stalePaths = [
+    path.join(PYI_DIST, "PDFEditor", "PDFEditor.exe"),
+    path.join(PYI_WORK, "PDFEditor", "PDFEditor.exe"),
+    path.join(PYI_WORK, "PDFEditor", "EXE-00.toc"),
+  ];
+  for (const stale of stalePaths) {
+    fs.rmSync(stale, { force: true });
+  }
+  fs.mkdirSync(PYI_WORK, { recursive: true });
+  fs.writeFileSync(stampPath, `${iconHash}\n`, "utf8");
+  log("app icon changed; forcing PyInstaller EXE rebuild");
+}
+
 function copyPdfFileIconToAppRoot(appDir) {
   fs.copyFileSync(PDF_FILE_ICON, path.join(appDir, "pdf_file_icon.ico"));
   log("copied pdf_file_icon.ico to app root");
@@ -209,6 +235,7 @@ export function buildPortableApp() {
   fs.mkdirSync(PYI_WORK, { recursive: true });
 
   ensureBrandingAssets();
+  invalidatePyInstallerExeIfIconChanged();
 
   const datas = [
     [APP_LOGO, "pdf_editor/branding"],

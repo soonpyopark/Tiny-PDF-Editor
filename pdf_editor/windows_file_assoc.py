@@ -15,6 +15,8 @@ _REGISTERED_APPS_KEY = r"Software\RegisteredApplications"
 _REGISTERED_APPS_VALUE = "Tiny PDF Editor"
 _PROGID = "TinyPDFEditor.pdf"
 _PDF_EXTENSION = ".pdf"
+# IThumbnailProvider ShellEx — Windows uses this for large-icon page previews.
+_THUMBNAIL_SHELLEX = "{e357fccd-a995-4576-b01f-234630154e96}"
 
 
 def is_windows() -> bool:
@@ -40,8 +42,8 @@ def _open_command() -> str:
 def _default_icon_value() -> str:
     icon_path = installed_pdf_file_icon_path()
     if icon_path is not None:
-        return f'"{icon_path}",0'
-    return f'"{exe_path()}",0'
+        return f"{icon_path},0"
+    return f"{exe_path()},0"
 
 
 def _set_value(root: int, subkey: str, name: str, value: str) -> None:
@@ -78,6 +80,36 @@ def _delete_value(root: int, subkey: str, name: str) -> None:
         winreg.CloseKey(key)
 
 
+def _notify_assoc_changed() -> None:
+    if not is_windows():
+        return
+    try:
+        import ctypes
+
+        SHCNE_ASSOCCHANGED = 0x08000000
+        SHCNF_IDLIST = 0x0000
+        ctypes.windll.shell32.SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None)
+    except OSError:
+        pass
+
+
+def _disable_pdf_thumbnails(root: int) -> None:
+    """Prefer DefaultIcon over first-page live thumbnails in Explorer."""
+    for base in (
+        rf"Software\Classes\{_PDF_EXTENSION}",
+        rf"Software\Classes\SystemFileAssociations\{_PDF_EXTENSION}",
+    ):
+        _set_value(root, rf"{base}\ShellEx\{_THUMBNAIL_SHELLEX}", "", "")
+
+
+def _clear_pdf_thumbnail_overrides(root: int) -> None:
+    for base in (
+        rf"Software\Classes\{_PDF_EXTENSION}",
+        rf"Software\Classes\SystemFileAssociations\{_PDF_EXTENSION}",
+    ):
+        _delete_tree(root, rf"{base}\ShellEx\{_THUMBNAIL_SHELLEX}")
+
+
 def is_pdf_association_registered() -> bool:
     if not is_windows():
         return False
@@ -101,83 +133,43 @@ def register_pdf_association() -> None:
 
     command = _open_command()
     app_key = _applications_key()
+    icon = _default_icon_value()
+    root = winreg.HKEY_CURRENT_USER
 
-    _set_value(winreg.HKEY_CURRENT_USER, app_key, "", APP_NAME)
-    _set_value(winreg.HKEY_CURRENT_USER, app_key, "FriendlyAppName", APP_NAME)
-    _set_value(
-        winreg.HKEY_CURRENT_USER,
-        rf"{app_key}\shell\open\command",
-        "",
-        command,
-    )
-    _set_value(
-        winreg.HKEY_CURRENT_USER,
-        rf"{app_key}\SupportedTypes\.pdf",
-        "",
-        "",
-    )
+    _set_value(root, app_key, "", APP_NAME)
+    _set_value(root, app_key, "FriendlyAppName", APP_NAME)
+    _set_value(root, app_key, "AppUserModelID", "TinyPDFEditor.TinyPDFEditor.1")
+    _set_value(root, rf"{app_key}\shell\open\command", "", command)
+    _set_value(root, rf"{app_key}\SupportedTypes\.pdf", "", "")
+    _set_value(root, rf"{app_key}\DefaultIcon", "", icon)
 
+    _set_value(root, _CAPABILITIES_KEY, "ApplicationName", APP_NAME)
+    _set_value(root, _CAPABILITIES_KEY, "ApplicationDescription", f"{APP_NAME} PDF editor")
+    _set_value(root, _CAPABILITIES_KEY, "ApplicationIcon", icon)
     _set_value(
-        winreg.HKEY_CURRENT_USER,
-        _CAPABILITIES_KEY,
-        "ApplicationName",
-        APP_NAME,
-    )
-    _set_value(
-        winreg.HKEY_CURRENT_USER,
-        _CAPABILITIES_KEY,
-        "ApplicationDescription",
-        f"{APP_NAME} PDF editor",
-    )
-    _set_value(
-        winreg.HKEY_CURRENT_USER,
-        _CAPABILITIES_KEY,
-        "FileAssociations",
+        root,
+        rf"{_CAPABILITIES_KEY}\FileAssociations",
         _PDF_EXTENSION,
+        _PROGID,
     )
-    _set_value(
-        winreg.HKEY_CURRENT_USER,
-        _REGISTERED_APPS_KEY,
-        _REGISTERED_APPS_VALUE,
-        _CAPABILITIES_KEY,
-    )
+    _set_value(root, _REGISTERED_APPS_KEY, _REGISTERED_APPS_VALUE, _CAPABILITIES_KEY)
 
+    _set_value(root, rf"Software\Classes\{_PROGID}", "", APP_NAME)
+    _set_value(root, rf"Software\Classes\{_PROGID}\DefaultIcon", "", icon)
+    _set_value(root, rf"Software\Classes\{_PROGID}\shell\open\command", "", command)
+
+    # Claim .pdf and point its icon at our branding (used when we are the ProgID).
+    _set_value(root, rf"Software\Classes\{_PDF_EXTENSION}", "", _PROGID)
+    _set_value(root, rf"Software\Classes\{_PDF_EXTENSION}\DefaultIcon", "", icon)
     _set_value(
-        winreg.HKEY_CURRENT_USER,
-        rf"Software\Classes\{_PROGID}",
-        "",
-        APP_NAME,
-    )
-    _set_value(
-        winreg.HKEY_CURRENT_USER,
-        rf"Software\Classes\{_PROGID}\DefaultIcon",
-        "",
-        _default_icon_value(),
-    )
-    _set_value(
-        winreg.HKEY_CURRENT_USER,
-        rf"Software\Classes\Applications\{_exe_name()}\DefaultIcon",
-        "",
-        _default_icon_value(),
-    )
-    _set_value(
-        winreg.HKEY_CURRENT_USER,
-        rf"Software\Classes\{_PROGID}\shell\open\command",
-        "",
-        command,
-    )
-    _set_value(
-        winreg.HKEY_CURRENT_USER,
-        rf"Software\Classes\Applications\{_exe_name()}",
-        "AppUserModelID",
-        "TinyPDFEditor.TinyPDFEditor.1",
-    )
-    _set_value(
-        winreg.HKEY_CURRENT_USER,
+        root,
         rf"Software\Classes\{_PDF_EXTENSION}\OpenWithProgids",
         _PROGID,
         "",
     )
+
+    _disable_pdf_thumbnails(root)
+    _notify_assoc_changed()
 
 
 def unregister_pdf_association() -> None:
@@ -186,10 +178,25 @@ def unregister_pdf_association() -> None:
 
     root = winreg.HKEY_CURRENT_USER
     _delete_value(root, rf"Software\Classes\{_PDF_EXTENSION}\OpenWithProgids", _PROGID)
+
+    try:
+        key = winreg.OpenKey(root, rf"Software\Classes\{_PDF_EXTENSION}")
+        try:
+            value, _ = winreg.QueryValueEx(key, "")
+        finally:
+            winreg.CloseKey(key)
+        if value == _PROGID:
+            _delete_value(root, rf"Software\Classes\{_PDF_EXTENSION}", "")
+    except OSError:
+        pass
+
+    _delete_tree(root, rf"Software\Classes\{_PDF_EXTENSION}\DefaultIcon")
+    _clear_pdf_thumbnail_overrides(root)
     _delete_tree(root, _applications_key())
     _delete_tree(root, rf"Software\Classes\{_PROGID}")
     _delete_value(root, _REGISTERED_APPS_KEY, _REGISTERED_APPS_VALUE)
     _delete_tree(root, _CAPABILITIES_KEY)
+    _notify_assoc_changed()
 
 
 def open_pdf_default_apps_settings() -> None:

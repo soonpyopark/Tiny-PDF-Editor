@@ -74,7 +74,11 @@
       <RegistryKey Root="HKCU" Key="Software\TinyPDFEditor\Capabilities">
         <RegistryValue Name="ApplicationName" Type="string" Value="Tiny PDF Editor" />
         <RegistryValue Name="ApplicationDescription" Type="string" Value="Tiny PDF Editor PDF editor" />
-        <RegistryValue Name="FileAssociations" Type="string" Value=".pdf" />
+        <RegistryValue Name="ApplicationIcon" Type="string" Value="[INSTALLFOLDER]pdf_file_icon.ico,0" />
+      </RegistryKey>
+
+      <RegistryKey Root="HKCU" Key="Software\TinyPDFEditor\Capabilities\FileAssociations">
+        <RegistryValue Name=".pdf" Type="string" Value="TinyPDFEditor.pdf" />
       </RegistryKey>
 
       <RegistryKey Root="HKCU" Key="Software\RegisteredApplications">
@@ -97,8 +101,25 @@
         <RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]Tiny PDF Editor.exe&quot; &quot;%1&quot;" />
       </RegistryKey>
 
+      <!-- Prefer branded icon over first-page PDF thumbnails in large-icon views. -->
+      <RegistryKey Root="HKCU" Key="Software\Classes\.pdf">
+        <RegistryValue Type="string" Value="TinyPDFEditor.pdf" />
+      </RegistryKey>
+
+      <RegistryKey Root="HKCU" Key="Software\Classes\.pdf\DefaultIcon">
+        <RegistryValue Type="string" Value="[INSTALLFOLDER]pdf_file_icon.ico,0" />
+      </RegistryKey>
+
       <RegistryKey Root="HKCU" Key="Software\Classes\.pdf\OpenWithProgids">
         <RegistryValue Name="TinyPDFEditor.pdf" Type="string" Value="" />
+      </RegistryKey>
+
+      <RegistryKey Root="HKCU" Key="Software\Classes\.pdf\ShellEx\{e357fccd-a995-4576-b01f-234630154e96}">
+        <RegistryValue Type="string" Value="" />
+      </RegistryKey>
+
+      <RegistryKey Root="HKCU" Key="Software\Classes\SystemFileAssociations\.pdf\ShellEx\{e357fccd-a995-4576-b01f-234630154e96}">
+        <RegistryValue Type="string" Value="" />
       </RegistryKey>
     </Component>
 
