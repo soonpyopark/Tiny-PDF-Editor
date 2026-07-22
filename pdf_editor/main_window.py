@@ -362,6 +362,7 @@ class TabSearchBar(QWidget):
   """Search controls aligned with the document tab row."""
 
   search_requested = pyqtSignal(str)
+  search_enter = pyqtSignal()
   search_next = pyqtSignal()
   search_prev = pyqtSignal()
 
@@ -378,7 +379,8 @@ class TabSearchBar(QWidget):
     self.search_edit.setPlaceholderText("텍스트 검색")
     self.search_edit.setClearButtonEnabled(True)
     self.search_edit.setFixedSize(148, 24)
-    self.search_edit.returnPressed.connect(self._emit_search)
+    self.search_edit.setToolTip("Enter: 다음 결과 (검색어 변경 시 다시 검색)")
+    self.search_edit.returnPressed.connect(self.search_enter.emit)
     self.search_edit.textChanged.connect(self._on_search_text_changed)
     layout.addWidget(self.search_edit)
 
@@ -419,13 +421,9 @@ class TabSearchBar(QWidget):
     self._layout.setContentsMargins(0, 0, max(0, pixels), 0)
     self.updateGeometry()
 
-  def _emit_search(self) -> None:
-    self.search_requested.emit(self.search_edit.text().strip())
-
   def _on_search_text_changed(self, text: str) -> None:
     if not text.strip():
       self.search_requested.emit("")
-
 
 class DocumentTab(QWidget):
   """Single open document: thumbnails + viewer."""
@@ -1256,6 +1254,7 @@ class MainWindow(QMainWindow):
 
     self._search_bar = TabSearchBar()
     self._search_bar.search_requested.connect(self._run_search)
+    self._search_bar.search_enter.connect(self._on_search_enter)
     self._search_bar.search_next.connect(self._search_next)
     self._search_bar.search_prev.connect(self._search_prev)
     self.tabs.setCornerWidget(self._search_bar, Qt.Corner.TopRightCorner)
@@ -1750,6 +1749,14 @@ class MainWindow(QMainWindow):
     self.statusBar().showMessage(
       f'"{self._search_query}" {len(self._search_hits)}건'
     )
+
+  def _on_search_enter(self) -> None:
+    """Enter: search when query changed; otherwise jump to the next hit."""
+    query = self._search_bar.search_query()
+    if query and query == self._search_query and self._search_hits:
+      self._search_next()
+      return
+    self._run_search(query)
 
   def _search_next(self) -> None:
     if not self._search_hits:
