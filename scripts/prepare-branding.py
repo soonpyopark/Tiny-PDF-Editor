@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from collections import deque
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "assets" / "source_logo.png"
 OUT_DIR = ROOT / "pdf_editor" / "branding"
+ICON_OVERRIDES_DIR = ROOT / "assets" / "icon_overrides"
+ICON_CHECK_DIR = ROOT / ".cache" / "icon_check"
 
 _SATURATION_THRESHOLD = 0.06
 _WHITE_BG_THRESHOLD = 232
@@ -284,6 +287,114 @@ def build_size_images(
     return [make_ico_image(color_icon, size) for size in sizes]
 
 
+def _parse_size_from_name(name: str, prefixes: tuple[str, ...]) -> int | None:
+    stem = Path(name).stem
+    for prefix in prefixes:
+        marker = f"{prefix}_"
+        if not stem.startswith(marker):
+            continue
+        rest = stem[len(marker) :]
+        if "x" not in rest:
+            return None
+        width_text, height_text = rest.split("x", 1)
+        if not width_text.isdigit() or not height_text.isdigit():
+            return None
+        width, height = int(width_text), int(height_text)
+        if width == height:
+            return width
+    return None
+
+
+def sync_modified_icon_check_overrides() -> list[str]:
+    """Copy user-edited size PNGs from .cache/icon_check into assets/icon_overrides.
+
+    A file is treated as edited when its mtime is at least one day newer than
+    the oldest same-family extract in icon_check (original batch vs later edits).
+    """
+    if not ICON_CHECK_DIR.is_dir():
+        return []
+
+    families = {
+        "app_icon": ("app_icon", "exe_png"),
+        "pdf_file_icon": ("pdf_file_icon",),
+    }
+    copied: list[str] = []
+    ICON_OVERRIDES_DIR.mkdir(parents=True, exist_ok=True)
+
+    for dest_prefix, source_prefixes in families.items():
+        candidates: list[Path] = []
+        for prefix in source_prefixes:
+            candidates.extend(ICON_CHECK_DIR.glob(f"{prefix}_*x*.png"))
+        if not candidates:
+            continue
+        baseline = min(path.stat().st_mtime for path in candidates)
+        # Prefer explicit app_icon_* over exe_png_* when both edited for a size.
+        by_size: dict[int, Path] = {}
+        for path in sorted(candidates, key=lambda item: item.stat().st_mtime):
+            if path.stat().st_mtime < baseline + 86400:
+                continue
+            size = _parse_size_from_name(path.name, source_prefixes)
+            if size is None or size not in _ICO_SIZES:
+                continue
+            # Later mtime wins; app_icon_* sorts after exe_png alphabetically
+            # but we sort by mtime above — if same-day edits, prefer app_icon.
+            existing = by_size.get(size)
+            if existing is not None and existing.name.startswith("app_icon_"):
+                if not path.name.startswith("app_icon_"):
+                    continue
+            by_size[size] = path
+
+        for size, source in sorted(by_size.items()):
+            dest = ICON_OVERRIDES_DIR / f"{dest_prefix}_{size}x{size}.png"
+            dest.write_bytes(source.read_bytes())
+            # Preserve the edit timestamp for later audits.
+            mtime = source.stat().st_mtime
+            os.utime(dest, (mtime, mtime))
+            copied.append(dest.name)
+
+    return copied
+
+
+def load_size_overrides(prefix: str) -> dict[int, Image.Image]:
+    """Load per-size RGBA overrides from assets/icon_overrides."""
+    overrides: dict[int, Image.Image] = {}
+    if not ICON_OVERRIDES_DIR.is_dir():
+        return overrides
+    for path in ICON_OVERRIDES_DIR.glob(f"{prefix}_*x*.png"):
+        size = _parse_size_from_name(path.name, (prefix,))
+        if size is None or size not in _ICO_SIZES:
+            continue
+        image = Image.open(path).convert("RGBA")
+        if image.size != (size, size):
+            fitted = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            scaled = image.copy()
+            scaled.thumbnail((size, size), Image.Resampling.LANCZOS)
+            x = (size - scaled.width) // 2
+            y = (size - scaled.height) // 2
+            fitted.paste(scaled, (x, y), scaled)
+            image = fitted
+        overrides[size] = image
+    return overrides
+
+
+def apply_size_overrides(
+    images: list[Image.Image],
+    overrides: dict[int, Image.Image],
+    sizes: tuple[int, ...] = _ICO_SIZES,
+) -> tuple[list[Image.Image], list[int]]:
+    """Replace generated size bitmaps with override images when present."""
+    applied: list[int] = []
+    merged: list[Image.Image] = []
+    for image, size in zip(images, sizes, strict=True):
+        override = overrides.get(size)
+        if override is not None:
+            merged.append(override)
+            applied.append(size)
+        else:
+            merged.append(image)
+    return merged, applied
+
+
 def save_multi_size_ico(path: Path, images: list[Image.Image]) -> None:
     """Write an .ico containing each pre-rendered size bitmap."""
     if not images:
@@ -302,26 +413,44 @@ def main() -> None:
     source = find_source()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    synced = sync_modified_icon_check_overrides()
+    if synced:
+        print("synced icon overrides from .cache/icon_check: " + ", ".join(synced))
+
     logo = prepare_logo(source)
     logo_path = OUT_DIR / "app_logo.png"
     logo.save(logo_path)
 
     icon_png_path = OUT_DIR / "app_icon.png"
-    fit_icon_png(logo, 256).save(icon_png_path)
+    app_overrides = load_size_overrides("app_icon")
+    if 256 in app_overrides:
+        app_overrides[256].save(icon_png_path)
+    else:
+        fit_icon_png(logo, 256).save(icon_png_path)
 
-    # Same transparent rounded icon for app + PDF shell association
-    # (white canvas left a visible corner fringe on the desktop).
+    # Transparent rounded icon for app + PDF shell association.
     app_images = build_size_images(logo)
+    app_images, app_applied = apply_size_overrides(app_images, app_overrides)
     ico_path = OUT_DIR / "app_icon.ico"
     save_multi_size_ico(ico_path, app_images)
 
+    pdf_images = build_size_images(logo)
+    pdf_overrides = load_size_overrides("pdf_file_icon")
+    pdf_images, pdf_applied = apply_size_overrides(pdf_images, pdf_overrides)
     pdf_file_icon_path = OUT_DIR / "pdf_file_icon.ico"
-    save_multi_size_ico(pdf_file_icon_path, app_images)
+    save_multi_size_ico(pdf_file_icon_path, pdf_images)
 
     print(f"saved {logo_path} ({logo.size[0]}x{logo.size[1]})")
     print(f"saved {icon_png_path}")
     print(f"saved {ico_path} ({len(app_images)} sizes)")
-    print(f"saved {pdf_file_icon_path} ({len(app_images)} sizes)")
+    print(f"saved {pdf_file_icon_path} ({len(pdf_images)} sizes)")
+    if app_applied:
+        print("app_icon overrides: " + ", ".join(str(size) for size in app_applied))
+    if pdf_applied:
+        print(
+            "pdf_file_icon overrides: "
+            + ", ".join(str(size) for size in pdf_applied)
+        )
 
 
 if __name__ == "__main__":

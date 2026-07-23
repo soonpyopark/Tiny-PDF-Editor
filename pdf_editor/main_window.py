@@ -29,7 +29,6 @@ from PyQt6.QtGui import (
   QShortcut,
   QShowEvent,
 )
-from PyQt6.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -39,6 +38,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QSizePolicy,
     QSplitter,
@@ -62,9 +62,13 @@ from pdf_editor.document import (
 from pdf_editor.page_clipboard import PageClipboard
 from pdf_editor.password_dialog import SetPasswordDialog, prompt_pdf_password
 from pdf_editor.recent_files import RecentFilesStore
-from pdf_editor.print_utils import print_document
+from pdf_editor.print_dialog import DocumentPrintDialog
 from pdf_editor.page_viewer import PageViewer
 from pdf_editor.reduce_size_dialog import ReduceSizeDialog
+from pdf_editor.export_images_dialog import (
+  ExportImagesDialog,
+  export_folder_name_for_document,
+)
 from pdf_editor.resources import (
   init_platform,
   load_app_icon,
@@ -591,11 +595,11 @@ class DocumentTab(QWidget):
   def _connect_signals(self) -> None:
     self.thumbnails.page_selected.connect(self._on_thumb_selected)
     self.viewer.page_changed.connect(self._on_viewer_page_changed)
-    self.viewer.page_canvas.text_highlight_added.connect(self._on_text_highlight_added)
-    self.viewer.page_canvas.text_edited.connect(self._on_text_edited)
+    self.viewer.text_highlight_added.connect(self._on_text_highlight_added)
+    self.viewer.text_edited.connect(self._on_text_edited)
     self.highlight_panel.entry_selected.connect(self._on_highlight_panel_entry_selected)
     self.highlight_panel.markup_changed.connect(self._on_text_highlight_added)
-    self.viewer.page_canvas.markup_clicked.connect(self._on_markup_clicked)
+    self.viewer.markup_clicked.connect(self._on_markup_clicked)
     self.thumbnails.insert_requested.connect(self._on_insert)
     self.thumbnails.pages_move_requested.connect(self._on_move_pages)
     self.thumbnails.delete_requested.connect(self._on_delete)
@@ -672,20 +676,22 @@ class DocumentTab(QWidget):
     return self.thumbnails.copy_indices()
 
   def _should_copy_viewer_text(self) -> bool:
-    canvas = self.viewer.page_canvas
-    if not canvas.selected_text():
+    canvases = (self.viewer.page_canvas, self.viewer.page_canvas_right)
+    if not any(canvas.selected_text() for canvas in canvases):
       return False
     focus = QApplication.focusWidget()
     if focus is None:
       return False
     if isinstance(focus, QLineEdit):
       return False
-    return focus is canvas or self.viewer.isAncestorOf(focus)
+    return focus in canvases or self.viewer.isAncestorOf(focus)
 
   def _on_copy_pages_shortcut(self) -> None:
     if self._should_copy_viewer_text():
-      self.viewer.page_canvas._copy_selection()
-      return
+      for canvas in (self.viewer.page_canvas, self.viewer.page_canvas_right):
+        if canvas.selected_text():
+          canvas._copy_selection()
+          return
     indices = self._page_indices_for_clipboard()
     if indices:
       self._on_copy_pages(indices)
@@ -840,14 +846,10 @@ class DocumentTab(QWidget):
 
     left_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Left), self)
     left_shortcut.activated.connect(
-      lambda: self.viewer.set_current_index(
-        self.viewer.current_index() - 1, scroll_to_bottom=True
-      )
+      lambda: self.viewer.go_previous_page(scroll_to_bottom=True)
     )
     right_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Right), self)
-    right_shortcut.activated.connect(
-      lambda: self.viewer.set_current_index(self.viewer.current_index() + 1)
-    )
+    right_shortcut.activated.connect(self.viewer.go_next_page)
 
     first_page = QShortcut(QKeySequence("Ctrl+Shift+Left"), self)
     first_page.activated.connect(lambda: self.viewer.set_current_index(0))
@@ -944,6 +946,7 @@ class DocumentTab(QWidget):
     self.thumbnails.blockSignals(True)
     self.thumbnails.set_current_index(entry.page_index)
     self.thumbnails.blockSignals(False)
+    self.viewer.show_selection_context_menu(page_index=entry.page_index)
 
   @staticmethod
   def _insert_focus_index(
@@ -1413,6 +1416,10 @@ class MainWindow(QMainWindow):
     act_save_as.triggered.connect(self._save_as)
     menu.addAction(act_save_as)
 
+    act_save_images = QAction("이미지로 저장...", self)
+    act_save_images.triggered.connect(self._save_as_images)
+    menu.addAction(act_save_images)
+
     menu.addSeparator()
 
     act_print = QAction("인쇄...", self)
@@ -1527,6 +1534,14 @@ class MainWindow(QMainWindow):
     act_fit_page = QAction("화면 맞추기", self)
     act_fit_page.triggered.connect(lambda: self._current_tab() and self._current_tab().viewer.fit_page())
     view_menu.addAction(act_fit_page)
+
+    view_menu.addSeparator()
+    self._act_facing_pages = QAction("두 페이지 보기", self)
+    self._act_facing_pages.setCheckable(True)
+    self._act_facing_pages.setShortcut(QKeySequence("Ctrl+2"))
+    self._act_facing_pages.triggered.connect(self._toggle_facing_pages)
+    view_menu.addAction(self._act_facing_pages)
+    self.addAction(self._act_facing_pages)
 
     view_menu.addSeparator()
     self._act_fullscreen = QAction("전체 화면", self)
@@ -1712,10 +1727,29 @@ class MainWindow(QMainWindow):
   def _on_tab_changed(self, _index: int) -> None:
     self._update_edit_actions()
     self._update_window_title()
+    self._sync_facing_pages_action()
     if self._search_query:
       self._run_search(self._search_query)
     else:
       self._clear_search_highlights()
+
+  def _toggle_facing_pages(self, checked: bool) -> None:
+    tab = self._current_tab()
+    if tab is None:
+      return
+    tab.viewer.set_facing_mode(checked)
+
+  def _sync_facing_pages_action(self) -> None:
+    if not hasattr(self, "_act_facing_pages"):
+      return
+    tab = self._current_tab()
+    enabled = tab is not None
+    self._act_facing_pages.setEnabled(enabled)
+    self._act_facing_pages.blockSignals(True)
+    self._act_facing_pages.setChecked(
+      bool(tab and tab.viewer.facing_mode())
+    )
+    self._act_facing_pages.blockSignals(False)
 
   def _clear_search_highlights(self) -> None:
     tab = self._current_tab()
@@ -1797,6 +1831,7 @@ class MainWindow(QMainWindow):
     name = title or document.display_name
     index = self.tabs.addTab(tab, name)
     self.tabs.setCurrentIndex(index)
+    self._sync_facing_pages_action()
     return tab
 
   def _new_tab(self) -> None:
@@ -2040,6 +2075,101 @@ class MainWindow(QMainWindow):
     if tab:
       self._save_document_tab_as(tab)
 
+  def _save_as_images(self) -> None:
+    tab = self._current_tab()
+    if tab is None or tab.document.page_count == 0:
+      QMessageBox.information(self, "이미지로 저장", "저장할 페이지가 있는 문서를 열어주세요.")
+      return
+
+    options_dialog = ExportImagesDialog(tab.document, parent=self)
+    if options_dialog.exec() != QDialog.DialogCode.Accepted:
+      return
+    options = options_dialog.selected_options()
+
+    start_dir = ""
+    if tab.document.source_path:
+      start_dir = str(Path(tab.document.source_path).parent)
+    parent_dir = QFileDialog.getExistingDirectory(
+      self,
+      "이미지를 저장할 폴더 선택",
+      start_dir,
+    )
+    if not parent_dir:
+      return
+
+    folder_name = export_folder_name_for_document(tab.document)
+    output_dir = Path(parent_dir) / folder_name
+    if output_dir.exists() and any(output_dir.iterdir()):
+      reply = QMessageBox.question(
+        self,
+        "이미지로 저장",
+        f"폴더가 이미 있습니다:\n{output_dir}\n\n기존 파일을 덮어쓸까요?",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+      )
+      if reply != QMessageBox.StandardButton.Yes:
+        return
+
+    page_total = options.page_to - options.page_from + 1
+    progress = QProgressDialog(
+      "페이지를 이미지로 저장하는 중...",
+      "취소",
+      0,
+      page_total,
+      self,
+    )
+    progress.setWindowTitle("이미지로 저장")
+    progress.setWindowModality(Qt.WindowModality.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.setValue(0)
+    cancelled = {"value": False}
+
+    def on_progress(current: int, total: int) -> None:
+      progress.setMaximum(total)
+      progress.setValue(current)
+      progress.setLabelText(f"페이지 저장 중... {current}/{total}")
+      QApplication.processEvents()
+      if progress.wasCanceled():
+        cancelled["value"] = True
+        raise RuntimeError("__cancelled__")
+
+    try:
+      tab.document.export_document_as_images(
+        output_dir,
+        dpi=options.dpi,
+        image_format=options.image_format,
+        jpeg_quality=options.jpeg_quality,
+        page_from=options.page_from,
+        page_to=options.page_to,
+        include_annotations=options.include_annotations,
+        progress=on_progress,
+      )
+    except RuntimeError as exc:
+      if str(exc) == "__cancelled__":
+        self.statusBar().showMessage("이미지 저장이 취소되었습니다.")
+        return
+      QMessageBox.critical(self, "이미지로 저장 오류", str(exc))
+      return
+    except Exception as exc:
+      QMessageBox.critical(self, "이미지로 저장 오류", str(exc))
+      return
+    finally:
+      progress.close()
+
+    if cancelled["value"]:
+      return
+
+    self.statusBar().showMessage(f"이미지 저장됨: {output_dir}")
+    open_reply = QMessageBox.question(
+      self,
+      "이미지로 저장",
+      f"{page_total}개 이미지를 저장했습니다.\n\n{output_dir}\n\n폴더를 여시겠습니까?",
+      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+      QMessageBox.StandardButton.Yes,
+    )
+    if open_reply == QMessageBox.StandardButton.Yes:
+      QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_dir)))
+
   def _save_document_tab(self, tab: DocumentTab) -> bool:
     index = self.tabs.indexOf(tab)
     if tab.document.source_path:
@@ -2099,16 +2229,9 @@ class MainWindow(QMainWindow):
     if not tab or tab.document.page_count == 0:
       QMessageBox.information(self, "인쇄", "인쇄할 문서가 없습니다.")
       return
-
-    printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-    dialog = QPrintDialog(printer, self)
-    if dialog.exec() != QPrintDialog.DialogCode.Accepted:
-      return
-
-    try:
-      print_document(tab.document, printer)
-    except Exception as exc:
-      QMessageBox.critical(self, "인쇄 오류", str(exc))
+    # Single-page lazy preview (safe for large PDFs). Final print uses HighResolution.
+    dialog = DocumentPrintDialog(tab.document, self, title="인쇄")
+    dialog.exec()
 
   def _set_document_password(self) -> None:
     tab = self._current_tab()

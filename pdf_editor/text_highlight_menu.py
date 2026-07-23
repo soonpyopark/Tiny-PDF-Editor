@@ -159,17 +159,23 @@ def _dismiss_popup_menus(*menus: QMenu) -> None:
 
 def _reset_markup_menu_hover(menu: QMenu) -> None:
     menu._block_markup_hover = True
+    menu._hover_arm_pos = QCursor.pos()
     menu.setActiveAction(None)
     for row in getattr(menu, "_markup_rows", []):
-        row.set_hovered(False)
-    QTimer.singleShot(
-        0,
-        lambda: menu.setActiveAction(None) if menu.isVisible() else None,
-    )
+        row.force_set_hovered(False)
+    QTimer.singleShot(0, lambda: _keep_markup_hover_cleared(menu))
+
+
+def _keep_markup_hover_cleared(menu: QMenu) -> None:
+    if not menu.isVisible():
+        return
+    menu.setActiveAction(None)
+    for row in getattr(menu, "_markup_rows", []):
+        row.force_set_hovered(False)
 
 
 class _MarkupMenuHoverFilter(QObject):
-    """Defer row hover until the pointer moves after the menu opens."""
+    """Defer row hover until the pointer actually moves after the menu opens."""
 
     def __init__(self, menu: QMenu) -> None:
         super().__init__(menu)
@@ -184,12 +190,20 @@ class _MarkupMenuHoverFilter(QObject):
             return False
 
         if event.type() == QEvent.Type.MouseMove:
-            menu._block_markup_hover = False
             global_pos = (
                 event.globalPosition().toPoint()
                 if isinstance(event, QMouseEvent)
                 else QCursor.pos()
             )
+            if getattr(menu, "_block_markup_hover", False):
+                arm = getattr(menu, "_hover_arm_pos", None)
+                # Ignore the synthetic move at the open cursor; require real travel.
+                if arm is not None and (global_pos - arm).manhattanLength() < 6:
+                    menu.setActiveAction(None)
+                    for row in getattr(menu, "_markup_rows", []):
+                        row.force_set_hovered(False)
+                    return False
+                menu._block_markup_hover = False
             for row in getattr(menu, "_markup_rows", []):
                 row.sync_hover(global_pos)
             return False
@@ -197,6 +211,13 @@ class _MarkupMenuHoverFilter(QObject):
         if event.type() == QEvent.Type.Leave:
             for row in getattr(menu, "_markup_rows", []):
                 row.sync_hover(None)
+            return False
+
+        if event.type() in (
+            QEvent.Type.Show,
+            QEvent.Type.PolishRequest,
+        ):
+            _keep_markup_hover_cleared(menu)
             return False
 
         return False
@@ -436,10 +457,11 @@ class _HighlightSplitMenuItem(QWidget):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         self._hovered = False
+        # Always paint an opaque row; otherwise QMenu::item:selected shows through
+        # as a false hover on the custom 형광펜/밑줄 rows.
+        self.force_set_hovered(False)
 
-        self.set_hovered(False)
-
-        color_menu.aboutToShow.connect(lambda: self.set_hovered(True))
+        color_menu.aboutToShow.connect(lambda: self.force_set_hovered(True))
 
         color_menu.aboutToHide.connect(self._sync_hover_from_cursor)
 
@@ -476,14 +498,16 @@ class _HighlightSplitMenuItem(QWidget):
         layout.addWidget(self._arrow, 0, Qt.AlignmentFlag.AlignVCenter)
 
     def showEvent(self, event) -> None:
-        self.set_hovered(False)
+        self.force_set_hovered(False)
         self._parent_menu.setActiveAction(None)
         super().showEvent(event)
 
     def show_color_submenu(self) -> None:
         if self._color_menu.isVisible():
             return
-        self.set_hovered(True)
+        if self._hover_blocked():
+            return
+        self.force_set_hovered(True)
         anchor = self._arrow.mapToGlobal(QPoint(self._arrow.width(), 0))
         self._color_menu.popup(anchor)
 
@@ -496,18 +520,18 @@ class _HighlightSplitMenuItem(QWidget):
 
     def _sync_hover_from_cursor(self) -> None:
         if self._color_menu.isVisible():
-            self.set_hovered(True)
+            self.force_set_hovered(True)
             return
         self.sync_hover(QCursor.pos())
 
     def sync_hover(self, global_pos: QPoint | None) -> None:
         if self._color_menu.isVisible():
-            self.set_hovered(True)
+            self.force_set_hovered(True)
             return
         if global_pos is None or self._hover_blocked():
-            self.set_hovered(False)
+            self.force_set_hovered(False)
             return
-        self.set_hovered(self._is_under_cursor(global_pos))
+        self.force_set_hovered(self._is_under_cursor(global_pos))
 
     def _row_style(self, background: str) -> str:
         return (
@@ -520,43 +544,32 @@ class _HighlightSplitMenuItem(QWidget):
             "}"
         )
 
-    def set_hovered(self, hovered: bool) -> None:
-
-        if self._hovered == hovered:
-
-            return
-
+    def force_set_hovered(self, hovered: bool) -> None:
+        """Apply hover chrome even when the boolean state is unchanged."""
         self._hovered = hovered
-
         if hovered:
-
             self.setStyleSheet(self._row_style(_MENU_ITEM_HOVER_BG))
         else:
             self.setStyleSheet(self._row_style(_MENU_ITEM_NORMAL_BG))
 
-
+    def set_hovered(self, hovered: bool) -> None:
+        if self._hovered == hovered:
+            return
+        self.force_set_hovered(hovered)
 
     def enterEvent(self, event) -> None:
-
         if self._hover_blocked():
             self._parent_menu.setActiveAction(None)
+            self.force_set_hovered(False)
         else:
             self.set_hovered(True)
-
         super().enterEvent(event)
 
-
-
     def leaveEvent(self, event) -> None:
-
         if self._color_menu.isVisible():
-
             super().leaveEvent(event)
-
             return
-
-        self.set_hovered(False)
-
+        self.force_set_hovered(False)
         super().leaveEvent(event)
 
 
@@ -745,6 +758,7 @@ def build_text_selection_context_menu(
     menu.setStyleSheet(TEXT_SELECTION_MENU_STYLE)
     menu._markup_rows = []
     menu._block_markup_hover = True
+    menu._hover_arm_pos = QCursor.pos()
     menu._markup_hover_filter = _MarkupMenuHoverFilter(menu)
     menu.installEventFilter(menu._markup_hover_filter)
     menu.aboutToShow.connect(lambda: _reset_markup_menu_hover(menu))

@@ -1,6 +1,6 @@
 """Application version — single source of truth."""
 
-__version__ = "1.1.2"
+__version__ = "1.1.3"
 
 APP_NAME = "Tiny PDF Editor"
 

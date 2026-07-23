@@ -1391,7 +1391,11 @@ class PdfDocument:
 
     @staticmethod
     def _markup_quads_from_words(words: list) -> list[fitz.Quad]:
-        """Build highlight/underline quads including whitespace gaps on each line."""
+        """Build highlight quads as one continuous band per text line.
+
+        Per-word boxes leave vertical gaps and jagged top/bottom edges; merging
+        each line into a single rect keeps selection and markup visually smooth.
+        """
         if not words:
             return []
         ordered = sorted(words, key=PdfDocument._word_sort_key)
@@ -1400,22 +1404,13 @@ class PdfDocument:
         current_line = PdfDocument._word_line_id(ordered[0])
 
         def flush_line(words_on_line: list) -> None:
-            for index, word in enumerate(words_on_line):
-                x0, y0, x1, y1 = word[:4]
-                quads.append(PdfDocument._quad_from_rect(fitz.Rect(x0, y0, x1, y1)))
-                if index + 1 >= len(words_on_line):
-                    continue
-                next_word = words_on_line[index + 1]
-                nx0, ny0, nx1, ny1 = next_word[:4]
-                gap_x0 = x1
-                gap_x1 = nx0
-                if gap_x1 <= gap_x0 + 0.1:
-                    continue
-                gy0 = min(y0, ny0)
-                gy1 = max(y1, ny1)
-                quads.append(
-                    PdfDocument._quad_from_rect(fitz.Rect(gap_x0, gy0, gap_x1, gy1))
-                )
+            if not words_on_line:
+                return
+            x0 = min(word[0] for word in words_on_line)
+            y0 = min(word[1] for word in words_on_line)
+            x1 = max(word[2] for word in words_on_line)
+            y1 = max(word[3] for word in words_on_line)
+            quads.append(PdfDocument._quad_from_rect(fitz.Rect(x0, y0, x1, y1)))
 
         for word in ordered[1:]:
             if PdfDocument._word_line_id(word) != current_line:
@@ -2409,20 +2404,76 @@ class PdfDocument:
         warnings = fitz.TOOLS.mupdf_warnings(reset=True).lower()
         return any(token in warnings for token in ("corrupt", "format error", "cannot read"))
 
-    def render_page_pixmap(self, index: int, zoom: float = 1.0) -> fitz.Pixmap:
+    def render_page_pixmap(
+        self,
+        index: int,
+        zoom: float = 1.0,
+        *,
+        annots: bool = False,
+    ) -> fitz.Pixmap:
         if self.rendering_paused:
             raise RuntimeError("rendering paused")
         page = self._doc[index]
         matrix = fitz.Matrix(zoom, zoom)
         try:
             fitz.TOOLS.mupdf_warnings(reset=True)
-            pix = page.get_pixmap(matrix=matrix, alpha=False, annots=False)
+            pix = page.get_pixmap(matrix=matrix, alpha=False, annots=annots)
             if self._render_failed_after_mupdf():
                 return self._blank_page_pixmap(page.rect.width, page.rect.height, zoom)
             return pix
         except Exception:
             fitz.TOOLS.mupdf_warnings(reset=True)
             return self._blank_page_pixmap(page.rect.width, page.rect.height, zoom)
+
+    def export_document_as_images(
+        self,
+        output_dir: str | Path,
+        *,
+        dpi: int = 150,
+        image_format: str = "png",
+        jpeg_quality: int = 92,
+        page_from: int = 1,
+        page_to: int | None = None,
+        include_annotations: bool = True,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> Path:
+        """Render pages into *output_dir* as zero-padded image files.
+
+        Filenames use the document page-count width (e.g. 01.png … 12.png).
+        Returns the output directory path.
+        """
+        if self.page_count <= 0:
+            raise ValueError("저장할 페이지가 없습니다.")
+        start = max(1, page_from)
+        end = self.page_count if page_to is None else min(self.page_count, page_to)
+        if start > end:
+            raise ValueError("페이지 범위가 올바르지 않습니다.")
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        zoom = max(0.1, float(dpi) / 72.0)
+        width = max(1, len(str(self.page_count)))
+        ext = "jpg" if image_format.lower() in ("jpg", "jpeg") else "png"
+        total = end - start + 1
+
+        for offset, page_number in enumerate(range(start, end + 1), start=1):
+            if progress is not None:
+                progress(offset, total)
+            pix = self.render_page_pixmap(
+                page_number - 1,
+                zoom,
+                annots=include_annotations,
+            )
+            filename = f"{page_number:0{width}d}.{ext}"
+            target = out / filename
+            try:
+                if ext == "jpg":
+                    pix.save(str(target), jpg_quality=max(1, min(100, jpeg_quality)))
+                else:
+                    pix.save(str(target))
+            finally:
+                pix = None
+        return out
 
     def render_thumbnail_pixmap(self, index: int, max_width: int = 120) -> fitz.Pixmap:
         if self.rendering_paused:

@@ -1,6 +1,6 @@
 {
   "name": "tiny-pdf-editor",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "private": true,
   "description": "Tiny PDF Editor desktop app",
   "scripts": {
