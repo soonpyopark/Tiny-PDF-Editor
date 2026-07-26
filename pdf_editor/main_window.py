@@ -11,6 +11,8 @@ from pathlib import Path
 
 from PyQt6.QtCore import (
   QEasingCurve,
+  QEvent,
+  QObject,
   QPoint,
   QPropertyAnimation,
   QSize,
@@ -37,6 +39,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressDialog,
     QPushButton,
@@ -1237,6 +1240,31 @@ class DocumentTab(QWidget):
       QMessageBox.critical(self, "이미지로 저장", str(exc))
 
 
+class _RecentMenuEventFilter(QObject):
+  """Right-click a recent-file row to remove it from the list."""
+
+  def __init__(self, window: "MainWindow") -> None:
+    super().__init__(window)
+    self._window = window
+
+  def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+    if watched is not self._window._recent_menu:
+      return False
+    if event.type() != QEvent.Type.MouseButtonPress:
+      return False
+    if not hasattr(event, "button") or event.button() != Qt.MouseButton.RightButton:
+      return False
+    menu = self._window._recent_menu
+    action = menu.actionAt(event.pos())
+    if action is None:
+      return False
+    path = action.data()
+    if not isinstance(path, str) or not path:
+      return False
+    self._window._show_recent_item_context_menu(event.globalPosition().toPoint(), path)
+    return True
+
+
 class MainWindow(QMainWindow):
   def __init__(self, launch_paths: list[str] | None = None) -> None:
     super().__init__()
@@ -1392,6 +1420,8 @@ class MainWindow(QMainWindow):
 
     self._recent_menu = menu.addMenu("최근 파일 열기")
     self._recent_menu.aboutToShow.connect(self._rebuild_recent_menu)
+    self._recent_menu_filter = _RecentMenuEventFilter(self)
+    self._recent_menu.installEventFilter(self._recent_menu_filter)
     self._rebuild_recent_menu()
 
     act_open = QAction("열기...", self)
@@ -1960,10 +1990,26 @@ class MainWindow(QMainWindow):
       label = f"{position}. {os.path.basename(path)}"
       action = menu.addAction(label)
       action.setToolTip(path)
+      action.setData(path)
       action.triggered.connect(lambda _checked=False, p=path: self._open_recent_file(p))
     menu.addSeparator()
     clear_action = menu.addAction("모두 지우기")
     clear_action.triggered.connect(self._clear_recent_files)
+
+  def _show_recent_item_context_menu(self, global_pos: QPoint, path: str) -> None:
+    recent = self._recent_menu
+    anchor = recent.mapToGlobal(QPoint(0, 0))
+    # Parent to the recent submenu so dismissing the context menu does not
+    # tear down the whole File → 최근 파일 cascade when possible.
+    ctx = QMenu(recent)
+    remove_action = ctx.addAction("목록에서 제거")
+    chosen = ctx.exec(global_pos)
+    if chosen is not remove_action:
+      return
+    self._recent_files.remove(path)
+    self._rebuild_recent_menu()
+    if not recent.isVisible():
+      recent.popup(anchor)
 
   def _open_recent_file(self, path: str) -> None:
     if not os.path.exists(path):

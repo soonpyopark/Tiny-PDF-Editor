@@ -76,6 +76,37 @@ def _menu_action_text(label: str, standard_key: QKeySequence.StandardKey) -> str
     return f"{label}\t{seq.toString(QKeySequence.SequenceFormat.NativeText)}"
 
 
+def _selection_header_text(indices: list[int]) -> str:
+    if not indices:
+        return "선택된 페이지 없음"
+    pages = [index + 1 for index in indices]
+    count = len(pages)
+    if count == 1:
+        return f"선택한 페이지 1개 ({pages[0]}페이지)"
+    if pages == list(range(pages[0], pages[-1] + 1)):
+        return f"선택한 페이지 {count}개 ({pages[0]}–{pages[-1]})"
+    return f"선택한 페이지 {count}개"
+
+
+def _selection_action_label(verb: str, indices: list[int], *, particle: str = "") -> str:
+    """Build labels like '3페이지 삭제' / '선택한 3페이지를 이미지로 저장'."""
+    count = len(indices)
+    if count <= 0:
+        return verb
+    if count == 1:
+        target = f"{indices[0] + 1}페이지"
+    else:
+        target = f"선택한 {count}페이지"
+    if particle:
+        return f"{target}{particle}{verb}"
+    return f"{target} {verb}"
+
+
+def _add_menu_section_header(menu: QMenu, text: str) -> None:
+    action = menu.addAction(text)
+    action.setEnabled(False)
+
+
 def thumb_scale_for_level(level: int) -> int:
     """Return pixel width for 1-based level (1..4)."""
     index = max(1, min(len(THUMB_SCALE_LEVELS), level)) - 1
@@ -1452,35 +1483,99 @@ class ThumbnailListWidget(QListWidget):
     def _indicator_y(self, index: int) -> int:
         return self._indicator_geometry(index)[0]
 
+    def _effective_menu_indices(self) -> list[int]:
+        """Indices the context menu will act on (selection, else current page)."""
+        indices = self.selected_indices()
+        if indices:
+            return indices
+        row = self.currentRow()
+        if 0 <= row < self.count():
+            return [row]
+        return []
+
     def _show_context_menu(self, pos: QPoint) -> None:
         insert_index = self._index_at_pos(pos)
         self._show_drop_indicator(insert_index)
         self.paste_anchor_changed.emit(insert_index)
 
+        indices = self._effective_menu_indices()
+        has_selection = bool(indices)
         menu = QMenu(self)
-        can_undo, can_redo = self._history_state()
-        act_undo = menu.addAction(_menu_action_text("되돌리기", QKeySequence.StandardKey.Undo))
-        act_undo.setEnabled(can_undo)
-        act_undo.triggered.connect(lambda: self.context_action.emit("undo"))
-        act_redo = menu.addAction(_menu_action_text("재실행", QKeySequence.StandardKey.Redo))
-        act_redo.setEnabled(can_redo)
-        act_redo.triggered.connect(lambda: self.context_action.emit("redo"))
+
+        _add_menu_section_header(menu, _selection_header_text(indices))
         menu.addSeparator()
-        act_copy = menu.addAction(_menu_action_text("복사", QKeySequence.StandardKey.Copy))
+
+        act_copy = menu.addAction(
+            _menu_action_text(
+                _selection_action_label("복사", indices),
+                QKeySequence.StandardKey.Copy,
+            )
+        )
+        act_copy.setEnabled(has_selection)
         act_copy.triggered.connect(lambda: self.context_action.emit("copy"))
-        act_cut = menu.addAction(_menu_action_text("잘라내기", QKeySequence.StandardKey.Cut))
+
+        act_cut = menu.addAction(
+            _menu_action_text(
+                _selection_action_label("잘라내기", indices),
+                QKeySequence.StandardKey.Cut,
+            )
+        )
+        act_cut.setEnabled(has_selection)
         act_cut.triggered.connect(lambda: self.context_action.emit("cut"))
-        act_paste = menu.addAction(_menu_action_text("붙여넣기", QKeySequence.StandardKey.Paste))
+
+        menu.addAction(
+            _selection_action_label("이미지로 저장", indices, particle="를 "),
+            lambda: self.context_action.emit("export_images"),
+        ).setEnabled(has_selection)
+        menu.addAction(
+            _selection_action_label("새 파일로 저장", indices, particle="를 "),
+            lambda: self.context_action.emit("export_pdf"),
+        ).setEnabled(has_selection)
+        menu.addSeparator()
+        menu.addAction(
+            _selection_action_label("삭제", indices),
+            lambda: self.context_action.emit("delete"),
+        ).setEnabled(has_selection)
+        menu.addAction(
+            _selection_action_label("시계 방향 회전", indices),
+            lambda: self.context_action.emit("rotate_cw"),
+        ).setEnabled(has_selection)
+        menu.addAction(
+            _selection_action_label("반시계 방향 회전", indices),
+            lambda: self.context_action.emit("rotate_ccw"),
+        ).setEnabled(has_selection)
+
+        menu.addSeparator()
+        insert_at = insert_index + 1  # 1-based label for humans
+        _add_menu_section_header(menu, f"이 위치에 삽입 (페이지 {insert_at} 앞)")
+        paste_count = PageClipboard.page_count()
+        if paste_count > 0:
+            paste_label = f"여기에 {paste_count}페이지 붙여넣기"
+        else:
+            paste_label = "여기에 붙여넣기"
+        act_paste = menu.addAction(
+            _menu_action_text(paste_label, QKeySequence.StandardKey.Paste)
+        )
         act_paste.setEnabled(PageClipboard.has_pages())
         act_paste.triggered.connect(lambda: self.paste_at_index.emit(insert_index))
-        menu.addAction("이미지로 저장", lambda: self.context_action.emit("export_images"))
-        menu.addAction("새 파일로 저장", lambda: self.context_action.emit("export_pdf"))
+        menu.addAction(
+            f"빈 페이지 삽입 (페이지 {insert_at} 앞)",
+            lambda: self.context_action.emit("insert_blank"),
+        )
+
         menu.addSeparator()
-        menu.addAction("페이지 삭제", lambda: self.context_action.emit("delete"))
-        menu.addAction("시계 방향 회전", lambda: self.context_action.emit("rotate_cw"))
-        menu.addAction("반시계 방향 회전", lambda: self.context_action.emit("rotate_ccw"))
-        menu.addSeparator()
-        menu.addAction("빈 페이지 삽입", lambda: self.context_action.emit("insert_blank"))
+        can_undo, can_redo = self._history_state()
+        act_undo = menu.addAction(
+            _menu_action_text("되돌리기", QKeySequence.StandardKey.Undo)
+        )
+        act_undo.setEnabled(can_undo)
+        act_undo.triggered.connect(lambda: self.context_action.emit("undo"))
+        act_redo = menu.addAction(
+            _menu_action_text("재실행", QKeySequence.StandardKey.Redo)
+        )
+        act_redo.setEnabled(can_redo)
+        act_redo.triggered.connect(lambda: self.context_action.emit("redo"))
+
         menu.exec(self.mapToGlobal(pos))
 
         self._show_drop_indicator(None)
@@ -2078,7 +2173,7 @@ class ThumbnailPanel(QWidget):
         elif action == "rotate_ccw":
             self.rotate_requested.emit(indices or [self.current_index()], -90)
         elif action == "insert_blank":
-            self.blank_page_requested.emit(self._insert_index_after_current())
+            self.blank_page_requested.emit(self.resolve_paste_index())
         elif action == "export_images":
             self.export_images_requested.emit(indices or [self.current_index()])
 

@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from enum import Enum
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPixmap, QResizeEvent, QShowEvent
+from PyQt6.QtGui import QPageSize, QPixmap, QResizeEvent, QShowEvent
 from PyQt6.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt6.QtWidgets import (
     QDialog,
@@ -26,7 +26,12 @@ from PyQt6.QtWidgets import (
 )
 
 from pdf_editor.document import PdfDocument
-from pdf_editor.print_utils import print_document, render_preview_page
+from pdf_editor.print_utils import (
+    paper_size_label,
+    print_document,
+    printer_paper_signature,
+    render_wysiwyg_preview_page,
+)
 
 _UNIFIED_PRINT_KEY = r"Software\Microsoft\Print\UnifiedPrintDialog"
 _PREFER_LEGACY_VALUE = "PreferLegacyPrintDialog"
@@ -105,11 +110,13 @@ class DocumentPrintDialog(QDialog):
         self.resize(900, 720)
         self._document = document
         self._page_index = 0
-        self._cache: dict[int, QPixmap] = {}
+        self._cache: dict[tuple[int, str], QPixmap] = {}
         self._source_pixmap = QPixmap()
         self._fit_mode = _PreviewFit.HEIGHT
         self._printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         self._printer.setDocName(document.display_name)
+        # Default to A4 so the preview matches typical KR/EU output paper.
+        self._printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
         if document.page_count > 0:
             self._printer.setFromTo(1, document.page_count)
 
@@ -118,7 +125,8 @@ class DocumentPrintDialog(QDialog):
         root.setSpacing(8)
 
         hint = QLabel(
-            "미리보기는 현재 페이지만 표시합니다. 페이지가 많은 문서도 안전하게 열립니다."
+            "미리보기는 선택한 용지·여백에 맞춘 출력 모습입니다. "
+            "페이지가 많은 문서도 현재 페이지만 렌더합니다."
         )
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -163,6 +171,11 @@ class DocumentPrintDialog(QDialog):
         self._btn_fit_page.clicked.connect(lambda: self._set_fit_mode(_PreviewFit.PAGE))
         nav.addWidget(self._btn_fit_page)
 
+        nav.addSpacing(8)
+        self._paper_label = QLabel()
+        self._paper_label.setStyleSheet("color: #666666;")
+        nav.addWidget(self._paper_label)
+
         nav.addStretch(1)
 
         self._btn_setup = QPushButton("프린터 설정...")
@@ -191,6 +204,8 @@ class DocumentPrintDialog(QDialog):
         print_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
         print_btn.setText("인쇄")
         print_btn.setDefault(True)
+        cancel_btn = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        cancel_btn.setText("취소")
         buttons.accepted.connect(self._print)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
@@ -226,12 +241,18 @@ class DocumentPrintDialog(QDialog):
         self._apply_fit()
 
     def _pixmap_for(self, page_index: int) -> QPixmap:
-        cached = self._cache.get(page_index)
+        paper_key = printer_paper_signature(self._printer)
+        cache_key = (page_index, paper_key)
+        cached = self._cache.get(cache_key)
         if cached is not None and not cached.isNull():
             return cached
-        pixmap = render_preview_page(self._document, page_index)
-        self._cache[page_index] = pixmap
-        keep = {
+        pixmap = render_wysiwyg_preview_page(
+            self._document,
+            page_index,
+            self._printer,
+        )
+        self._cache[cache_key] = pixmap
+        keep_pages = {
             index
             for index in range(
                 max(0, self._page_index - _CACHE_RADIUS),
@@ -239,7 +260,10 @@ class DocumentPrintDialog(QDialog):
             )
         }
         for key in list(self._cache):
-            if key not in keep and key != page_index:
+            page, key_paper = key
+            if key_paper != paper_key or (
+                page not in keep_pages and page != page_index
+            ):
                 del self._cache[key]
         return pixmap
 
@@ -272,8 +296,10 @@ class DocumentPrintDialog(QDialog):
         )
         self._preview_label.setPixmap(scaled)
         self._preview_label.resize(scaled.size())
+
     def _refresh_preview(self) -> None:
         count = self._page_count()
+        self._paper_label.setText(paper_size_label(self._printer))
         if count <= 0:
             self._source_pixmap = QPixmap()
             self._preview_label.clear()
@@ -302,6 +328,8 @@ class DocumentPrintDialog(QDialog):
         with prefer_legacy_windows_print_dialog():
             dialog = QPrintDialog(self._printer, self)
             dialog.exec()
+        self._cache.clear()
+        self._refresh_preview()
 
     def _print(self) -> None:
         with prefer_legacy_windows_print_dialog():
