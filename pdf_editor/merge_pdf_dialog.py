@@ -17,7 +17,6 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QAbstractItemView,
-    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -218,9 +217,10 @@ class _DropEmptyState(QFrame):
                 color: white;
                 border: none;
                 border-radius: 4px;
-                padding: 8px 18px;
+                padding: 8px 24px 8px 8px;
                 font-weight: 600;
                 min-width: 110px;
+                text-align: center;
             }}
             QToolButton:hover {{ background-color: {_ACCENT_HOVER}; }}
             QToolButton:pressed {{ background-color: {_ACCENT_PRESSED}; }}
@@ -337,6 +337,7 @@ class MergePdfDialog(QDialog):
                 border-radius: 4px;
                 padding: 6px 14px;
                 font-weight: 600;
+                text-align: center;
             }}
             QPushButton:hover {{ background-color: {_ACCENT_HOVER}; }}
             QPushButton:pressed {{ background-color: {_ACCENT_PRESSED}; }}
@@ -388,9 +389,6 @@ class MergePdfDialog(QDialog):
         loc_label = QLabel("저장 위치")
         loc_label.setStyleSheet("font-weight: 600; margin-top: 8px;")
         right.addWidget(loc_label)
-        self._loc_combo = QComboBox()
-        self._loc_combo.addItem("폴더 지정", "folder")
-        right.addWidget(self._loc_combo)
 
         path_row = QHBoxLayout()
         path_row.setSpacing(6)
@@ -455,7 +453,7 @@ class MergePdfDialog(QDialog):
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(16, 10, 16, 10)
         footer_layout.addStretch(1)
-        self._apply_btn = QPushButton("적용")
+        self._apply_btn = QPushButton("병합")
         self._apply_btn.setEnabled(False)
         self._apply_btn.setMinimumWidth(100)
         self._apply_btn.setMinimumHeight(34)
