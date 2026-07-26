@@ -346,13 +346,50 @@ def sync_modified_icon_check_overrides() -> list[str]:
 
         for size, source in sorted(by_size.items()):
             dest = ICON_OVERRIDES_DIR / f"{dest_prefix}_{size}x{size}.png"
-            dest.write_bytes(source.read_bytes())
+            image = strip_white_icon_canvas(Image.open(source).convert("RGBA"))
+            if image.size != (size, size):
+                fitted = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+                scaled = image.copy()
+                scaled.thumbnail((size, size), Image.Resampling.LANCZOS)
+                x = (size - scaled.width) // 2
+                y = (size - scaled.height) // 2
+                fitted.paste(scaled, (x, y), scaled)
+                image = fitted
+            image.save(dest)
             # Preserve the edit timestamp for later audits.
             mtime = source.stat().st_mtime
             os.utime(dest, (mtime, mtime))
             copied.append(dest.name)
 
     return copied
+
+
+def strip_white_icon_canvas(image: Image.Image) -> Image.Image:
+    """Remove opaque white canvas so shell icons keep transparent rounded corners."""
+    data = np.array(image.convert("RGBA"))
+    if data.size == 0:
+        return image
+    # Only strip when corners look like a solid white plate (not intentional art).
+    corners = (
+        data[0, 0],
+        data[0, -1],
+        data[-1, 0],
+        data[-1, -1],
+    )
+    if not all(
+        int(pixel[3]) > 200
+        and _is_white_background_pixel(int(pixel[0]), int(pixel[1]), int(pixel[2]))
+        for pixel in corners
+    ):
+        return image.convert("RGBA")
+    background = _flood_background_mask(
+        data,
+        is_background=_is_white_background_pixel,
+    )
+    output = data.copy()
+    output[background, 3] = 0
+    output[background, 0:3] = 0
+    return Image.fromarray(output)
 
 
 def load_size_overrides(prefix: str) -> dict[int, Image.Image]:
@@ -373,7 +410,10 @@ def load_size_overrides(prefix: str) -> dict[int, Image.Image]:
             y = (size - scaled.height) // 2
             fitted.paste(scaled, (x, y), scaled)
             image = fitted
-        overrides[size] = image
+        cleaned = strip_white_icon_canvas(image)
+        if np.any(np.array(cleaned) != np.array(image)):
+            cleaned.save(path)
+        overrides[size] = cleaned
     return overrides
 
 

@@ -53,6 +53,7 @@ from PyQt6.QtWidgets import (
     QWidgetAction,
 )
 
+from pdf_editor.app_settings import AppSettings
 from pdf_editor.document import (
   PdfDocument,
   PdfPasswordRequired,
@@ -68,6 +69,7 @@ from pdf_editor.recent_files import RecentFilesStore
 from pdf_editor.print_dialog import DocumentPrintDialog
 from pdf_editor.page_viewer import PageViewer
 from pdf_editor.reduce_size_dialog import ReduceSizeDialog
+from pdf_editor.merge_pdf_dialog import MergePdfDialog
 from pdf_editor.export_images_dialog import (
   ExportImagesDialog,
   export_folder_name_for_document,
@@ -1297,6 +1299,7 @@ class MainWindow(QMainWindow):
     self._search_query = ""
 
     self._recent_files = RecentFilesStore()
+    self._app_settings = AppSettings()
 
     self._build_menu()
     self._apply_window_styles()
@@ -1412,6 +1415,27 @@ class MainWindow(QMainWindow):
 
   def _build_menu(self) -> None:
     menu = self.menuBar().addMenu("파일(&F)")
+    menu.setObjectName("fileMenu")
+    menu.setStyleSheet(
+        """
+        QMenu#fileMenu::item {
+            padding: 6px 24px 6px 11px;
+            background-color: transparent;
+        }
+        QMenu#fileMenu::item:selected {
+            background-color: #e8f0fe;
+            color: #000000;
+        }
+        QMenu#fileMenu::item:nth-child(5),
+        QMenu#fileMenu::item:nth-child(9) {
+            padding: 0px;
+        }
+        QMenu#fileMenu::item:nth-child(5):selected,
+        QMenu#fileMenu::item:nth-child(9):selected {
+            background-color: #cfe0fb;
+        }
+        """
+    )
 
     act_new = QAction("새 문서", self)
     act_new.setShortcut(QKeySequence.StandardKey.New)
@@ -1434,6 +1458,15 @@ class MainWindow(QMainWindow):
     self._act_add.triggered.connect(self._add_files)
     menu.addAction(self._act_add)
 
+    act_merge = QWidgetAction(self)
+    merge_btn = QPushButton("PDF 병합...")
+    merge_btn.setFlat(True)
+    merge_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    merge_btn.setStyleSheet(_REDUCE_MENU_BTN_STYLE)
+    merge_btn.clicked.connect(self._merge_pdfs)
+    act_merge.setDefaultWidget(merge_btn)
+    menu.addAction(act_merge)
+
     menu.addSeparator()
 
     act_save = QAction("저장", self)
@@ -1446,8 +1479,13 @@ class MainWindow(QMainWindow):
     act_save_as.triggered.connect(self._save_as)
     menu.addAction(act_save_as)
 
-    act_save_images = QAction("이미지로 저장...", self)
-    act_save_images.triggered.connect(self._save_as_images)
+    act_save_images = QWidgetAction(self)
+    save_images_btn = QPushButton("PDF를 이미지로 저장...")
+    save_images_btn.setFlat(True)
+    save_images_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    save_images_btn.setStyleSheet(_REDUCE_MENU_BTN_STYLE)
+    save_images_btn.clicked.connect(self._save_as_images)
+    act_save_images.setDefaultWidget(save_images_btn)
     menu.addAction(act_save_images)
 
     menu.addSeparator()
@@ -1566,7 +1604,7 @@ class MainWindow(QMainWindow):
     view_menu.addAction(act_fit_page)
 
     view_menu.addSeparator()
-    self._act_facing_pages = QAction("두 페이지 보기", self)
+    self._act_facing_pages = QAction("두 쪽씩 보기", self)
     self._act_facing_pages.setCheckable(True)
     self._act_facing_pages.setShortcut(QKeySequence("Ctrl+2"))
     self._act_facing_pages.triggered.connect(self._toggle_facing_pages)
@@ -1877,6 +1915,20 @@ class MainWindow(QMainWindow):
     if after > before:
       tab.go_to_page(after - 1)
       self.statusBar().showMessage(f"{after - before}페이지를 추가했습니다.")
+
+  def _merge_pdfs(self) -> None:
+    dialog = MergePdfDialog(
+      self._app_settings,
+      parent=self,
+      resolve_pdf_password=resolve_pdf_password_for(self),
+    )
+    if dialog.exec() != QDialog.DialogCode.Accepted:
+      return
+    output = dialog.output_path()
+    if not output:
+      return
+    if self._open_paths([output]):
+      self.statusBar().showMessage(f"병합 완료: {output}")
 
   def _open_pending_launch_paths(self) -> None:
     paths = self._pending_launch_paths
@@ -2446,6 +2498,7 @@ class MainWindow(QMainWindow):
           event.ignore()
           return
     self._persist_open_document_pages()
+    self._app_settings.save()
     event.accept()
 
 

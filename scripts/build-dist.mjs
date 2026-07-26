@@ -42,14 +42,98 @@ function sanitizeFileName(name) {
   return name.replace(/[<>:"/\\|?*]/g, "_").trim() || "app";
 }
 
-function readReleaseBaseName() {
+function readAppVersion() {
   const versionPath = path.join(ROOT, "pdf_editor", "version.py");
   const source = fs.readFileSync(versionPath, "utf8");
   const match = source.match(/__version__\s*=\s*"([^"]+)"/);
   if (!match) {
     throw new Error(`Could not parse __version__ from ${versionPath}`);
   }
-  return sanitizeFileName(`Tiny PDF Editor v${match[1]}`);
+  return match[1];
+}
+
+function readReleaseBaseName() {
+  return sanitizeFileName(`Tiny PDF Editor v${readAppVersion()}`);
+}
+
+function toWindowsFileVersion(version) {
+  const parts = version.split(".").map((part) => {
+    const n = Number.parseInt(part, 10);
+    return Number.isFinite(n) ? n : 0;
+  });
+  while (parts.length < 4) {
+    parts.push(0);
+  }
+  return parts.slice(0, 4);
+}
+
+function writeWindowsVersionInfo(version) {
+  const [major, minor, patch, build] = toWindowsFileVersion(version);
+  const tuple = `(${major}, ${minor}, ${patch}, ${build})`;
+  const content = `# UTF-8
+#
+# Auto-generated from pdf_editor/version.py — do not edit by hand.
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=${tuple},
+    prodvers=${tuple},
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          '040904B0',
+          [
+            StringStruct('CompanyName', 'Tiny PDF Editor'),
+            StringStruct('FileDescription', 'Tiny PDF Editor'),
+            StringStruct('FileVersion', '${version}'),
+            StringStruct('InternalName', 'Tiny PDF Editor'),
+            StringStruct('LegalCopyright', ''),
+            StringStruct('OriginalFilename', 'Tiny PDF Editor.exe'),
+            StringStruct('ProductName', 'Tiny PDF Editor'),
+            StringStruct('ProductVersion', '${version}'),
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+`;
+  fs.mkdirSync(BUILD_DIR, { recursive: true });
+  const outPath = path.join(BUILD_DIR, "file_version_info.txt");
+  fs.writeFileSync(outPath, content, "utf8");
+  return outPath;
+}
+
+function invalidatePyInstallerIfVersionChanged() {
+  const version = readAppVersion();
+  const stampPath = path.join(PYI_WORK, "embedded-app-version.txt");
+  const previous = fs.existsSync(stampPath)
+    ? fs.readFileSync(stampPath, "utf8").trim()
+    : "";
+  if (previous === version) {
+    return;
+  }
+
+  // version.py is compiled into PYZ. Incremental PyInstaller can keep a stale
+  // PYZ (splash/title still show the previous release) — force a full rebuild.
+  const stalePaths = [
+    path.join(PYI_DIST, "PDFEditor"),
+    path.join(PYI_WORK, "PDFEditor"),
+  ];
+  for (const stale of stalePaths) {
+    fs.rmSync(stale, { recursive: true, force: true });
+  }
+  fs.mkdirSync(PYI_WORK, { recursive: true });
+  fs.writeFileSync(stampPath, `${version}\n`, "utf8");
+  log(`app version changed (${previous || "none"} -> ${version}); forcing PyInstaller rebuild`);
 }
 
 function formatTimestamp(date = new Date()) {
@@ -120,7 +204,7 @@ function toSpecPath(filePath) {
   return path.resolve(filePath).replace(/\\/g, "/");
 }
 
-function writePyInstallerSpec({ root, mainPy, appIcon, socketPyd, datas }) {
+function writePyInstallerSpec({ root, mainPy, appIcon, socketPyd, datas, versionInfo }) {
   const specPath = path.join(BUILD_DIR, "PDFEditor.spec");
   const dataEntries = datas
     .map(
@@ -185,6 +269,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=[${JSON.stringify(toSpecPath(appIcon))}],
+    version=${JSON.stringify(toSpecPath(versionInfo))},
 )
 
 coll = COLLECT(
@@ -235,6 +320,7 @@ export function buildPortableApp() {
   fs.mkdirSync(PYI_WORK, { recursive: true });
 
   ensureBrandingAssets();
+  invalidatePyInstallerIfVersionChanged();
   invalidatePyInstallerExeIfIconChanged();
 
   const datas = [
@@ -248,12 +334,14 @@ export function buildPortableApp() {
 
   const appDir = path.join(PYI_DIST, "PDFEditor");
   const socketPyd = pythonStdlibExtension("_socket.pyd");
+  const versionInfo = writeWindowsVersionInfo(readAppVersion());
   const specPath = writePyInstallerSpec({
     root: ROOT,
     mainPy: path.join(ROOT, "main.py"),
     appIcon: APP_ICON,
     socketPyd,
     datas,
+    versionInfo,
   });
 
   run(

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Sync project version from pdf_editor/version.py into package.json, README, LICENSE.
+ * Sync project version from pdf_editor/version.py into package.json,
+ * package-lock.json, README, LICENSE, and MSI license RTF.
  */
 
 import fs from "node:fs";
@@ -24,6 +25,19 @@ function syncPackageJson(version) {
   const filePath = path.join(ROOT, "package.json");
   const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
   data.version = version;
+  fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
+
+function syncPackageLock(version) {
+  const filePath = path.join(ROOT, "package-lock.json");
+  if (!fs.existsSync(filePath)) {
+    return;
+  }
+  const data = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  data.version = version;
+  if (data.packages && data.packages[""]) {
+    data.packages[""].version = version;
+  }
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
@@ -89,6 +103,7 @@ function syncMsiLicenseRtf(version) {
 function main() {
   const version = readAppVersion();
   syncPackageJson(version);
+  syncPackageLock(version);
   syncReadme(version);
   syncLicense(version);
   syncMsiLicenseRtf(version);
