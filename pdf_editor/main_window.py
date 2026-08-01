@@ -513,6 +513,7 @@ class DocumentTab(QWidget):
 
     self.viewer = PageViewer()
     self.viewer.set_document(document)
+    self.viewer.text_selection_changed.connect(self._notify_clipboard_changed)
 
     self.splitter.addWidget(left)
     self.splitter.addWidget(self.viewer)
@@ -680,21 +681,23 @@ class DocumentTab(QWidget):
   def _page_indices_for_clipboard(self) -> list[int]:
     return self.thumbnails.copy_indices()
 
-  def _should_copy_viewer_text(self) -> bool:
+  def _has_viewer_text_selection(self) -> bool:
     canvases = (self.viewer.page_canvas, self.viewer.page_canvas_right)
-    if not any(canvas.selected_text() for canvas in canvases):
+    return any(bool(canvas.selected_text().strip()) for canvas in canvases)
+
+  def _should_copy_viewer_text(self) -> bool:
+    """Prefer copying selected page text unless focus is in an editable field."""
+    if not self._has_viewer_text_selection():
       return False
     focus = QApplication.focusWidget()
-    if focus is None:
-      return False
     if isinstance(focus, QLineEdit):
       return False
-    return focus in canvases or self.viewer.isAncestorOf(focus)
+    return True
 
   def _on_copy_pages_shortcut(self) -> None:
     if self._should_copy_viewer_text():
       for canvas in (self.viewer.page_canvas, self.viewer.page_canvas_right):
-        if canvas.selected_text():
+        if canvas.selected_text().strip():
           canvas._copy_selection()
           return
     indices = self._page_indices_for_clipboard()
@@ -1360,7 +1363,9 @@ class MainWindow(QMainWindow):
     tab = self._current_tab()
     can_undo = tab.document.can_undo() if tab else False
     can_redo = tab.document.can_redo() if tab else False
-    can_copy = bool(tab and tab._page_indices_for_clipboard()) if tab else False
+    can_copy_pages = bool(tab and tab._page_indices_for_clipboard()) if tab else False
+    can_copy_text = bool(tab and tab._has_viewer_text_selection()) if tab else False
+    can_copy = can_copy_pages or can_copy_text
     can_paste = PageClipboard.has_pages()
     if hasattr(self, "_act_undo"):
       self._act_undo.setEnabled(can_undo)
@@ -1369,7 +1374,7 @@ class MainWindow(QMainWindow):
     if hasattr(self, "_act_copy"):
       self._act_copy.setEnabled(can_copy)
     if hasattr(self, "_act_cut"):
-      self._act_cut.setEnabled(can_copy)
+      self._act_cut.setEnabled(can_copy_pages)
     if hasattr(self, "_act_paste"):
       self._act_paste.setEnabled(can_paste)
     can_password = bool(tab and tab.document.page_count > 0)
@@ -1541,8 +1546,10 @@ class MainWindow(QMainWindow):
     edit_menu.addSeparator()
     self._act_copy = QAction("복사(&C)", self)
     self._act_copy.setShortcut(QKeySequence.StandardKey.Copy)
+    self._act_copy.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
     self._act_copy.triggered.connect(self._copy_current_tab)
     edit_menu.addAction(self._act_copy)
+    self.addAction(self._act_copy)
 
     self._act_cut = QAction("잘라내기(&T)", self)
     self._act_cut.setShortcut(QKeySequence.StandardKey.Cut)

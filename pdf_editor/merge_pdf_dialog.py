@@ -487,7 +487,7 @@ class MergePdfDialog(QDialog):
 
         menu = QMenu(self)
         menu.addAction("파일 추가...", self._pick_files)
-        menu.addAction("폴더에서 PDF 추가...", self._pick_folder_pdfs)
+        menu.addAction("폴더에서 추가...", self._pick_folder_files)
         return menu
 
     def _file_paths(self) -> list[str]:
@@ -550,21 +550,26 @@ class MergePdfDialog(QDialog):
         if paths:
             self._add_paths(paths)
 
-    def _pick_folder_pdfs(self) -> None:
+    def _pick_folder_files(self) -> None:
         folder = QFileDialog.getExistingDirectory(
             self,
-            "PDF가 있는 폴더 선택",
+            "파일이 있는 폴더 선택",
             self._folder_edit.text() or default_downloads_folder(),
         )
         if not folder:
             return
+        supported = PDF_EXTENSIONS | IMAGE_EXTENSIONS
         paths = sorted(
             str(p)
             for p in Path(folder).iterdir()
-            if p.is_file() and p.suffix.lower() in PDF_EXTENSIONS
+            if p.is_file() and p.suffix.lower() in supported
         )
         if not paths:
-            QMessageBox.information(self, "PDF 병합", "선택한 폴더에 PDF 파일이 없습니다.")
+            QMessageBox.information(
+                self,
+                "PDF 병합",
+                "선택한 폴더에 PDF 또는 이미지 파일이 없습니다.",
+            )
             return
         self._add_paths(paths)
 

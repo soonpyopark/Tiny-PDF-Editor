@@ -237,6 +237,7 @@ class PageCanvas(QLabel):
     text_highlight_added = pyqtSignal()
     text_edited = pyqtSignal()
     markup_clicked = pyqtSignal(object)
+    text_selection_changed = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -287,6 +288,9 @@ class PageCanvas(QLabel):
             self._selected_words = []
         self._rebuild_stored_segment_highlights()
 
+    def _emit_text_selection_changed(self) -> None:
+        self.text_selection_changed.emit()
+
     def clear_selection(self, *, clear_cross_page: bool = True) -> None:
         if self.mouseGrabber() == self:
             self.releaseMouse()
@@ -300,6 +304,7 @@ class PageCanvas(QLabel):
         if clear_cross_page and self._viewer is not None:
             self._viewer.clear_cross_page_selection()
         self.update()
+        self._emit_text_selection_changed()
 
     def set_text_highlights(self, highlights: list[tuple[QRect, QColor]]) -> None:
         self._text_highlights = highlights
@@ -853,6 +858,7 @@ class PageCanvas(QLabel):
             self._update_selection()
             self._anchor = None
             self.update()
+            self._emit_text_selection_changed()
             if self._effective_selected_text().strip():
                 # Defer popup: menu.exec during mouseRelease (after grab) can
                 # abort on Windows, especially with the two-page spread host.
@@ -948,6 +954,7 @@ class PageViewer(QWidget):
     text_highlight_added = pyqtSignal()
     text_edited = pyqtSignal()
     markup_clicked = pyqtSignal(object)
+    text_selection_changed = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1017,6 +1024,7 @@ class PageViewer(QWidget):
         self.page_canvas.text_highlight_added.connect(self._on_canvas_highlight_added)
         self.page_canvas.text_edited.connect(self._on_canvas_text_edited)
         self.page_canvas.markup_clicked.connect(self._on_canvas_markup_clicked)
+        self.page_canvas.text_selection_changed.connect(self.text_selection_changed.emit)
 
         self.page_canvas_right = PageCanvas(self._spread_host)
         self.page_canvas_right.set_page_viewer(self)
@@ -1024,6 +1032,9 @@ class PageViewer(QWidget):
         self.page_canvas_right.text_highlight_added.connect(self._on_canvas_highlight_added)
         self.page_canvas_right.text_edited.connect(self._on_canvas_text_edited)
         self.page_canvas_right.markup_clicked.connect(self._on_canvas_markup_clicked)
+        self.page_canvas_right.text_selection_changed.connect(
+            self.text_selection_changed.emit
+        )
 
         self._inline_editor: _InlineTextEditor | None = None
         self._text_edit_ctx: dict | None = None
