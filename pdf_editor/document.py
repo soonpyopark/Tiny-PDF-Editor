@@ -481,7 +481,13 @@ class PdfDocument:
         mask_xref: int,
         colorspace: str,
     ) -> None:
-        """Replace an image stream while keeping its PDF soft-mask reference."""
+        """Replace an image with JPEG bytes while keeping its PDF soft-mask reference.
+
+        ``Document.update_stream(..., compress=True)`` (the default) rewrites
+        ``/Filter`` to ``/FlateDecode`` only, which leaves DCT JPEG bytes
+        mislabeled and renders as black. Always store with ``/DCTDecode`` and
+        ``compress=False``, then restore ``/Filter`` / ``/SMask``.
+        """
         pdf_object = (
             f"<< /Type /XObject /Subtype /Image"
             f" /Width {width} /Height {height}"
@@ -491,7 +497,53 @@ class PdfDocument:
             f" /Length {len(stream)} >>"
         )
         doc.update_object(xref, pdf_object)
-        doc.update_stream(xref, stream)
+        doc.update_stream(xref, stream, new=True, compress=False)
+        doc.xref_set_key(xref, "Filter", "/DCTDecode")
+        doc.xref_set_key(xref, "Width", str(int(width)))
+        doc.xref_set_key(xref, "Height", str(int(height)))
+        doc.xref_set_key(xref, "ColorSpace", f"/{colorspace}")
+        doc.xref_set_key(xref, "BitsPerComponent", "8")
+        doc.xref_set_key(xref, "SMask", f"{int(mask_xref)} 0 R")
+        doc.xref_set_key(xref, "Length", str(len(stream)))
+
+    @staticmethod
+    def _replace_image_jpeg_stream(
+        doc: fitz.Document,
+        xref: int,
+        *,
+        stream: bytes,
+        width: int,
+        height: int,
+        colorspace: str,
+        mask_xref: int = 0,
+    ) -> None:
+        """Replace an embedded image xref with a JPEG stream (optional soft mask)."""
+        if mask_xref > 0:
+            PdfDocument._replace_image_stream_preserving_mask(
+                doc,
+                xref,
+                stream=stream,
+                width=width,
+                height=height,
+                mask_xref=mask_xref,
+                colorspace=colorspace,
+            )
+            return
+        pdf_object = (
+            f"<< /Type /XObject /Subtype /Image"
+            f" /Width {width} /Height {height}"
+            f" /ColorSpace /{colorspace} /BitsPerComponent 8"
+            f" /Filter /DCTDecode"
+            f" /Length {len(stream)} >>"
+        )
+        doc.update_object(xref, pdf_object)
+        doc.update_stream(xref, stream, new=True, compress=False)
+        doc.xref_set_key(xref, "Filter", "/DCTDecode")
+        doc.xref_set_key(xref, "Width", str(int(width)))
+        doc.xref_set_key(xref, "Height", str(int(height)))
+        doc.xref_set_key(xref, "ColorSpace", f"/{colorspace}")
+        doc.xref_set_key(xref, "BitsPerComponent", "8")
+        doc.xref_set_key(xref, "Length", str(len(stream)))
 
     @staticmethod
     def _is_micro_image_rect(display_rect: fitz.Rect) -> bool:
@@ -603,17 +655,24 @@ class PdfDocument:
             else:
                 stream = jpeg_pix.tobytes("jpeg", jpg_quality=jpeg_quality)
             if smask_xref > 0:
-                PdfDocument._replace_image_stream_preserving_mask(
+                PdfDocument._replace_image_jpeg_stream(
                     doc,
                     xref,
                     stream=stream,
                     width=jpeg_pix.width,
                     height=jpeg_pix.height,
-                    mask_xref=smask_xref,
                     colorspace=PdfDocument._pixmap_colorspace_name(jpeg_pix),
+                    mask_xref=smask_xref,
                 )
             else:
-                doc[page_index].replace_image(xref, stream=stream)
+                PdfDocument._replace_image_jpeg_stream(
+                    doc,
+                    xref,
+                    stream=stream,
+                    width=jpeg_pix.width,
+                    height=jpeg_pix.height,
+                    colorspace=PdfDocument._pixmap_colorspace_name(jpeg_pix),
+                )
             return True
         except Exception:
             return False
