@@ -146,6 +146,27 @@ export function ensurePythonDeps() {
   run("python -m pip install -r requirements.txt pyinstaller --quiet");
 }
 
+function ensureHwpHelper() {
+  const helperPs1 = path.join(ROOT, "tools", "hwp_to_pdf_helper", "build.ps1");
+  const hwpHelper = path.join(ROOT, "pdf_editor", "vendor", "hwp_to_pdf_helper.exe");
+  const hwpChecker = path.join(ROOT, "pdf_editor", "vendor", "FilePathCheckerModule.dll");
+  if (!fs.existsSync(hwpHelper) && fs.existsSync(helperPs1)) {
+    run(
+      `powershell -NoProfile -ExecutionPolicy Bypass -File "${helperPs1}"`,
+    );
+  }
+  if (!fs.existsSync(hwpHelper)) {
+    console.warn(
+      "[build] warning: pdf_editor/vendor/hwp_to_pdf_helper.exe missing — HWP open will be unavailable in the bundle",
+    );
+  }
+  if (!fs.existsSync(hwpChecker)) {
+    console.warn(
+      "[build] warning: pdf_editor/vendor/FilePathCheckerModule.dll missing",
+    );
+  }
+}
+
 function ensureBrandingAssets() {
   if (fs.existsSync(SOURCE_LOGO)) {
     run("python scripts/prepare-branding.py");
@@ -320,6 +341,7 @@ export function buildPortableApp() {
   fs.mkdirSync(PYI_WORK, { recursive: true });
 
   ensureBrandingAssets();
+  ensureHwpHelper();
   invalidatePyInstallerIfVersionChanged();
   invalidatePyInstallerExeIfIconChanged();
 
@@ -330,6 +352,14 @@ export function buildPortableApp() {
   ];
   if (fs.existsSync(APP_ICON_PNG)) {
     datas.push([APP_ICON_PNG, "pdf_editor/branding"]);
+  }
+  const hwpHelper = path.join(ROOT, "pdf_editor", "vendor", "hwp_to_pdf_helper.exe");
+  const hwpChecker = path.join(ROOT, "pdf_editor", "vendor", "FilePathCheckerModule.dll");
+  if (fs.existsSync(hwpHelper)) {
+    datas.push([hwpHelper, "pdf_editor/vendor"]);
+  }
+  if (fs.existsSync(hwpChecker)) {
+    datas.push([hwpChecker, "pdf_editor/vendor"]);
   }
 
   const appDir = path.join(PYI_DIST, "PDFEditor");

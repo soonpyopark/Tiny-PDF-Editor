@@ -13,13 +13,18 @@ from pathlib import Path
 import fitz
 
 from pdf_editor.cross_page_selection import PageSelectionSegment
+from pdf_editor.hwp_convert import (
+    HWP_EXTENSIONS,
+    convert_hwp_to_temp_pdf,
+)
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".tif", ".webp"}
 PDF_EXTENSIONS = {".pdf"}
 SUPPORTED_FILE_FILTER = (
-    "지원 파일 (*.pdf *.png *.jpg *.jpeg *.bmp *.gif *.tiff *.tif *.webp);;"
+    "지원 파일 (*.pdf *.png *.jpg *.jpeg *.bmp *.gif *.tiff *.tif *.webp *.hwp *.hwpx);;"
     "PDF (*.pdf);;"
     "이미지 (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.tif *.webp);;"
+    "한글 문서 (*.hwp *.hwpx);;"
     "모든 파일 (*.*)"
 )
 
@@ -250,6 +255,21 @@ class PdfDocument:
             )
         elif ext in IMAGE_EXTENSIONS:
             new_doc = PdfDocument._open_image_as_document(path)
+            self._source_path = None
+            self._source_had_encryption = False
+            self._password_options = None
+        elif ext in HWP_EXTENSIONS:
+            tmp_pdf: Path | None = None
+            try:
+                tmp_pdf = convert_hwp_to_temp_pdf(path)
+                pdf_bytes = tmp_pdf.read_bytes()
+            finally:
+                if tmp_pdf is not None:
+                    try:
+                        tmp_pdf.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            new_doc = PdfDocument._open_pdf_bytes(pdf_bytes, password=password)
             self._source_path = None
             self._source_had_encryption = False
             self._password_options = None
@@ -2635,7 +2655,11 @@ class PdfDocument:
         added = 0
         for file_path in file_paths:
             ext = Path(file_path).suffix.lower()
-            if ext not in PDF_EXTENSIONS and ext not in IMAGE_EXTENSIONS:
+            if (
+                ext not in PDF_EXTENSIONS
+                and ext not in IMAGE_EXTENSIONS
+                and ext not in HWP_EXTENSIONS
+            ):
                 continue
             if record_undo and added == 0:
                 self._record_undo_checkpoint()
@@ -2648,6 +2672,21 @@ class PdfDocument:
             elif ext in IMAGE_EXTENSIONS:
                 self._insert_image_at(index + added, file_path)
                 added += 1
+            elif ext in HWP_EXTENSIONS:
+                tmp_pdf: Path | None = None
+                try:
+                    tmp_pdf = convert_hwp_to_temp_pdf(file_path)
+                    added += self._insert_pdf_at(
+                        index + added,
+                        str(tmp_pdf),
+                        resolve_pdf_password=resolve_pdf_password,
+                    )
+                finally:
+                    if tmp_pdf is not None:
+                        try:
+                            tmp_pdf.unlink(missing_ok=True)
+                        except OSError:
+                            pass
         if added:
             self._touch()
             if was_empty and self._source_path is None:
@@ -2815,4 +2854,8 @@ class PdfDocument:
     @staticmethod
     def is_supported_file(path: str) -> bool:
         ext = Path(path).suffix.lower()
-        return ext in PDF_EXTENSIONS or ext in IMAGE_EXTENSIONS
+        return (
+            ext in PDF_EXTENSIONS
+            or ext in IMAGE_EXTENSIONS
+            or ext in HWP_EXTENSIONS
+        )

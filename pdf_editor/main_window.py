@@ -63,6 +63,11 @@ from pdf_editor.document import (
   configure_mupdf_messages,
   format_file_size,
 )
+from pdf_editor.hwp_convert import (
+  HancomConvertError,
+  HancomNotInstalledError,
+  is_hwp_file,
+)
 from pdf_editor.page_clipboard import PageClipboard
 from pdf_editor.password_dialog import SetPasswordDialog, prompt_pdf_password
 from pdf_editor.recent_files import RecentFilesStore
@@ -346,11 +351,22 @@ def _ask_save_modified(parent: QWidget, title: str, text: str) -> CloseSaveChoic
 def open_pdf_document(parent: QWidget, path: str) -> PdfDocument | None:
     password: str | None = None
     wrong = False
+
     while True:
         try:
             doc = PdfDocument()
-            doc.open_file(path, password=password)
+            waiting = is_hwp_file(path)
+            if waiting:
+                QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                doc.open_file(path, password=password)
+            finally:
+                if waiting:
+                    QApplication.restoreOverrideCursor()
             return doc
+        except (HancomNotInstalledError, HancomConvertError) as exc:
+            QMessageBox.warning(parent, "한글 문서 열기", str(exc))
+            return None
         except PdfPasswordRejected:
             wrong = True
             password = prompt_pdf_password(parent, path, wrong=True)

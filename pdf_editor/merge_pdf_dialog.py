@@ -13,6 +13,7 @@ from PyQt6.QtGui import (
     QDragMoveEvent,
     QDropEvent,
     QFont,
+    QKeyEvent,
     QPixmap,
 )
 from PyQt6.QtWidgets import (
@@ -41,6 +42,7 @@ from pdf_editor.document import (
     SUPPORTED_FILE_FILTER,
     PdfDocument,
 )
+from pdf_editor.hwp_convert import HWP_EXTENSIONS
 from pdf_editor.pixmap_utils import pixmap_from_fitz
 
 _ACCENT = "#7eb8e8"
@@ -70,6 +72,9 @@ def _page_count_for_path(path: str) -> int | None:
                 return doc.page_count
         if ext in IMAGE_EXTENSIONS:
             return 1
+        if ext in HWP_EXTENSIONS:
+            # Converted at merge time via Hancom; page count unknown until then.
+            return None
     except Exception:
         return None
     return None
@@ -89,6 +94,8 @@ def _thumbnail_for_path(path: str, max_width: int = _PREVIEW_MAX_WIDTH) -> QPixm
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
+        if ext in HWP_EXTENSIONS:
+            return None
         if ext not in PDF_EXTENSIONS:
             return None
         with fitz.open(path) as doc:
@@ -327,6 +334,8 @@ class MergePdfDialog(QDialog):
         list_toolbar = QHBoxLayout()
         list_toolbar.addStretch(1)
         self._list_add_btn = QPushButton("파일 추가")
+        self._list_add_btn.setAutoDefault(False)
+        self._list_add_btn.setDefault(False)
         self._list_add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._list_add_btn.setStyleSheet(
             f"""
@@ -345,6 +354,8 @@ class MergePdfDialog(QDialog):
         )
         self._list_add_btn.clicked.connect(self._pick_files)
         self._list_remove_btn = QPushButton("선택 제거")
+        self._list_remove_btn.setAutoDefault(False)
+        self._list_remove_btn.setDefault(False)
         self._list_remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._list_remove_btn.setStyleSheet(
             f"""
@@ -401,6 +412,8 @@ class MergePdfDialog(QDialog):
         self._folder_edit.setText(folder)
         self._folder_edit.setToolTip(folder)
         browse = QPushButton("...")
+        browse.setAutoDefault(False)
+        browse.setDefault(False)
         browse.setFixedWidth(36)
         browse.clicked.connect(self._browse_folder)
         path_row.addWidget(self._folder_edit, 1)
@@ -455,6 +468,8 @@ class MergePdfDialog(QDialog):
         footer_layout.addStretch(1)
         self._apply_btn = QPushButton("병합")
         self._apply_btn.setEnabled(False)
+        self._apply_btn.setAutoDefault(True)
+        self._apply_btn.setDefault(True)
         self._apply_btn.setMinimumWidth(100)
         self._apply_btn.setMinimumHeight(34)
         self._apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -539,6 +554,15 @@ class MergePdfDialog(QDialog):
         if first_new is not None:
             self._list.setCurrentItem(first_new)
         self._sync_empty_state()
+        if added:
+            self._apply_btn.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if self._apply_btn.isEnabled():
+                self._apply()
+                return
+        super().keyPressEvent(event)
 
     def _pick_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -558,7 +582,7 @@ class MergePdfDialog(QDialog):
         )
         if not folder:
             return
-        supported = PDF_EXTENSIONS | IMAGE_EXTENSIONS
+        supported = PDF_EXTENSIONS | IMAGE_EXTENSIONS | HWP_EXTENSIONS
         paths = sorted(
             str(p)
             for p in Path(folder).iterdir()
@@ -568,7 +592,7 @@ class MergePdfDialog(QDialog):
             QMessageBox.information(
                 self,
                 "PDF 병합",
-                "선택한 폴더에 PDF 또는 이미지 파일이 없습니다.",
+                "선택한 폴더에 PDF, 이미지 또는 한글(HWP/HWPX) 파일이 없습니다.",
             )
             return
         self._add_paths(paths)
@@ -597,7 +621,12 @@ class MergePdfDialog(QDialog):
         pixmap = _thumbnail_for_path(path, max_width=min(_PREVIEW_MAX_WIDTH, frame_w))
         if pixmap is None or pixmap.isNull():
             self._preview_image.clear()
-            self._preview_image.setText("미리보기를 만들 수 없습니다.")
+            if Path(path).suffix.lower() in HWP_EXTENSIONS:
+                self._preview_image.setText(
+                    "한글 문서입니다.\n병합 시 한컴 한글로 PDF 변환됩니다."
+                )
+            else:
+                self._preview_image.setText("미리보기를 만들 수 없습니다.")
             return
         self._preview_image.setText("")
         self._preview_image.setPixmap(pixmap)
