@@ -6,6 +6,8 @@ import os
 import subprocess
 import tempfile
 import winreg
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from pathlib import Path
 
 HWP_EXTENSIONS = {".hwp", ".hwpx"}
@@ -23,6 +25,25 @@ _GUIDANCE_AUTOMATION = (
     "• 파일이 암호로 보호되어 있지 않은지\n"
     "• 다른 프로그램에서 해당 HWP 파일을 열고 있지 않은지"
 )
+
+ProgressFactory = Callable[[str], AbstractContextManager[None]]
+_progress_factory: ProgressFactory | None = None
+
+
+def set_conversion_progress_factory(factory: ProgressFactory | None) -> None:
+    """Optional UI hook: ``factory(path)`` returns a context manager around conversion."""
+    global _progress_factory
+    _progress_factory = factory
+
+
+@contextmanager
+def _conversion_progress(path: str) -> Iterator[None]:
+    if _progress_factory is None:
+        with nullcontext():
+            yield
+        return
+    with _progress_factory(path):
+        yield
 
 
 class HancomNotInstalledError(RuntimeError):
@@ -143,20 +164,21 @@ def convert_hwp_to_pdf(
     if os.name == "nt":
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-    try:
-        completed = subprocess.run(
-            [str(helper), str(source), str(output), str(hwp_exe)],
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            check=False,
-            creationflags=creationflags,
-            cwd=str(_vendor_dir()),
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise HancomConvertError(
-            "HWP 변환 시간이 초과되었습니다.\n한컴 한글이 응답하는지 확인해 주세요."
-        ) from exc
+    with _conversion_progress(str(source)):
+        try:
+            completed = subprocess.run(
+                [str(helper), str(source), str(output), str(hwp_exe)],
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec,
+                check=False,
+                creationflags=creationflags,
+                cwd=str(_vendor_dir()),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise HancomConvertError(
+                "HWP 변환 시간이 초과되었습니다.\n한컴 한글이 응답하는지 확인해 주세요."
+            ) from exc
 
     stderr = (completed.stderr or "").strip()
     stdout = (completed.stdout or "").strip()

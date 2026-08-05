@@ -18,6 +18,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QDialog,
     QFileDialog,
     QFrame,
@@ -741,6 +742,17 @@ class MergePdfDialog(QDialog):
             self._finish_merge(token)
             return
         try:
+            if progress is not None:
+                hwp_names = [
+                    os.path.basename(p)
+                    for p in batch
+                    if Path(p).suffix.lower() in HWP_EXTENSIONS
+                ]
+                if hwp_names:
+                    shown = hwp_names[0]
+                    extra = f" 외 {len(hwp_names) - 1}개" if len(hwp_names) > 1 else ""
+                    progress.setLabelText(f"한글 문서 변환 중…\n{shown}{extra}")
+                    QApplication.processEvents()
             added = doc.insert_files_at(
                 self._merge_insert_at,
                 batch,

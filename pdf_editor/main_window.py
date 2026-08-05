@@ -66,7 +66,6 @@ from pdf_editor.document import (
 from pdf_editor.hwp_convert import (
   HancomConvertError,
   HancomNotInstalledError,
-  is_hwp_file,
 )
 from pdf_editor.page_clipboard import PageClipboard
 from pdf_editor.password_dialog import SetPasswordDialog, prompt_pdf_password
@@ -355,14 +354,7 @@ def open_pdf_document(parent: QWidget, path: str) -> PdfDocument | None:
     while True:
         try:
             doc = PdfDocument()
-            waiting = is_hwp_file(path)
-            if waiting:
-                QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-            try:
-                doc.open_file(path, password=password)
-            finally:
-                if waiting:
-                    QApplication.restoreOverrideCursor()
+            doc.open_file(path, password=password)
             return doc
         except (HancomNotInstalledError, HancomConvertError) as exc:
             QMessageBox.warning(parent, "한글 문서 열기", str(exc))
@@ -1028,13 +1020,18 @@ class DocumentTab(QWidget):
       return
     page_count_before = self.document.page_count
     was_empty = page_count_before == 0
+    has_hwp = any(Path(p).suffix.lower() in {".hwp", ".hwpx"} for p in paths)
     if len(paths) <= _INSERT_INITIAL_BATCH:
       try:
+        if has_hwp:
+          self.viewer.show_busy_message("한글 문서 변환 중...")
         added = self.document.insert_files_at(
           index,
           paths,
           resolve_pdf_password=resolve_pdf_password_for(self),
         )
+        if has_hwp:
+          self.viewer.hide_busy_message()
         if added:
           focus = self._insert_focus_index(
             index,
@@ -1054,6 +1051,7 @@ class DocumentTab(QWidget):
         if on_complete:
           on_complete()
       except Exception as exc:
+        self.viewer.hide_busy_message()
         QMessageBox.critical(self, "삽입 오류", str(exc))
       return
 
@@ -1061,6 +1059,8 @@ class DocumentTab(QWidget):
     self._file_insert_token += 1
     token = self._file_insert_token
     try:
+      if has_hwp:
+        self.viewer.show_busy_message("한글 문서 변환 중...")
       added = self._insert_files_batch(
         index,
         paths[:_INSERT_INITIAL_BATCH],
@@ -2532,6 +2532,9 @@ def run(argv: list[str] | None = None) -> None:
   app.setApplicationName(APP_NAME)
   app.setApplicationDisplayName(titled_name())
   app.setApplicationVersion(__version__)
+  from pdf_editor.hwp_progress import register_hwp_conversion_progress
+
+  register_hwp_conversion_progress()
   app_icon = load_app_icon()
   if not app_icon.isNull():
     app.setWindowIcon(app_icon)

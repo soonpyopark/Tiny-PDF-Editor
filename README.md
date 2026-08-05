@@ -177,6 +177,12 @@ WiX CLI 7 이상이 필요합니다. (`winget install WiXToolset.WiXCLI`, `wix e
 npm run build:dist:msi
 ```
 
+포터블 zip(7-Zip 필요, MSI와 같은 `msi/` 폴더에 출력):
+
+```bash
+npm run build:dist:portable
+```
+
 빌드 시 `assets/source_logo.png`가 있으면 `scripts/prepare-branding.py`가 아이콘·로고를 자동 생성합니다.
 
 **포터블 빌드 결과** (`dist/`):
@@ -191,13 +197,13 @@ dist/
     DISTRIBUTE.md
 ```
 
-**MSI 빌드 결과** (`msi/`):
+**MSI / 포터블 zip 빌드 결과** (`msi/`):
 
 ```
 msi/
   Tiny PDF Editor v1.1.6_YYMMDD_HHMMSS.msi
+  Tiny PDF Editor v1.1.6_YYMMDD_HHMMSS_portable.zip
 ```
-
 포터블 빌드 폴더는 최근 **3개**만 유지됩니다.
 
 ---

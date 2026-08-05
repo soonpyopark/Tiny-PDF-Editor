@@ -21,6 +21,8 @@ internal static class Program
     private const int ExitAutomation = 3;
     private const int ExitConvert = 4;
 
+    private const int SW_HIDE = 0;
+
     [DllImport("ole32.dll")]
     private static extern int GetRunningObjectTable(int reserved, out IRunningObjectTable pprot);
 
@@ -39,8 +41,26 @@ internal static class Program
         string fullPath,
         string helpDir);
 
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
     private static int Main(string[] args)
     {
+        Process startedProcess = null;
+        object hwp = null;
+        bool startedByUs = false;
+
         try
         {
             if (args.Length < 2)
@@ -78,8 +98,7 @@ internal static class Program
                 try { File.Delete(pdf); } catch { /* ignore */ }
             }
 
-            bool startedByUs = false;
-            object hwp = FindHwpInRot();
+            hwp = FindHwpInRot();
             if (hwp == null)
             {
                 startedByUs = true;
@@ -88,8 +107,13 @@ internal static class Program
                     UseShellExecute = true,
                     WindowStyle = ProcessWindowStyle.Minimized,
                 };
-                Process.Start(psi);
+                startedProcess = Process.Start(psi);
                 hwp = WaitForHwpInRot(TimeSpan.FromSeconds(45));
+                if (hwp != null)
+                {
+                    // Hide as soon as automation is ready; retry briefly while UI appears.
+                    HideHangulUi(hwp, startedProcess, retries: 8);
+                }
             }
 
             if (hwp == null)
@@ -109,6 +133,9 @@ internal static class Program
                     // Optional; Open may still succeed when Hangul is already running.
                 }
 
+                if (startedByUs)
+                    HideHangulUi(hwp, startedProcess, retries: 2);
+
                 object opened = Invoke(
                     hwp,
                     "Open",
@@ -120,6 +147,9 @@ internal static class Program
                     Console.Error.WriteLine("open failed");
                     return ExitConvert;
                 }
+
+                if (startedByUs)
+                    HideHangulUi(hwp, startedProcess, retries: 2);
 
                 try
                 {
@@ -148,16 +178,159 @@ internal static class Program
             finally
             {
                 if (startedByUs)
-                {
-                    try { Invoke(hwp, "Quit"); } catch { /* ignore */ }
-                    try { Marshal.FinalReleaseComObject(hwp); } catch { /* ignore */ }
-                }
+                    ShutdownStartedHangul(hwp, startedProcess);
             }
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine(ex.GetBaseException().Message);
+            if (startedByUs)
+                ShutdownStartedHangul(hwp, startedProcess);
             return ExitConvert;
+        }
+    }
+
+    private static void HideHangulUi(object hwp, Process process, int retries)
+    {
+        for (int i = 0; i < Math.Max(1, retries); i++)
+        {
+            TryHideViaAutomation(hwp);
+            TryHideProcessWindows(process);
+            Thread.Sleep(150);
+        }
+    }
+
+    private static void TryHideViaAutomation(object hwp)
+    {
+        if (hwp == null)
+            return;
+        try
+        {
+            object windows = GetProp(hwp, "XHwpWindows");
+            if (windows == null)
+                return;
+
+            int count = 1;
+            try
+            {
+                object rawCount = GetProp(windows, "Count");
+                if (rawCount != null)
+                    count = Convert.ToInt32(rawCount);
+            }
+            catch
+            {
+                count = 1;
+            }
+
+            // Hangul window collections are often 0-based; try both styles.
+            for (int index = 0; index < count; index++)
+            {
+                TrySetWindowVisible(windows, index, false);
+            }
+            TrySetWindowVisible(windows, 0, false);
+            TrySetWindowVisible(windows, 1, false);
+        }
+        catch
+        {
+            // ignore
+        }
+    }
+
+    private static void TrySetWindowVisible(object windows, int index, bool visible)
+    {
+        try
+        {
+            object item = Invoke(windows, "Item", index);
+            if (item == null)
+                return;
+            SetProp(item, "Visible", visible);
+        }
+        catch
+        {
+            // ignore
+        }
+    }
+
+    private static void TryHideProcessWindows(Process process)
+    {
+        if (process == null)
+            return;
+        try
+        {
+            if (process.HasExited)
+                return;
+            process.Refresh();
+            int pid = process.Id;
+            EnumWindows(
+                delegate(IntPtr hWnd, IntPtr lParam)
+                {
+                    uint windowPid;
+                    GetWindowThreadProcessId(hWnd, out windowPid);
+                    if ((int)windowPid == pid && IsWindowVisible(hWnd))
+                        ShowWindow(hWnd, SW_HIDE);
+                    return true;
+                },
+                IntPtr.Zero);
+
+            try
+            {
+                IntPtr main = process.MainWindowHandle;
+                if (main != IntPtr.Zero)
+                    ShowWindow(main, SW_HIDE);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+    }
+
+    private static void ShutdownStartedHangul(object hwp, Process process)
+    {
+        try
+        {
+            if (hwp != null)
+            {
+                try { Invoke(hwp, "Run", "FileClose"); } catch { /* ignore */ }
+                try { Invoke(hwp, "Quit"); } catch { /* ignore */ }
+                try { Marshal.FinalReleaseComObject(hwp); } catch { /* ignore */ }
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        if (process == null)
+            return;
+
+        try
+        {
+            if (!process.WaitForExit(4000) && !process.HasExited)
+            {
+                try { process.Kill(); } catch { /* ignore */ }
+                try { process.WaitForExit(2000); } catch { /* ignore */ }
+            }
+        }
+        catch
+        {
+            try
+            {
+                if (!process.HasExited)
+                    process.Kill();
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+        finally
+        {
+            try { process.Dispose(); } catch { /* ignore */ }
         }
     }
 
@@ -169,6 +342,26 @@ internal static class Program
             null,
             target,
             args);
+    }
+
+    private static object GetProp(object target, string name)
+    {
+        return target.GetType().InvokeMember(
+            name,
+            BindingFlags.GetProperty,
+            null,
+            target,
+            null);
+    }
+
+    private static void SetProp(object target, string name, object value)
+    {
+        target.GetType().InvokeMember(
+            name,
+            BindingFlags.SetProperty,
+            null,
+            target,
+            new object[] { value });
     }
 
     private static object WaitForHwpInRot(TimeSpan timeout)

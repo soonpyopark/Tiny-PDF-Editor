@@ -84,6 +84,10 @@ function syncReadme(version) {
     /Tiny PDF [Ee]ditor v[^_\n]+_YYMMDD_HHMMSS\.msi/g,
     `${releasePrefix}_YYMMDD_HHMMSS.msi`,
   );
+  text = text.replace(
+    /Tiny PDF [Ee]ditor v[^_\n]+_YYMMDD_HHMMSS_portable\.zip/g,
+    `${releasePrefix}_YYMMDD_HHMMSS_portable.zip`,
+  );
 
   fs.writeFileSync(filePath, text, "utf8");
 }

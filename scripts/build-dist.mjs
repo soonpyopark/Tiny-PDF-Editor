@@ -253,6 +253,34 @@ datas += tmp_ret[0]
 binaries += tmp_ret[1]
 hiddenimports += tmp_ret[2]
 
+# Keep the onedir bundle free of optional ML/science stacks that may be
+# installed in the build Python env but are unused by Tiny PDF Editor.
+excludes = [
+    "multiprocessing",
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "functorch",
+    "scipy",
+    "onnx",
+    "onnxruntime",
+    "pandas",
+    "pyhwpx",
+    "sklearn",
+    "scikit-learn",
+    "tensorflow",
+    "IPython",
+    "jupyter",
+    "matplotlib",
+    "cv2",
+    "sympy",
+    "networkx",
+    "fsspec",
+    "tqdm",
+    "numba",
+    "pyarrow",
+]
+
 a = Analysis(
     [${JSON.stringify(toSpecPath(mainPy))}],
     pathex=[${JSON.stringify(toSpecPath(root))}],
@@ -262,7 +290,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["multiprocessing"],
+    excludes=excludes,
     noarchive=False,
 )
 
@@ -330,10 +358,34 @@ function ensureBundledStdlibExtensions(appDir) {
   log("verified bundled stdlib extensions");
 }
 
+function assertNoBloatPackages(appDir) {
+  const internalDir = path.join(appDir, "_internal");
+  const banned = [
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "scipy",
+    "onnxruntime",
+    "pandas",
+    "pyhwpx",
+  ];
+  const found = banned.filter((name) =>
+    fs.existsSync(path.join(internalDir, name)),
+  );
+  if (found.length > 0) {
+    throw new Error(
+      `PyInstaller bundle still contains unused packages: ${found.join(", ")}. ` +
+        "Update excludes in writePyInstallerSpec and rebuild cleanly.",
+    );
+  }
+  log("verified no unused ML/science packages in bundle");
+}
+
 export function finalizePortableAppBundle(appDir) {
   const socketPyd = pythonStdlibExtension("_socket.pyd");
   ensureSocketInBundle(appDir, socketPyd);
   ensureBundledStdlibExtensions(appDir);
+  assertNoBloatPackages(appDir);
 }
 
 export function buildPortableApp() {
