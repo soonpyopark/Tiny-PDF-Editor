@@ -117,6 +117,11 @@ from pdf_editor.version import (
   __version__,
   titled_name,
 )
+from pdf_editor.update_check import (
+  UpdateCheckResult,
+  show_update_check_result,
+  start_update_check,
+)
 from pdf_editor.windows_file_assoc import (
   is_pdf_association_registered,
   is_windows as is_windows_platform,
@@ -1334,6 +1339,8 @@ class MainWindow(QMainWindow):
 
     self._pending_launch_paths = list(launch_paths or [])
     self._optimize_running = False
+    self._update_check_thread = None
+    self._update_check_worker = None
     if self._pending_launch_paths:
       QTimer.singleShot(0, self._open_pending_launch_paths)
     else:
@@ -1643,9 +1650,29 @@ class MainWindow(QMainWindow):
     self.addAction(self._act_fullscreen)
 
     help_menu = self.menuBar().addMenu("도움말(&H)")
+    act_update = QAction("업데이트 확인", self)
+    act_update.triggered.connect(self._check_for_updates)
+    help_menu.addAction(act_update)
     act_about = QAction("About", self)
     act_about.triggered.connect(toggle_about_splash)
     help_menu.addAction(act_about)
+
+  def _check_for_updates(self) -> None:
+    if self._update_check_thread is not None and self._update_check_thread.isRunning():
+      return
+    self.statusBar().showMessage("업데이트 확인 중…")
+    QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+    self._update_check_thread, self._update_check_worker = start_update_check(
+      self,
+      self._on_update_check_finished,
+    )
+
+  def _on_update_check_finished(self, result: UpdateCheckResult) -> None:
+    QApplication.restoreOverrideCursor()
+    self.statusBar().showMessage("준비")
+    show_update_check_result(self, result)
+    self._update_check_thread = None
+    self._update_check_worker = None
 
   def _setup_status_credit(self) -> None:
     credit = QLabel(f'<a href="{AUTHOR_URL}">{AUTHOR_LINK_TEXT}</a>')
