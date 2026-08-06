@@ -79,6 +79,7 @@ from pdf_editor.export_images_dialog import (
   export_folder_name_for_document,
 )
 from pdf_editor.resources import (
+  apply_macos_app_style,
   init_platform,
   load_app_icon,
 )
@@ -137,6 +138,70 @@ DEFAULT_WINDOW_HEIGHT = 900
 MIN_WINDOW_WIDTH = 520 + LEFT_SIDE_NAV_WIDTH + THUMB_PANEL_EXTRA_WIDTH
 MIN_WINDOW_HEIGHT = 480
 _TAB_BASENAME_MAX_LEN = 24
+
+_MACOS_CHROME_STYLESHEET = """
+  QTabWidget::pane {
+    border: 1px solid #c8c8c8;
+    border-top-color: #bdbdbd;
+    background: #eeeeee;
+    top: -1px;
+  }
+  QTabBar {
+    qproperty-drawBase: 0;
+    background: #e6e6e6;
+  }
+  QTabBar::tab {
+    background: #dedede;
+    color: #333333;
+    border: 1px solid #c0c0c0;
+    border-bottom: none;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    padding: 7px 14px;
+    margin-right: 2px;
+    min-width: 72px;
+  }
+  QTabBar::tab:selected {
+    background: #1a73e8;
+    color: #ffffff;
+    border-color: #1558b0;
+  }
+  QTabBar::tab:!selected:hover {
+    background: #d2d2d2;
+  }
+  QTabBar::close-button {
+    subcontrol-position: right;
+    margin: 2px;
+  }
+  #tabSearchBar {
+    background: #e6e6e6;
+    border-bottom: 1px solid #c8c8c8;
+    padding: 4px 8px 4px 4px;
+  }
+  #tabSearchBar QLabel {
+    color: #333333;
+    background: transparent;
+  }
+  #tabSearchBar QLineEdit {
+    border: 1px solid #b0b0b0;
+    border-radius: 3px;
+    padding: 1px 6px;
+    background: #ffffff;
+    color: #222222;
+    selection-background-color: #1a73e8;
+    selection-color: #ffffff;
+  }
+  #tabSearchBar QPushButton {
+    border: 1px solid #b0b0b0;
+    border-radius: 3px;
+    background: #f3f3f3;
+    color: #333333;
+  }
+  #tabSearchBar QPushButton:hover {
+    background: #e4e4e4;
+  }
+"""
+
 _REDUCE_MENU_BTN_STYLE = """
     QPushButton {
         color: #e57373;
@@ -1305,9 +1370,14 @@ class MainWindow(QMainWindow):
       self.setWindowIcon(app_icon)
 
     self.tabs = QTabWidget()
+    self.tabs.setObjectName("documentTabs")
     self.tabs.setTabsClosable(True)
     self.tabs.tabCloseRequested.connect(self._close_tab)
     self.tabs.currentChanged.connect(self._on_tab_changed)
+    if sys.platform == "darwin":
+      self.tabs.setDocumentMode(True)
+      self.tabs.tabBar().setExpanding(False)
+      self.tabs.tabBar().setElideMode(Qt.TextElideMode.ElideRight)
 
     self._search_bar = TabSearchBar()
     self._search_bar.search_requested.connect(self._run_search)
@@ -1688,8 +1758,7 @@ class MainWindow(QMainWindow):
 
   def _apply_window_styles(self) -> None:
     self.menuBar().setNativeMenuBar(False)
-    self.setStyleSheet(
-      f"""
+    base_style = f"""
       #mainWindow {{
         background-color: {APP_WINDOW_BACKGROUND};
       }}
@@ -1721,7 +1790,10 @@ class MainWindow(QMainWindow):
         background: #ececec;
       }}
       """
-    )
+    if sys.platform == "darwin":
+      self.setStyleSheet(base_style + _MACOS_CHROME_STYLESHEET)
+    else:
+      self.setStyleSheet(base_style)
 
   def _focus_search(self) -> None:
     self._search_bar.focus_search()
@@ -2556,6 +2628,7 @@ def run(argv: list[str] | None = None) -> None:
   init_platform()
   configure_mupdf_messages()
   app = QApplication(sys.argv)
+  apply_macos_app_style(app)
   app.setApplicationName(APP_NAME)
   app.setApplicationDisplayName(titled_name())
   app.setApplicationVersion(__version__)

@@ -47,6 +47,55 @@ def init_platform() -> None:
         pass
 
 
+def apply_macos_app_style(app) -> None:
+    """Keep macOS UI on a stable light Fusion look (no-op on other platforms)."""
+    if sys.platform != "darwin":
+        return
+
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QColor, QPalette
+    from PyQt6.QtWidgets import QApplication
+
+    if not isinstance(app, QApplication):
+        return
+
+    app.setStyle("Fusion")
+    try:
+        app.styleHints().setColorScheme(Qt.ColorScheme.Light)
+    except (AttributeError, TypeError):
+        pass
+
+    palette = QPalette()
+    window = QColor("#eeeeee")
+    base = QColor("#ffffff")
+    text = QColor("#222222")
+    disabled = QColor("#888888")
+    highlight = QColor("#1a73e8")
+    highlighted_text = QColor("#ffffff")
+    button = QColor("#f5f5f5")
+
+    palette.setColor(QPalette.ColorRole.Window, window)
+    palette.setColor(QPalette.ColorRole.WindowText, text)
+    palette.setColor(QPalette.ColorRole.Base, base)
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#f5f5f5"))
+    palette.setColor(QPalette.ColorRole.Text, text)
+    palette.setColor(QPalette.ColorRole.Button, button)
+    palette.setColor(QPalette.ColorRole.ButtonText, text)
+    palette.setColor(QPalette.ColorRole.ToolTipBase, base)
+    palette.setColor(QPalette.ColorRole.ToolTipText, text)
+    palette.setColor(QPalette.ColorRole.Highlight, highlight)
+    palette.setColor(QPalette.ColorRole.HighlightedText, highlighted_text)
+    palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#888888"))
+    palette.setColor(
+        QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, disabled
+    )
+    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, disabled)
+    palette.setColor(
+        QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, disabled
+    )
+    app.setPalette(palette)
+
+
 def load_app_icon() -> QIcon:
     candidates = (
         "app_icon.icns",
