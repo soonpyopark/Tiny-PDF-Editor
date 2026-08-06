@@ -1,6 +1,6 @@
 # 배포판 사용 안내
 
-## 설치판 (MSI)
+## Windows — 설치판 (MSI)
 
 1. `npm run build:msi`로 `msi` 폴더에 설치 파일을 만듭니다.
 2. `msi/Tiny PDF Editor v{버전}_YYMMDD_HHMMSS.msi`를 더블 클릭해 설치합니다.
@@ -14,7 +14,7 @@ winget install WiXToolset.WiXCLI
 wix eula accept wix7
 ```
 
-## 포터블 실행 (폴더 배포)
+## Windows — 포터블 실행 (폴더 배포)
 
 1. 배포 **폴더 전체**를 USB 또는 원하는 위치에 복사합니다.
 2. 폴더 안의 `{프로젝트명}_YYMMDD_HHMMSS.exe` 파일을 더블 클릭합니다.
@@ -22,7 +22,18 @@ wix eula accept wix7
 
 압축 해제는 필요 없습니다. 폴더 구조를 그대로 유지한 채 실행하세요.
 
-## USB 사용
+## macOS — DMG / .app
+
+1. `npm run build:dist:macos`로 `dist/`에 `.app`과 `.dmg`를 만듭니다. (Apple Silicon, 서명·공증 없음)
+2. DMG를 연 뒤 `Tiny PDF Editor.app`을 **응용 프로그램**으로 드래그합니다.
+3. 최초 실행 시 Gatekeeper 경고가 나오면 앱을 Control-클릭 → **열기**, 또는 **시스템 설정 → 개인정보 보호 및 보안**에서 허용합니다.
+
+macOS에서는 다음 기능이 Windows 전용입니다.
+
+- HWP/HWPX → PDF 변환 (한컴 한글 의존)
+- PDF 파일 연결 메뉴
+
+## USB 사용 (Windows)
 
 - `dist` 안의 최신 빌드 폴더(예: `Tiny PDF Editor_260625_215325`)를 통째로 USB에 복사합니다.
 - USB에서도 exe와 `_internal` 폴더가 **같은 위치**에 있어야 합니다.
@@ -31,11 +42,12 @@ wix eula accept wix7
 ## 시스템 요구 사항
 
 - Windows 10 이상 (64비트)
+- macOS 12 이상, Apple Silicon (arm64)
 - 인터넷 연결 불필요 (오프라인 사용 가능)
 
 ## 주의 사항
 
-- Windows Defender 등에서 처음 실행 시 경고가 나올 수 있습니다. 직접 빌드한 배포본이라면 「추가 정보」→「실행」을 선택하세요.
+- Windows Defender / macOS Gatekeeper에서 처음 실행 시 경고가 나올 수 있습니다. 직접 빌드한 배포본이라면 안내된 방법으로 실행을 허용하세요.
 - 편집한 PDF는 **파일 → 저장** 또는 **다른 이름으로 저장**으로 저장하세요.
 
 ## 문의

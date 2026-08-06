@@ -1,12 +1,12 @@
 # Tiny PDF Editor v1.1.6
 
-Windows용 **포터블 PDF 편집기**입니다. Python 설치 없이 실행할 수 있는 배포판·MSI 설치판을 제공하며, 페이지 병합·편집·검색·용량 줄이기 등 일상적인 PDF 작업을 한 프로그램에서 처리할 수 있습니다.
+**포터블 PDF 편집기**입니다. Windows(exe·MSI)와 macOS(`.app`·DMG) 배포판을 제공하며, 페이지 병합·편집·검색·용량 줄이기 등 일상적인 PDF 작업을 한 프로그램에서 처리할 수 있습니다.
 
 개발자 홈페이지: [https://note4all.tistory.com](https://note4all.tistory.com)
 
 ## 다운로드 및 실행
 
-### 포터블 배포판 (폴더)
+### Windows — 포터블 배포판 (폴더)
 
 1. 블로그 또는 배포 페이지에서 **최신 빌드 폴더 전체**를 받습니다.
 2. 압축을 푼 뒤, 폴더 안의 `Tiny PDF Editor v1.1.6_YYMMDD_HHMMSS.exe`를 실행합니다.
@@ -14,7 +14,7 @@ Windows용 **포터블 PDF 편집기**입니다. Python 설치 없이 실행할 
 
 USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
-### MSI 설치판
+### Windows — MSI 설치판
 
 1. `Tiny PDF Editor v1.1.6_YYMMDD_HHMMSS.msi`를 더블 클릭해 설치합니다.
 2. 관리자 권한 없이 **현재 사용자** 계정에 설치됩니다 (`%LocalAppData%`).
@@ -22,15 +22,22 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 4. 설치 과정의 사용권 계약에는 [https://note4all.tistory.com](https://note4all.tistory.com)이 표시됩니다.
 5. 동일 버전을 다시 설치하면 기존 설치를 제거한 뒤 새로 설치됩니다.
 
+### macOS — DMG / .app
+
+1. `Tiny PDF Editor v1.1.6_YYMMDD_HHMMSS.dmg`를 열어 `Tiny PDF Editor.app`을 **응용 프로그램** 폴더로 복사합니다.
+2. 앱을 실행합니다. (서명·공증되지 않은 빌드이므로 최초 실행 시 Gatekeeper 경고가 날 수 있습니다.)
+3. 경고가 뜨면 앱을 **Control-클릭 → 열기**, 또는 **시스템 설정 → 개인정보 보호 및 보안**에서 허용하세요.
+
 자세한 배포·USB 사용법은 `DISTRIBUTE.md`를 참고하세요.
 
 ### 시스템 요구 사항
 
-- Windows 10 이상 (64비트)
+- **Windows**: Windows 10 이상 (64비트)
+- **macOS**: macOS 12 이상, Apple Silicon (arm64)
 - 인터넷 연결 불필요 (오프라인 사용 가능)
-- 한글 텍스트 덮어쓰기 편집 시 Windows 기본 한글 글꼴(맑은 고딕 등)이 사용됩니다.
+- 한글 텍스트 덮어쓰기 편집 시 시스템에 설치된 한글 글꼴이 사용됩니다.
 
-> Windows Defender 등에서 처음 실행 시 경고가 나올 수 있습니다. 직접 빌드하거나 신뢰하는 출처의 배포본이라면 「추가 정보」→「실행」을 선택하세요.
+> Windows Defender / macOS Gatekeeper에서 처음 실행 시 경고가 나올 수 있습니다. 직접 빌드하거나 신뢰하는 출처의 배포본이라면 안내된 방법으로 실행을 허용하세요.
 
 ---
 
@@ -119,6 +126,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
 - PDF (`.pdf`) — 손상된 PDF는 가능한 범위에서 자동 복구를 시도합니다.
 - 이미지: PNG, JPEG, BMP, GIF, TIFF, WebP
+- HWP/HWPX (`.hwp`, `.hwpx`) — **Windows 전용** (한컴 한글 필요). macOS에서는 지원하지 않습니다.
 
 ---
 
@@ -183,9 +191,19 @@ npm run build:dist:msi
 npm run build:dist:portable
 ```
 
-빌드 시 `assets/source_logo.png`가 있으면 `scripts/prepare-branding.py`가 아이콘·로고를 자동 생성합니다.
+### macOS 배포판 빌드 (Apple Silicon)
 
-**포터블 빌드 결과** (`dist/`):
+Python 3.10+ 와 Node.js가 필요합니다. (권장: `.venv`에 Python 3.12)
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+npm run build:dist:macos
+```
+
+빌드 시 `assets/source_logo.png`가 있으면 `scripts/prepare-branding.py`가 아이콘·로고·`.icns`를 자동 생성합니다.
+
+**포터블 빌드 결과** (`dist/`, Windows):
 
 ```
 dist/
@@ -195,6 +213,19 @@ dist/
     LICENSE
     README.md
     DISTRIBUTE.md
+```
+
+**macOS 빌드 결과** (`dist/`):
+
+```
+dist/
+  Tiny PDF Editor.app
+  Tiny PDF Editor v1.1.6_YYMMDD_HHMMSS/
+    Tiny PDF Editor.app
+    LICENSE
+    README.md
+    DISTRIBUTE.md
+  Tiny PDF Editor v1.1.6_YYMMDD_HHMMSS.dmg
 ```
 
 **MSI / 포터블 zip 빌드 결과** (`msi/`):
@@ -220,4 +251,4 @@ msi/
 
 본 프로젝트 소스 코드는 **MIT License**입니다. 자세한 내용은 `LICENSE` 파일을 참고하세요.
 
-배포판(exe·MSI)에는 PyMuPDF, PyQt6, openpyxl 등 서드파티 라이브러리가 포함됩니다. exe·MSI를 재배포할 때는 `LICENSE`의 서드파티 고지를 함께 제공해야 합니다.
+배포판(exe·MSI·`.app`·DMG)에는 PyMuPDF, PyQt6, openpyxl 등 서드파티 라이브러리가 포함됩니다. 재배포할 때는 `LICENSE`의 서드파티 고지를 함께 제공해야 합니다.

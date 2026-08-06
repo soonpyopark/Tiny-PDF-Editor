@@ -279,6 +279,48 @@ def make_ico_image(icon: Image.Image, size: int = 256) -> Image.Image:
     return canvas
 
 
+_ICNS_SIZES = (
+    (16, 1),
+    (16, 2),
+    (32, 1),
+    (32, 2),
+    (128, 1),
+    (128, 2),
+    (256, 1),
+    (256, 2),
+    (512, 1),
+    (512, 2),
+)
+
+
+def save_icns(path: Path, icon: Image.Image) -> None:
+    """Write a macOS .icns via iconutil from a transparent square icon."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    iconutil = shutil.which("iconutil")
+    if iconutil is None:
+        print("warning: iconutil not found; skipped .icns generation")
+        return
+
+    with tempfile.TemporaryDirectory(prefix="tiny_icns_") as tmp:
+        iconset = Path(tmp) / "app_icon.iconset"
+        iconset.mkdir()
+        for size, scale in _ICNS_SIZES:
+            pixel = size * scale
+            name = (
+                f"icon_{size}x{size}.png"
+                if scale == 1
+                else f"icon_{size}x{size}@{scale}x.png"
+            )
+            make_ico_image(icon, pixel).save(iconset / name)
+        subprocess.run(
+            [iconutil, "-c", "icns", str(iconset), "-o", str(path)],
+            check=True,
+        )
+
+
 def build_size_images(
     color_icon: Image.Image,
     sizes: tuple[int, ...] = _ICO_SIZES,
@@ -480,10 +522,15 @@ def main() -> None:
     pdf_file_icon_path = OUT_DIR / "pdf_file_icon.ico"
     save_multi_size_ico(pdf_file_icon_path, pdf_images)
 
+    icns_path = OUT_DIR / "app_icon.icns"
+    save_icns(icns_path, logo)
+
     print(f"saved {logo_path} ({logo.size[0]}x{logo.size[1]})")
     print(f"saved {icon_png_path}")
     print(f"saved {ico_path} ({len(app_images)} sizes)")
     print(f"saved {pdf_file_icon_path} ({len(pdf_images)} sizes)")
+    if icns_path.is_file():
+        print(f"saved {icns_path}")
     if app_applied:
         print("app_icon overrides: " + ", ".join(str(size) for size in app_applied))
     if pdf_applied:

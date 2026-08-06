@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
-import winreg
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from pathlib import Path
+
+if sys.platform == "win32":
+    import winreg
+else:
+    winreg = None  # type: ignore[assignment]
 
 HWP_EXTENSIONS = {".hwp", ".hwpx"}
 
@@ -16,6 +21,12 @@ _GUIDANCE_NOT_INSTALLED = (
     "한컴 한글(한컴오피스)이 설치되어 있지 않습니다.\n\n"
     "HWP/HWPX 파일을 PDF로 변환하려면 한컴 한글이 필요합니다.\n"
     "한컴오피스를 설치한 뒤 다시 시도해 주세요."
+)
+
+_GUIDANCE_UNSUPPORTED_PLATFORM = (
+    "HWP/HWPX 변환은 Windows에서만 지원됩니다.\n\n"
+    "한컴 한글 자동 변환은 Windows용 Tiny PDF Editor에서 사용할 수 있습니다.\n"
+    "macOS에서는 PDF 또는 이미지 파일을 열어 주세요."
 )
 
 _GUIDANCE_AUTOMATION = (
@@ -66,6 +77,9 @@ def is_hwp_file(path: str | os.PathLike[str]) -> bool:
 
 def find_hwp_exe() -> Path | None:
     """Return path to Hwp.exe if Hancom Hangul appears installed."""
+    if sys.platform != "win32" or winreg is None:
+        return None
+
     path_values: list[str] = []
     for root, subkey, name in (
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\HNC\Shared", "Hnc Path130"),
@@ -106,6 +120,8 @@ def hancom_installed() -> bool:
 
 
 def _read_reg_string(root: int, subkey: str, name: str) -> str | None:
+    if winreg is None:
+        return None
     try:
         with winreg.OpenKey(root, subkey) as key:
             value, _ = winreg.QueryValueEx(key, name)
@@ -134,6 +150,9 @@ def convert_hwp_to_pdf(
         raise FileNotFoundError(f"파일을 찾을 수 없습니다: {source}")
     if not is_hwp_file(source):
         raise ValueError(f"HWP/HWPX 파일이 아닙니다: {source.suffix}")
+
+    if sys.platform != "win32":
+        raise HancomNotInstalledError(_GUIDANCE_UNSUPPORTED_PLATFORM)
 
     hwp_exe = find_hwp_exe()
     if hwp_exe is None:

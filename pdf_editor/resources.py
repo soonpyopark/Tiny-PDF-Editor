@@ -48,18 +48,19 @@ def init_platform() -> None:
 
 
 def load_app_icon() -> QIcon:
-    icon_path = branding_path("app_icon.ico")
-    if icon_path.is_file():
+    candidates = (
+        "app_icon.icns",
+        "app_icon.png",
+        "app_icon.ico",
+        "app_logo.png",
+    )
+    for name in candidates:
+        icon_path = branding_path(name)
+        if not icon_path.is_file():
+            continue
         icon = QIcon(str(icon_path))
         if not icon.isNull():
             return icon
-
-    logo_path = branding_path("app_logo.png")
-    if logo_path.is_file():
-        icon = QIcon(str(logo_path))
-        if not icon.isNull():
-            return icon
-
     return QIcon()
 
 

@@ -88,6 +88,14 @@ function syncReadme(version) {
     /Tiny PDF [Ee]ditor v[^_\n]+_YYMMDD_HHMMSS_portable\.zip/g,
     `${releasePrefix}_YYMMDD_HHMMSS_portable.zip`,
   );
+  text = text.replace(
+    /`Tiny PDF [Ee]ditor v[^`_]+_YYMMDD_HHMMSS\.dmg`/g,
+    `\`${releasePrefix}_YYMMDD_HHMMSS.dmg\``,
+  );
+  text = text.replace(
+    /Tiny PDF [Ee]ditor v[^_\n]+_YYMMDD_HHMMSS\.dmg/g,
+    `${releasePrefix}_YYMMDD_HHMMSS.dmg`,
+  );
 
   fs.writeFileSync(filePath, text, "utf8");
 }

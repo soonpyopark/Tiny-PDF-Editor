@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import fitz
 from PyQt6.QtCore import (
     QEasingCurve,
@@ -1079,8 +1081,8 @@ class PageViewer(QWidget):
         self.log_panel.setReadOnly(True)
         self.log_panel.setMinimumHeight(_LOG_BODY_MIN_HEIGHT)
         self.log_panel.setMaximumHeight(_LOG_BODY_MAX_HEIGHT)
-        log_font = QFont("Consolas")
-        if not log_font.family():
+        log_font = QFont("Menlo" if sys.platform == "darwin" else "Consolas")
+        if not log_font.exactMatch():
             log_font = QFont("Courier New")
         log_font.setPointSize(10)
         self.log_panel.setFont(log_font)

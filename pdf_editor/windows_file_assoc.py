@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 import sys
-import winreg
 from pathlib import Path
+from typing import Any
 
 from pdf_editor.resources import installed_pdf_file_icon_path
 from pdf_editor.version import APP_NAME
@@ -21,6 +21,14 @@ _THUMBNAIL_SHELLEX = "{e357fccd-a995-4576-b01f-234630154e96}"
 
 def is_windows() -> bool:
     return sys.platform == "win32"
+
+
+def _winreg() -> Any:
+    if not is_windows():
+        raise OSError("Windows에서만 사용할 수 있습니다.")
+    import winreg
+
+    return winreg
 
 
 def exe_path() -> Path:
@@ -47,6 +55,7 @@ def _default_icon_value() -> str:
 
 
 def _set_value(root: int, subkey: str, name: str, value: str) -> None:
+    winreg = _winreg()
     key = winreg.CreateKeyEx(root, subkey, 0, winreg.KEY_SET_VALUE)
     try:
         winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
@@ -57,6 +66,7 @@ def _set_value(root: int, subkey: str, name: str, value: str) -> None:
 def _delete_tree(root: int, subkey: str) -> None:
     if not is_windows():
         return
+    winreg = _winreg()
     try:
         import ctypes
 
@@ -68,6 +78,7 @@ def _delete_tree(root: int, subkey: str) -> None:
 
 
 def _delete_value(root: int, subkey: str, name: str) -> None:
+    winreg = _winreg()
     try:
         key = winreg.OpenKey(root, subkey, 0, winreg.KEY_SET_VALUE)
     except OSError:
@@ -113,6 +124,7 @@ def _clear_pdf_thumbnail_overrides(root: int) -> None:
 def is_pdf_association_registered() -> bool:
     if not is_windows():
         return False
+    winreg = _winreg()
     try:
         key = winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
@@ -131,6 +143,7 @@ def register_pdf_association() -> None:
     if not is_windows():
         raise OSError("Windows에서만 사용할 수 있습니다.")
 
+    winreg = _winreg()
     command = _open_command()
     app_key = _applications_key()
     icon = _default_icon_value()
@@ -176,6 +189,7 @@ def unregister_pdf_association() -> None:
     if not is_windows():
         raise OSError("Windows에서만 사용할 수 있습니다.")
 
+    winreg = _winreg()
     root = winreg.HKEY_CURRENT_USER
     _delete_value(root, rf"Software\Classes\{_PDF_EXTENSION}\OpenWithProgids", _PROGID)
 
