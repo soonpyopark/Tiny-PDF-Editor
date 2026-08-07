@@ -346,6 +346,44 @@ function removePath(targetPath) {
   fs.rmSync(targetPath, { recursive: true, force: true });
 }
 
+/**
+ * Copy an .app bundle while preserving relative symlinks.
+ * Node fs.cpSync rewrites relative links to absolute /Users/... paths,
+ * which break on any machine other than the build host.
+ */
+function copyAppBundle(srcApp, destApp) {
+  removePath(destApp);
+  fs.mkdirSync(path.dirname(destApp), { recursive: true });
+  // -a keeps symlink text as-is (relative targets stay relative).
+  run(`cp -a ${JSON.stringify(srcApp)} ${JSON.stringify(destApp)}`);
+  assertPortableSymlinks(destApp);
+}
+
+function assertPortableSymlinks(appDir) {
+  const bad = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        const target = fs.readlinkSync(full);
+        if (path.isAbsolute(target) && !target.startsWith("/Applications")) {
+          bad.push(`${path.relative(appDir, full)} -> ${target}`);
+        }
+      } else if (entry.isDirectory()) {
+        walk(full);
+      }
+    }
+  };
+  walk(appDir);
+  if (bad.length > 0) {
+    const preview = bad.slice(0, 5).join("\n  ");
+    throw new Error(
+      `App bundle has ${bad.length} absolute symlink(s) that will break on other Macs:\n  ${preview}`,
+    );
+  }
+  log("verified portable (relative) symlinks in app bundle");
+}
+
 function listReleaseFolders() {
   if (!fs.existsSync(DIST_DIR)) {
     return [];
@@ -396,7 +434,7 @@ function createDmg(appSource, releaseDir, releaseName) {
   fs.mkdirSync(staging, { recursive: true });
 
   const stagedApp = path.join(staging, "Tiny PDF Editor.app");
-  fs.cpSync(appSource, stagedApp, { recursive: true });
+  copyAppBundle(appSource, stagedApp);
   copyDistributionDocs(staging);
 
   try {
@@ -434,15 +472,12 @@ function main() {
     removePath(releaseDir);
   }
   fs.mkdirSync(releaseDir, { recursive: true });
-  fs.cpSync(builtApp, path.join(releaseDir, "Tiny PDF Editor.app"), {
-    recursive: true,
-  });
+  copyAppBundle(builtApp, path.join(releaseDir, "Tiny PDF Editor.app"));
   copyDistributionDocs(releaseDir);
 
   // Convenience copy at dist root for local testing
   const distApp = path.join(DIST_DIR, "Tiny PDF Editor.app");
-  removePath(distApp);
-  fs.cpSync(builtApp, distApp, { recursive: true });
+  copyAppBundle(builtApp, distApp);
 
   const dmgPath = createDmg(builtApp, releaseDir, releaseName);
   const kept = pruneReleases();
