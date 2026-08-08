@@ -73,6 +73,8 @@ from pdf_editor.recent_files import RecentFilesStore
 from pdf_editor.print_dialog import DocumentPrintDialog
 from pdf_editor.page_viewer import PageViewer
 from pdf_editor.reduce_size_dialog import ReduceSizeDialog
+from pdf_editor.pii_remove import redact_document_bytes
+from pdf_editor.pii_remove_dialog import PiiRemoveDialog
 from pdf_editor.merge_pdf_dialog import MergePdfDialog
 from pdf_editor.export_images_dialog import (
   ExportImagesDialog,
@@ -1477,6 +1479,8 @@ class MainWindow(QMainWindow):
       self._act_remove_password.setEnabled(
         can_password and tab.document.has_password_protection()
       )
+    if hasattr(self, "_act_remove_pii"):
+      self._act_remove_pii.setEnabled(can_password)
     can_add = bool(tab and tab.document.page_count > 0)
     if hasattr(self, "_act_add"):
       self._act_add.setEnabled(can_add)
@@ -1691,6 +1695,11 @@ class MainWindow(QMainWindow):
     self._act_remove_password = QAction("비밀번호 제거", self)
     self._act_remove_password.triggered.connect(self._clear_document_password)
     security_menu.addAction(self._act_remove_password)
+
+    security_menu.addSeparator()
+    self._act_remove_pii = QAction("개인정보 제거...", self)
+    self._act_remove_pii.triggered.connect(self._open_pii_remove_dialog)
+    security_menu.addAction(self._act_remove_pii)
 
     view_menu = self.menuBar().addMenu("보기(&V)")
     act_fit_width = QAction("너비 맞추기", self)
@@ -2489,6 +2498,55 @@ class MainWindow(QMainWindow):
     self.statusBar().showMessage(
       "비밀번호가 제거되었습니다. 저장하면 암호 없는 PDF로 저장됩니다."
     )
+
+  def _open_pii_remove_dialog(self) -> None:
+    tab = self._current_tab()
+    if tab is None or tab.document.page_count == 0:
+      QMessageBox.information(
+        self,
+        "개인정보 제거",
+        "페이지가 있는 문서를 열어주세요.",
+      )
+      return
+    source_bytes = tab.document.save_to_bytes()
+    dialog = PiiRemoveDialog(source_bytes, parent=self)
+    if dialog.exec() != QDialog.DialogCode.Accepted:
+      return
+    hits = dialog.selected_hits()
+    style = dialog.selected_style()
+    tab.document.pause_rendering()
+    tab.viewer.show_log_panel()
+    tab.viewer.append_log_line("> 개인정보 제거를 시작합니다...")
+    tab.viewer.show_busy_message("개인정보 제거 중...")
+    QApplication.processEvents()
+    applied = False
+    try:
+      payload, count = redact_document_bytes(
+        source_bytes,
+        hits,
+        style=style,
+        status_callback=tab.viewer.append_log_line,
+      )
+      tab.document.apply_reduced_payload(payload)
+      applied = True
+      tab.viewer.append_log_line(f"완료: {count}개 영역을 제거했습니다.")
+      self.statusBar().showMessage(f"개인정보 제거 완료: {count}개 영역")
+      QMessageBox.information(
+        self,
+        "개인정보 제거",
+        f"{count}개 영역의 원본 내용을 제거했습니다.\n"
+        "저장 전에 결과를 확인하세요.",
+      )
+    except Exception as exc:
+      tab.viewer.append_log_line(f"오류: {exc}")
+      QMessageBox.critical(self, "개인정보 제거 오류", str(exc))
+    finally:
+      tab.document.resume_rendering()
+      tab.viewer.hide_busy_message()
+      if applied:
+        index = tab.thumbnails.current_index()
+        tab.refresh_all(keep_index=index)
+        self._update_edit_actions()
 
   def _open_reduce_size_dialog(self) -> None:
     tab = self._current_tab()

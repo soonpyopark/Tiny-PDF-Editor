@@ -55,11 +55,16 @@ Tiny PDF Editor 배포판(Windows exe·MSI 및 `_internal` 폴더)에는 아래 
    - Website: https://openpyxl.readthedocs.io/
    - 형광펜·밑줄 목록을 Excel(`.xlsx`)로보낼 때 사용됩니다.
 
-4. Python 및 PyInstaller 번들 구성 요소
+4. ko-pii
+   - License: MIT License
+   - Website: https://github.com/Marker-Inc-Korea/ko-pii
+   - 한국어 개인정보(PII) 검출에 사용됩니다. 「개인정보 제거」 기능의 탐지 엔진입니다.
+
+5. Python 및 PyInstaller 번들 구성 요소
    - Python 인터프리터 및 표준 라이브러리: Python Software Foundation License (PSF)
    - PyInstaller로 묶인 기타 의존성: 각 프로젝트의 라이선스(PSF, LGPL, BSD 등)를 따릅니다.
 
-5. NumPy / Pillow (번들에 포함될 수 있음)
+6. NumPy / Pillow (번들에 포함될 수 있음)
    - NumPy: BSD 3-Clause License — PyMuPDF·빌드 과정에서 포함될 수 있습니다.
    - Pillow (PIL): HPND License — 이미지 처리·브랜딩 아이콘 생성 경로에서
      포함될 수 있습니다.

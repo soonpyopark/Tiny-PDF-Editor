@@ -253,6 +253,11 @@ datas += tmp_ret[0]
 binaries += tmp_ret[1]
 hiddenimports += tmp_ret[2]
 
+tmp_ret = collect_all("ko_pii")
+datas += tmp_ret[0]
+binaries += tmp_ret[1]
+hiddenimports += tmp_ret[2]
+
 # Keep the onedir bundle free of optional ML/science stacks that may be
 # installed in the build Python env but are unused by Tiny PDF Editor.
 excludes = [
