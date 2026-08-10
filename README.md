@@ -1,22 +1,24 @@
-# Tiny PDF Editor v1.1.6
+# Tiny PDF Editor v1.1.7
 
-**포터블 PDF 편집기**입니다. Windows(exe·MSI)와 macOS(`.app`·DMG) 배포판을 제공하며, 페이지 병합·편집·검색·용량 줄이기 등 일상적인 PDF 작업을 한 프로그램에서 처리할 수 있습니다.
+**포터블 PDF 편집기**입니다. Windows(exe·MSI·포터블 zip)와 macOS(`.app`·DMG) 배포판을 제공하며, 페이지 병합·편집·검색·용량 줄이기·개인정보 제거 등 일상적인 PDF 작업을 한 프로그램에서 처리할 수 있습니다.
 
-개발자 홈페이지: [https://note4all.tistory.com](https://note4all.tistory.com)
+- 개발자 홈페이지: [https://note4all.tistory.com](https://note4all.tistory.com)
+- GitHub: [https://github.com/soonpyopark/Tiny-PDF-Editor](https://github.com/soonpyopark/Tiny-PDF-Editor)
+- 릴리스(설치·포터블 파일): [Releases](https://github.com/soonpyopark/Tiny-PDF-Editor/releases)
 
 ## 다운로드 및 실행
 
-### Windows — 포터블 배포판 (폴더)
+### Windows — 포터블 zip
 
-1. 블로그 또는 배포 페이지에서 **최신 빌드 폴더 전체**를 받습니다.
-2. 압축을 푼 뒤, 폴더 안의 `Tiny PDF Editor v1.1.6_YYMMDD_HHMMSS.exe`를 실행합니다.
+1. 릴리스 또는 배포 페이지에서 `Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS_portable.zip`을 받습니다.
+2. 압축을 푼 뒤, 폴더 안의 `Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS.exe`를 실행합니다.
 3. `_internal` 폴더와 exe는 **같은 위치**에 있어야 합니다. exe만 따로 복사하면 실행되지 않습니다.
 
 USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
 ### Windows — MSI 설치판
 
-1. `Tiny PDF Editor v1.1.6_YYMMDD_HHMMSS.msi`를 더블 클릭해 설치합니다.
+1. `Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS.msi`를 더블 클릭해 설치합니다.
 2. 관리자 권한 없이 **현재 사용자** 계정에 설치됩니다 (`%LocalAppData%`).
 3. 설치 시 PDF 파일 연결(HKCU)과 시작 메뉴·바탕화면 바로가기가 등록됩니다.
 4. 설치 과정의 사용권 계약에는 [https://note4all.tistory.com](https://note4all.tistory.com)이 표시됩니다.
@@ -24,7 +26,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
 ### macOS — DMG / .app
 
-1. `Tiny PDF Editor v1.1.6_YYMMDD_HHMMSS.dmg`를 열어 `Tiny PDF Editor.app`을 **응용 프로그램** 폴더로 복사합니다.
+1. `Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS.dmg`를 열어 `Tiny PDF Editor.app`을 **응용 프로그램** 폴더로 복사합니다.
 2. 앱을 실행합니다. (서명·공증되지 않은 빌드이므로 최초 실행 시 Gatekeeper 경고가 날 수 있습니다.)
 3. 경고가 뜨면 앱을 **Control-클릭 → 열기**, 또는 **시스템 설정 → 개인정보 보호 및 보안**에서 허용하세요.
 
@@ -34,8 +36,10 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
 - **Windows**: Windows 10 이상 (64비트)
 - **macOS**: macOS 12 이상, Apple Silicon (arm64)
-- 인터넷 연결 불필요 (오프라인 사용 가능)
-- 한글 텍스트 덮어쓰기 편집 시 시스템에 설치된 한글 글꼴이 사용됩니다.
+- 일반 편집은 **오프라인**으로 사용 가능합니다.
+- **업데이트 확인**(`도움말` 메뉴)만 GitHub Releases 조회를 위해 인터넷이 필요합니다.
+- 한글 텍스트 덮어쓰기·개인정보 라벨 표시 시 시스템에 설치된 한글 글꼴이 사용됩니다.
+- HWP/HWPX 열기(Windows): PC에 **한컴 오피스 한글**(2020 / 2022 / 2024)이 설치되어 있어야 합니다.
 
 > Windows Defender / macOS Gatekeeper에서 처음 실행 시 경고가 나올 수 있습니다. 직접 빌드하거나 신뢰하는 출처의 배포본이라면 안내된 방법으로 실행을 허용하세요.
 
@@ -46,10 +50,13 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 ### 파일 · 탭
 
 - **새 문서** (`Ctrl+N`): 빈 탭을 엽니다.
-- **열기...** (`Ctrl+O`): PDF 또는 이미지를 엽니다. 여러 파일을 한 번에 선택하면 **한 탭에 순서대로 병합**됩니다. 파일이 많을 때는 드래그 앤 드롭과 같이 **불러오기 진행 상태**가 화면에 표시됩니다.
-- **추가...**: 현재 문서 **맨 뒤**에 PDF·이미지 페이지를 이어 붙입니다. (문서에 페이지가 있을 때만 사용 가능)
+- **최근 파일 열기**: 최근에 연 문서 목록에서 다시 엽니다.
+- **열기...** (`Ctrl+O`): PDF·이미지·(Windows) HWP/HWPX를 엽니다. 여러 파일을 한 번에 선택하면 **한 탭에 순서대로 병합**됩니다. 파일이 많을 때는 **불러오기 진행 상태**가 표시됩니다.
+- **추가...**: 현재 문서 **맨 뒤**에 PDF·이미지·(Windows) HWP/HWPX 페이지를 이어 붙입니다.
+- **PDF 병합...**: 여러 파일을 골라 순서·미리보기를 확인한 뒤 새 PDF로 병합합니다. (HWP/HWPX 포함, Windows+한컴)
 - **저장** (`Ctrl+S`) / **다른 이름으로 저장...** (`Ctrl+Shift+S`)
-- **인쇄...** (`Ctrl+P`): 프린터 선택 대화상자에서 장치·범위를 고른 뒤 **직접 인쇄**합니다. (Windows PDF 기본 앱 연결에 의존하지 않습니다.)
+- **PDF를 이미지로 저장...**: 문서 페이지를 PNG/JPEG 등으로보냅니다.
+- **인쇄...** (`Ctrl+P`): 프린터 선택 대화상자에서 장치·범위를 고른 뒤 **직접 인쇄**합니다.
 - **PDF 파일 연결...** (Windows): 이 프로그램을 PDF 연결 프로그램 목록에 등록하거나 해제합니다.
 - **탭**: 여러 PDF 문서를 동시에 열기. 탭을 닫을 때 저장 여부를 묻습니다.
 
@@ -57,8 +64,11 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
 - **암호로 보호된 PDF 열기**: 열기 비밀번호 입력 대화상자가 표시됩니다.
 - **비밀번호 설정...**: 저장 시 PDF 열기·소유자 비밀번호를 적용합니다.
-- **비밀번호 제거**: 외부에서 암호화된 PDF를 포함해, 암호가 적용된 문서에서 비밀번호를 해제할 수 있습니다. (저장 시 반영)
-- **개인정보 제거...**: 주민등록번호·전화·계좌 등 한국어 개인정보를 로컬에서 탐지한 뒤, PDF 원본 텍스트를 삭제하는 레닥션을 적용합니다 ([ko-pii](https://github.com/Marker-Inc-Korea/ko-pii) 검출). 자동 탐지는 완전하지 않으니 저장 전 확인이 필요합니다.
+- **비밀번호 제거**: 암호가 적용된 문서에서 비밀번호를 해제합니다. (저장 시 반영)
+- **개인정보 제거...**: 주민등록번호·전화·계좌·성명·주소 등 한국어 개인정보를 **로컬**에서 탐지한 뒤, PDF **원본 텍스트를 삭제**하는 레닥션을 적용합니다.
+  - 검출: [ko-pii](https://github.com/Marker-Inc-Korea/ko-pii) (MIT)
+  - 표시: 검정 박스 또는 한글 라벨
+  - 자동 탐지는 완전하지 않으며, 텍스트 레이어가 없는 스캔 PDF는 탐지가 어려울 수 있습니다. **저장 전 결과를 반드시 확인**하세요.
 
 ### 썸네일 (왼쪽)
 
@@ -83,6 +93,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 - 선택 페이지 미리보기 (배경색 `#efefef`)
 - **너비 / 높이 / 화면 맞추기**: 하단 `[너비]` `[높이]` `[화면]` 버튼 또는 **보기** 메뉴
   - 파일을 처음 열면 **화면 맞추기**가 기본으로 적용됩니다.
+- **두 쪽씩 보기** (`Ctrl+2`): 좌·우 페이지를 나란히 표시합니다.
 - **전체 화면** (`F11`): 메뉴·상태 표시줄·왼쪽 패널을 숨기고 미리보기와 하단 페이지 탐색 바만 표시합니다.
   - `Esc` 키 또는 화면 맨 위에 마우스를 올려 나타나는 닫기 버튼으로 해제합니다.
 - **확대/축소**: 슬라이더(최대 **600%**), `Ctrl` + 마우스 휠
@@ -95,11 +106,19 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
 ### 편집
 
-- **되돌리기 / 재실행** (`Ctrl+Z`, `Ctrl+Y`): 페이지 삽입·삭제·회전·붙여넣기·텍스트 덮어쓰기 등
+- **되돌리기 / 재실행** (`Ctrl+Z`, `Ctrl+Y`): 페이지 삽입·삭제·회전·붙여넣기·텍스트 덮어쓰기·개인정보 제거 등
 - **텍스트 검색** (`Ctrl+F`, `F3` / `Shift+F3`): 본문 텍스트 검색, 하이라이트, `[ 현재 / 전체 ]` 결과 표시
 - **선택 페이지 삭제** (`Delete`)
 - **모든 페이지 시계방향 회전** / **모든 페이지 반시계방향 회전**
 - **용량 줄이기** (`편집` 메뉴): PDF 파일 크기를 줄이는 도구 (아래 참고)
+
+### 도움말
+
+- **업데이트 확인**: GitHub Releases의 최신 **버전**과, 같으면 **현재 OS 배포 파일**의 빌드 시각(`YYMMDD_HHMMSS`)을 비교합니다.
+  - Windows: `.msi` / `*_portable.zip`
+  - macOS: `.dmg`
+  - 새 버전이 있으면 다운로드 페이지를 엽니다.
+- **About**: 앱 정보·버전을 표시합니다.
 
 ### 용량 줄이기
 
@@ -123,11 +142,11 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
 > 스캔 PDF(JBIG2 등)처럼 일부 이미지는 처리에서 건너뛸 수 있습니다. 문제가 있는 이미지는 원본을 유지하고 나머지를 계속 처리합니다.
 
-### 지원 파일 형식 (열기 · 추가 · 드롭)
+### 지원 파일 형식 (열기 · 추가 · 병합 · 드롭)
 
 - PDF (`.pdf`) — 손상된 PDF는 가능한 범위에서 자동 복구를 시도합니다.
 - 이미지: PNG, JPEG, BMP, GIF, TIFF, WebP
-- HWP/HWPX (`.hwp`, `.hwpx`) — **Windows 전용** (한컴 한글 필요). macOS에서는 지원하지 않습니다.
+- HWP/HWPX (`.hwp`, `.hwpx`) — **Windows 전용** (한컴 한글 2020/2022/2024 필요). macOS에서는 지원하지 않습니다.
 
 ---
 
@@ -145,6 +164,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 | 텍스트 검색 | `Ctrl+F` |
 | 다음 / 이전 검색 결과 | `F3` / `Shift+F3` |
 | 선택 페이지 삭제 | `Delete` |
+| 두 쪽씩 보기 | `Ctrl+2` |
 | 전체 화면 / 해제 | `F11` / `Esc` |
 | 이전 / 다음 페이지 | `←` `↑` `PageUp` / `→` `↓` `PageDown` |
 | 맨 앞 / 맨 뒤 페이지 | `Ctrl+Shift+←` / `Ctrl+Shift+→` |
@@ -160,6 +180,8 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 pip install -r requirements.txt
 python main.py
 ```
+
+의존성: PyMuPDF, PyQt6, openpyxl, ko-pii (`requirements.txt` 참고).
 
 ### Windows 배포판 빌드
 
@@ -186,11 +208,21 @@ WiX CLI 7 이상이 필요합니다. (`winget install WiXToolset.WiXCLI`, `wix e
 npm run build:dist:msi
 ```
 
-포터블 zip(7-Zip 필요, MSI와 같은 `msi/` 폴더에 출력):
+**포터블 zip** (7-Zip 필요, MSI와 같은 `msi/` 폴더에 출력):
 
 ```bash
 npm run build:dist:portable
 ```
+
+**MSI + 포터블 zip (동일 빌드 시각, PyInstaller 1회)** — Neo Desktop Calendar의 `build:release`와 동일한 방식:
+
+```bash
+npm run build:release
+```
+
+산출물 예: `msi/Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS.msi` 와
+`msi/Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS_portable.zip` (스탬프 공유).
+앱에 심어진 `APP_BUILD_STAMP`도 이 시각과 같아, 같은 태그로 재배포해도 업데이트 확인이 새 빌드를 구분합니다.
 
 ### macOS 배포판 빌드 (Apple Silicon)
 
@@ -202,14 +234,16 @@ source .venv/bin/activate
 npm run build:dist:macos
 ```
 
+DMG 파일명과 동일한 `APP_BUILD_STAMP`를 앱에 심으며, 업데이트 확인은 `.dmg` 자산만 비교합니다.
+
 빌드 시 `assets/source_logo.png`가 있으면 `scripts/prepare-branding.py`가 아이콘·로고·`.icns`를 자동 생성합니다.
 
 **포터블 빌드 결과** (`dist/`, Windows):
 
 ```
 dist/
-  Tiny PDF Editor v1.1.6_YYMMDD_HHMMSS/
-    Tiny PDF Editor v1.1.6_YYMMDD_HHMMSS.exe
+  Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS/
+    Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS.exe
     _internal/          (실행에 필요한 라이브러리)
     LICENSE
     README.md
@@ -221,30 +255,34 @@ dist/
 ```
 dist/
   Tiny PDF Editor.app
-  Tiny PDF Editor v1.1.6_YYMMDD_HHMMSS/
+  Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS/
     Tiny PDF Editor.app
     LICENSE
     README.md
     DISTRIBUTE.md
-  Tiny PDF Editor v1.1.6_YYMMDD_HHMMSS.dmg
+  Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS.dmg
 ```
 
 **MSI / 포터블 zip 빌드 결과** (`msi/`):
 
 ```
 msi/
-  Tiny PDF Editor v1.1.6_YYMMDD_HHMMSS.msi
-  Tiny PDF Editor v1.1.6_YYMMDD_HHMMSS_portable.zip
+  Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS.msi
+  Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS_portable.zip
 ```
-포터블 빌드 폴더는 최근 **3개**만 유지됩니다.
+
+포터블 빌드 폴더는 최근 **3개**만 유지됩니다.  
+대용량 산출물(`*.msi`, `*_portable.zip`)은 Git에 올리지 않습니다 (`.gitignore`).
 
 ---
 
 ## 기술 스택
 
 - Python 3, PyQt6 (Qt Print Support 포함)
-- PyMuPDF (fitz)
-- openpyxl (형광펜·밑줄 Excel보내기)
+- PyMuPDF (fitz) — 렌더링·편집·압축·레닥션·암호
+- openpyxl — 형광펜·밑줄 Excel보내기
+- ko-pii — 한국어 개인정보 검출 (`보안` → 개인정보 제거)
+- Windows HWP 변환: 로컬 `hwp_to_pdf_helper` + 한컴 한글 COM (별도 한컴 설치 필요)
 
 ---
 
@@ -252,4 +290,4 @@ msi/
 
 본 프로젝트 소스 코드는 **MIT License**입니다. 자세한 내용은 `LICENSE` 파일을 참고하세요.
 
-배포판(exe·MSI·`.app`·DMG)에는 PyMuPDF, PyQt6, openpyxl 등 서드파티 라이브러리가 포함됩니다. 재배포할 때는 `LICENSE`의 서드파티 고지를 함께 제공해야 합니다.
+배포판(exe·MSI·포터블 zip·`.app`·DMG)에는 PyMuPDF, PyQt6, openpyxl, ko-pii 등 서드파티 라이브러리가 포함됩니다. 재배포할 때는 `LICENSE`의 서드파티 고지를 함께 제공해야 합니다.

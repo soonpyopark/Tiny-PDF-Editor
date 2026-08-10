@@ -112,13 +112,22 @@ VSVersionInfo(
   return outPath;
 }
 
+function readAppBuildStamp() {
+  const versionPath = path.join(ROOT, "pdf_editor", "version.py");
+  const source = fs.readFileSync(versionPath, "utf8");
+  const match = source.match(/APP_BUILD_STAMP\s*=\s*"([^"]*)"/);
+  return match?.[1]?.trim() || "";
+}
+
 function invalidatePyInstallerIfVersionChanged() {
   const version = readAppVersion();
+  const buildStamp = readAppBuildStamp();
+  const key = `${version}|${buildStamp}`;
   const stampPath = path.join(PYI_WORK, "embedded-app-version.txt");
   const previous = fs.existsSync(stampPath)
     ? fs.readFileSync(stampPath, "utf8").trim()
     : "";
-  if (previous === version) {
+  if (previous === key) {
     return;
   }
 
@@ -132,8 +141,10 @@ function invalidatePyInstallerIfVersionChanged() {
     fs.rmSync(stale, { recursive: true, force: true });
   }
   fs.mkdirSync(PYI_WORK, { recursive: true });
-  fs.writeFileSync(stampPath, `${version}\n`, "utf8");
-  log(`app version changed (${previous || "none"} -> ${version}); forcing PyInstaller rebuild`);
+  fs.writeFileSync(stampPath, `${key}\n`, "utf8");
+  log(
+    `app build id changed (${previous || "none"} -> ${key}); forcing PyInstaller rebuild`,
+  );
 }
 
 function formatTimestamp(date = new Date()) {

@@ -2,6 +2,11 @@
 /**
  * Build per-user Windows MSI with HKCU PDF file association.
  * Requires WiX CLI 7+ (winget install WiXToolset.WiXCLI) and: wix eula accept wix7
+ *
+ * Env:
+ *   TINY_BUILD_STAMP=YYMMDD_HHMMSS  — shared package stamp (also written to APP_BUILD_STAMP)
+ *   TINY_SKIP_STAMP=1              — do not re-run sync-version --stamp (build:release)
+ *   TINY_SKIP_PUBLISH=1            — reuse existing PyInstaller onedir (build:release)
  */
 
 import { execSync } from "node:child_process";
@@ -27,7 +32,7 @@ function log(msg) {
 
 function run(cmd, options = {}) {
   log(`> ${cmd}`);
-  execSync(cmd, { stdio: "inherit", cwd: ROOT, ...options });
+  execSync(cmd, { stdio: "inherit", cwd: ROOT, shell: true, ...options });
 }
 
 function readVersion() {
@@ -40,18 +45,47 @@ function readVersion() {
   return match[1];
 }
 
-function toMsiVersion(version) {
-  const parts = version.split(".");
-  while (parts.length < 4) {
-    parts.push("0");
-  }
-  return parts.slice(0, 4).join(".");
-}
-
 function formatTimestamp(date = new Date()) {
   const pad = (n) => String(n).padStart(2, "0");
   const yy = String(date.getFullYear()).slice(2);
   return `${yy}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function resolveBuildStamp() {
+  const fromEnv = String(process.env.TINY_BUILD_STAMP || "").trim();
+  if (/^\d{6}_\d{6}$/.test(fromEnv)) {
+    return fromEnv;
+  }
+  return formatTimestamp();
+}
+
+function stampBuildId(stamp) {
+  process.env.TINY_BUILD_STAMP = stamp;
+  run(`node scripts/sync-version.mjs --stamp=${stamp}`);
+}
+
+function toMsiVersion(version, stamp) {
+  const parts = String(version).split(".");
+  while (parts.length < 3) {
+    parts.push("0");
+  }
+  // 4th part must change every MSI build so Windows Installer upgrades even when
+  // APP_VERSION (x.y.z) is unchanged. Each MSI version field max is 65535.
+  const match = /^(\d{2})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/.exec(stamp);
+  let revision = 1;
+  if (match) {
+    const year = 2000 + Number(match[1]);
+    const month = Number(match[2]) - 1;
+    const day = Number(match[3]);
+    const hour = Number(match[4]);
+    const minute = Number(match[5]);
+    const second = Number(match[6]);
+    const ms = Date.UTC(year, month, day, hour, minute, second);
+    if (Number.isFinite(ms)) {
+      revision = Math.floor(ms / 60_000) % 65535 || 1;
+    }
+  }
+  return `${parts[0]}.${parts[1]}.${parts[2]}.${revision}`;
 }
 
 function resolveWixCmd() {
@@ -84,6 +118,13 @@ function ensureWix() {
   execSync(`${wixCmd} --version`, { stdio: "pipe" });
 }
 
+function ensurePublished() {
+  const builtExe = path.join(PYI_DIST, "PDFEditor", "PDFEditor.exe");
+  if (!fs.existsSync(builtExe)) {
+    throw new Error(`PyInstaller output not found: ${builtExe}`);
+  }
+}
+
 function stageForMsi() {
   const builtDir = path.join(PYI_DIST, "PDFEditor");
   const builtExe = path.join(builtDir, "PDFEditor.exe");
@@ -111,11 +152,10 @@ function ensureArpProductIcon() {
   log(`ARP icon: ${dest}`);
 }
 
-function buildMsi() {
+function buildMsi(timestamp) {
   const version = readVersion();
-  const productVersion = toMsiVersion(version);
+  const productVersion = toMsiVersion(version, timestamp);
   const productCode = randomUUID().toUpperCase();
-  const timestamp = formatTimestamp();
   const outputName = `Tiny PDF Editor v${version}_${timestamp}.msi`;
   const outputPath = path.join(MSI_DIR, outputName);
 
@@ -129,6 +169,7 @@ function buildMsi() {
 
   const sizeMb = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);
   log(`output: ${outputPath} (${sizeMb} MB)`);
+  log(`ProductVersion=${productVersion}`);
 }
 
 function cleanupStage() {
@@ -138,13 +179,25 @@ function cleanupStage() {
 
 function main() {
   ensureWix();
-  run("node scripts/sync-version.mjs");
-  ensurePythonDeps();
-  buildPortableApp();
+  const timestamp = resolveBuildStamp();
+  if (process.env.TINY_SKIP_STAMP !== "1") {
+    stampBuildId(timestamp);
+  } else {
+    run("node scripts/sync-version.mjs");
+  }
+  log(`build stamp: ${timestamp}`);
+
+  if (process.env.TINY_SKIP_PUBLISH === "1") {
+    ensurePublished();
+    log("skip publish (reuse .build/pyinstaller-dist/PDFEditor)");
+  } else {
+    ensurePythonDeps();
+    buildPortableApp();
+  }
   stageForMsi();
 
   try {
-    buildMsi();
+    buildMsi(timestamp);
   } finally {
     cleanupStage();
   }

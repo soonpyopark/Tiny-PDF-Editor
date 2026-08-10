@@ -1,6 +1,6 @@
 MIT License
 
-Tiny PDF Editor v1.1.6
+Tiny PDF Editor v1.1.7
 
 Copyright (c) 2026 Tiny PDF Editor contributors
 
@@ -23,23 +23,26 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-Third-Party Components (배포판 / exe·MSI 포함 시)
+Third-Party Components (배포판 / exe·MSI·포터블 zip·.app·DMG 포함 시)
 ================================================================================
 
-Tiny PDF Editor 배포판(Windows exe·MSI 및 `_internal` 폴더)에는 아래 오픈소스
-라이브러리가 함께 포함됩니다. 소스 코드(MIT)와 달리, **실행 파일을
-블로그·웹·USB 등으로 재배포**할 때는 각 라이브러리 라이선스도 준수해야
-합니다.
+Tiny PDF Editor 배포판(Windows exe·MSI·`_portable.zip`의 `_internal` 폴더,
+macOS `.app` 번들)에는 아래 오픈소스 라이브러리가 함께 포함됩니다. 소스
+코드(MIT)와 달리, **실행 파일을 블로그·웹·USB·GitHub Releases 등으로
+재배포**할 때는 각 라이브러리 라이선스도 준수해야 합니다.
 
 프로젝트 홈페이지: https://note4all.tistory.com
+소스 저장소: https://github.com/soonpyopark/Tiny-PDF-Editor
 
 1. PyMuPDF (pymupdf)
    - License: GNU Affero General Public License v3.0 (AGPL-3.0)
      또는 Artifex Commercial License
    - Website: https://pymupdf.readthedocs.io/
-   - PDF 렌더링·편집·압축·텍스트 추출·암호 처리·텍스트 덮어쓰기에 사용됩니다.
-   - AGPL-3.0 조건 하에서 exe·MSI를 배포하는 경우, 해당 조건(소스 제공 의무 등)을
-     확인하세요. 상업적 재배포 시 Artifex 상용 라이선스가 필요할 수 있습니다.
+   - PDF 렌더링·편집·압축·텍스트 추출·암호 처리·텍스트 덮어쓰기·
+     개인정보 레닥션(원본 내용 삭제)에 사용됩니다.
+   - AGPL-3.0 조건 하에서 exe·MSI 등을 배포하는 경우, 해당 조건
+     (소스 제공 의무 등)을 확인하세요. 상업적 재배포 시 Artifex 상용
+     라이선스가 필요할 수 있습니다.
 
 2. PyQt6
    - License: GNU General Public License v3.0 (GPL-3.0)
@@ -47,7 +50,7 @@ Tiny PDF Editor 배포판(Windows exe·MSI 및 `_internal` 폴더)에는 아래 
    - Website: https://www.riverbankcomputing.com/software/pyqt/
    - GUI(창, 메뉴, 썸네일, 미리보기, 대화상자) 및 **인쇄(Qt Print Support)**에
      사용됩니다.
-   - GPL-3.0 조건 하에서 exe·MSI를 배포하는 경우, 해당 조건을 확인하세요.
+   - GPL-3.0 조건 하에서 배포판을 배포하는 경우, 해당 조건을 확인하세요.
      상업적 재배포 시 Qt 상용 라이선스가 필요할 수 있습니다.
 
 3. openpyxl
@@ -58,11 +61,14 @@ Tiny PDF Editor 배포판(Windows exe·MSI 및 `_internal` 폴더)에는 아래 
 4. ko-pii
    - License: MIT License
    - Website: https://github.com/Marker-Inc-Korea/ko-pii
-   - 한국어 개인정보(PII) 검출에 사용됩니다. 「개인정보 제거」 기능의 탐지 엔진입니다.
+   - 한국어 개인정보(PII) 검출에 사용됩니다.
+     「보안 → 개인정보 제거」의 탐지 엔진입니다.
+   - Marker Inc.에 감사드립니다.
 
 5. Python 및 PyInstaller 번들 구성 요소
    - Python 인터프리터 및 표준 라이브러리: Python Software Foundation License (PSF)
-   - PyInstaller로 묶인 기타 의존성: 각 프로젝트의 라이선스(PSF, LGPL, BSD 등)를 따릅니다.
+   - PyInstaller로 묶인 기타 의존성: 각 프로젝트의 라이선스(PSF, LGPL, BSD 등)를
+     따릅니다.
 
 6. NumPy / Pillow (번들에 포함될 수 있음)
    - NumPy: BSD 3-Clause License — PyMuPDF·빌드 과정에서 포함될 수 있습니다.
@@ -70,27 +76,47 @@ Tiny PDF Editor 배포판(Windows exe·MSI 및 `_internal` 폴더)에는 아래 
      포함될 수 있습니다.
    - Website: https://numpy.org/ , https://python-pillow.org/
 
+7. Windows HWP 변환 헬퍼 (배포판 `pdf_editor/vendor/` 또는 `_internal`에 포함될 수 있음)
+   - `hwp_to_pdf_helper.exe`: Tiny PDF Editor용 로컬 헬퍼 (소스: `tools/hwp_to_pdf_helper/`).
+     Windows에서 한컴 한글 COM을 통해 HWP/HWPX를 PDF로 변환합니다.
+   - `FilePathCheckerModule.dll`: 한컴 자동화 경로 검증용 모듈. 배포 시 함께
+     포함될 수 있으며, 해당 모듈의 원 출처·라이선스를 확인하세요.
+
 ================================================================================
 런타임 의존성 (배포판에 포함되지 않음)
 ================================================================================
 
-- Windows 시스템 글꼴(예: 맑은 고딕, 굴림, 바탕): 한글 등 CJK 텍스트 덮어쓰기
-  편집 시 Windows에 설치된 글꼴 파일을 참조합니다. 해당 글꼴의 사용 조건은
-  Microsoft 및 글꼴 제작자의 라이선스를 따릅니다.
+- Windows / macOS 시스템 글꼴(예: 맑은 고딕, Apple SD Gothic Neo):
+  한글 등 CJK 텍스트 덮어쓰기 편집 및 개인정보 제거 라벨 표시 시
+  시스템에 설치된 글꼴 파일을 참조합니다. 글꼴 사용 조건은 OS 및
+  글꼴 제작자의 라이선스를 따릅니다.
+- 한컴 오피스 한글 (Windows, 선택): HWP/HWPX 열기·병합·삽입 시 필요합니다.
+  한컴 제품의 라이선스·설치는 사용자 PC에 별도로 준비되어야 합니다.
+- 인터넷 연결 (선택): 「도움말 → 업데이트 확인」만 GitHub Releases API를
+  조회합니다. 문서 편집·개인정보 제거·용량 줄이기 등 일반 기능은
+  오프라인으로 동작합니다.
+
+================================================================================
+참고 (포함되지 않는 프로젝트)
+================================================================================
+
+- PDF 개인정보 “진짜 레닥션” 개념을 정리하는 데
+  https://github.com/galvaomica396/Nothing (AGPL-3.0) 문서를 참고할 수 있으나,
+  해당 프로젝트의 소스 코드는 Tiny PDF Editor에 **포함·복사되지 않습니다**.
+  검출은 ko-pii(MIT), 레닥션은 PyMuPDF API로 자체 구현합니다.
 
 ================================================================================
 배포 시 권장 사항
 ================================================================================
 
-- 포터블 배포 패키지에 본 LICENSE 파일, README.md, DISTRIBUTE.md를 함께 포함하세요.
-  (`npm run build:dist:exe` 빌드 시 `dist/` 폴더에 자동 복사됩니다.)
-- MSI 설치판을 배포할 때도 블로그·다운로드 페이지에 본 LICENSE의 서드파티 고지를
+- 포터블 배포 패키지에 본 LICENSE 파일, README.md, DISTRIBUTE.md를 함께
+  포함하세요. (`npm run build:dist:exe` / `build:dist:portable` /
+  `build:dist:macos` 빌드 시 자동 복사됩니다.)
+- MSI·포터블 zip·GitHub Releases로 배포할 때도 본 LICENSE의 서드파티 고지를
   명시하는 것을 권장합니다.
 - MSI 설치 과정의 사용권 계약(`msi/License.rtf`)에는
-  https://note4all.tistory.com 이 표시됩니다.
-- 블로그 등에서 다운로드 링크를 제공할 때, 위 서드파티 라이선스 고지를
-  게시물 또는 다운로드 페이지에 명시하는 것을 권장합니다.
+  https://note4all.tistory.com 이 표시됩니다. 상세 서드파티 고지는
+  본 LICENSE 파일을 따릅니다.
 - 본 저장소의 MIT 라이선스는 Tiny PDF Editor **소스 코드**에 적용됩니다.
-  exe·MSI 재배포 시 MIT만으로는 PyMuPDF·PyQt6 의무가 대체되지 않습니다.
-
-================================================================================
+  배포판 재배포 시 MIT만으로는 PyMuPDF·PyQt6 의무가 대체되지 않습니다.
+- 대용량 빌드 산출물(`*.msi`, `*_portable.zip`)은 저장소에 커밋하지 마세요.

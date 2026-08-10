@@ -1,9 +1,10 @@
 {
   "name": "tiny-pdf-editor",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "private": true,
   "description": "Tiny PDF Editor desktop app",
   "scripts": {
+    "dev": "python main.py",
     "sync-version": "node scripts/sync-version.mjs",
     "build": "node scripts/sync-version.mjs && node scripts/build-dist.mjs",
     "build:dist:exe": "node scripts/sync-version.mjs && node scripts/build-dist.mjs",
@@ -11,6 +12,7 @@
     "build:msi": "node scripts/build-msi.mjs",
     "build:dist:msi": "node scripts/build-msi.mjs",
     "build:dist:portable": "node scripts/build-portable.mjs",
+    "build:release": "node scripts/build-release.mjs",
     "build:dist:macos": "node scripts/sync-version.mjs && node scripts/build-macos.mjs",
     "update:all": "node scripts/update-all.mjs",
     "build:update_all": "update_all.bat _inner build"

@@ -80,6 +80,13 @@ function readAppVersion() {
   return match[1];
 }
 
+function readAppBuildStamp() {
+  const versionPath = path.join(ROOT, "pdf_editor", "version.py");
+  const source = fs.readFileSync(versionPath, "utf8");
+  const match = source.match(/APP_BUILD_STAMP\s*=\s*"([^"]*)"/);
+  return match?.[1]?.trim() || "";
+}
+
 function readReleaseBaseName() {
   return sanitizeFileName(`Tiny PDF Editor v${readAppVersion()}`);
 }
@@ -88,6 +95,40 @@ function formatTimestamp(date = new Date()) {
   const pad = (n) => String(n).padStart(2, "0");
   const yy = String(date.getFullYear()).slice(2);
   return `${yy}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function resolveBuildStamp() {
+  const fromEnv = String(process.env.TINY_BUILD_STAMP || "").trim();
+  if (/^\d{6}_\d{6}$/.test(fromEnv)) {
+    return fromEnv;
+  }
+  return formatTimestamp();
+}
+
+function stampBuildId(stamp) {
+  process.env.TINY_BUILD_STAMP = stamp;
+  run(`node scripts/sync-version.mjs --stamp=${stamp}`);
+}
+
+function invalidatePyInstallerIfBuildIdChanged() {
+  const version = readAppVersion();
+  const buildStamp = readAppBuildStamp();
+  const key = `${version}|${buildStamp}`;
+  const stampPath = path.join(PYI_WORK, "embedded-app-version.txt");
+  const previous = fs.existsSync(stampPath)
+    ? fs.readFileSync(stampPath, "utf8").trim()
+    : "";
+  if (previous === key) {
+    return;
+  }
+  for (const stale of [PYI_DIST, PYI_WORK]) {
+    fs.rmSync(stale, { recursive: true, force: true });
+  }
+  fs.mkdirSync(PYI_WORK, { recursive: true });
+  fs.writeFileSync(stampPath, `${key}\n`, "utf8");
+  log(
+    `app build id changed (${previous || "none"} -> ${key}); forcing PyInstaller rebuild`,
+  );
 }
 
 function ensurePythonDeps() {
@@ -251,7 +292,7 @@ app = BUNDLE(
         "CFBundleDisplayName": ${JSON.stringify(appName)},
         "CFBundleName": ${JSON.stringify(appName)},
         "CFBundleShortVersionString": ${JSON.stringify(readAppVersion())},
-        "CFBundleVersion": ${JSON.stringify(readAppVersion())},
+        "CFBundleVersion": ${JSON.stringify(readAppBuildStamp() || readAppVersion())},
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "12.0",
     },
@@ -459,11 +500,19 @@ function main() {
     throw new Error("macOS 빌드는 darwin에서만 실행할 수 있습니다.");
   }
 
+  const timestamp = resolveBuildStamp();
+  if (process.env.TINY_SKIP_STAMP !== "1") {
+    stampBuildId(timestamp);
+  } else {
+    run("node scripts/sync-version.mjs");
+  }
+  log(`build stamp: ${timestamp}`);
+
   ensurePythonDeps();
+  invalidatePyInstallerIfBuildIdChanged();
   const builtApp = buildMacApp();
 
   const rootName = readReleaseBaseName();
-  const timestamp = formatTimestamp();
   const releaseName = `${rootName}_${timestamp}`;
   const releaseDir = path.join(DIST_DIR, releaseName);
 

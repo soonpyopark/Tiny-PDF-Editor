@@ -3,6 +3,11 @@
  * Build a portable zip (same PyInstaller onedir as MSI) into msi/.
  * Output: Tiny PDF Editor vX.Y.Z_YYMMDD_HHMMSS_portable.zip
  * Uses 7-Zip on this PC (PATH or default install location).
+ *
+ * Env:
+ *   TINY_BUILD_STAMP=YYMMDD_HHMMSS
+ *   TINY_SKIP_STAMP=1
+ *   TINY_SKIP_PUBLISH=1
  */
 
 import { execSync } from "node:child_process";
@@ -27,7 +32,7 @@ function log(msg) {
 
 function run(cmd, options = {}) {
   log(`> ${cmd}`);
-  execSync(cmd, { stdio: "inherit", cwd: ROOT, ...options });
+  execSync(cmd, { stdio: "inherit", cwd: ROOT, shell: true, ...options });
 }
 
 function readVersion() {
@@ -44,6 +49,19 @@ function formatTimestamp(date = new Date()) {
   const pad = (n) => String(n).padStart(2, "0");
   const yy = String(date.getFullYear()).slice(2);
   return `${yy}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function resolveBuildStamp() {
+  const fromEnv = String(process.env.TINY_BUILD_STAMP || "").trim();
+  if (/^\d{6}_\d{6}$/.test(fromEnv)) {
+    return fromEnv;
+  }
+  return formatTimestamp();
+}
+
+function stampBuildId(stamp) {
+  process.env.TINY_BUILD_STAMP = stamp;
+  run(`node scripts/sync-version.mjs --stamp=${stamp}`);
 }
 
 function resolve7zCmd() {
@@ -83,6 +101,13 @@ function copyDistributionDocs(targetDir) {
   }
 }
 
+function ensurePublished() {
+  const builtExe = path.join(PYI_DIST, "PDFEditor", "PDFEditor.exe");
+  if (!fs.existsSync(builtExe)) {
+    throw new Error(`PyInstaller output not found: ${builtExe}`);
+  }
+}
+
 function stagePortableFolder(releaseName, exeName) {
   const builtDir = path.join(PYI_DIST, "PDFEditor");
   const builtExe = path.join(builtDir, "PDFEditor.exe");
@@ -105,9 +130,7 @@ function zipPortable(sevenZip, releaseName, zipPath) {
   fs.mkdirSync(MSI_DIR, { recursive: true });
   fs.rmSync(zipPath, { force: true });
 
-  // Archive the release folder so unzip yields a single top-level directory.
-  const cmd =
-    `${sevenZip} a -tzip -mx=9 -y "${zipPath}" "${releaseName}"`;
+  const cmd = `${sevenZip} a -tzip -mx=9 -y "${zipPath}" "${releaseName}"`;
   log(`> ${cmd}`);
   execSync(cmd, { stdio: "inherit", cwd: STAGE_ROOT });
 
@@ -122,12 +145,23 @@ function cleanupStage() {
 
 function main() {
   const sevenZip = resolve7zCmd();
-  run("node scripts/sync-version.mjs");
-  ensurePythonDeps();
-  buildPortableApp();
+  const timestamp = resolveBuildStamp();
+  if (process.env.TINY_SKIP_STAMP !== "1") {
+    stampBuildId(timestamp);
+  } else {
+    run("node scripts/sync-version.mjs");
+  }
+  log(`build stamp: ${timestamp}`);
+
+  if (process.env.TINY_SKIP_PUBLISH === "1") {
+    ensurePublished();
+    log("skip publish (reuse .build/pyinstaller-dist/PDFEditor)");
+  } else {
+    ensurePythonDeps();
+    buildPortableApp();
+  }
 
   const version = readVersion();
-  const timestamp = formatTimestamp();
   const releaseName = `Tiny PDF Editor v${version}_${timestamp}`;
   const exeName = `${releaseName}.exe`;
   const zipName = `${releaseName}_portable.zip`;

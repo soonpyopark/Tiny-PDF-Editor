@@ -2,6 +2,9 @@
 /**
  * Sync project version from pdf_editor/version.py into package.json,
  * package-lock.json, README, LICENSE, and MSI license RTF.
+ *
+ * Optional: TINY_BUILD_STAMP=YYMMDD_HHMMSS (or --stamp=…) writes APP_BUILD_STAMP
+ * so MSI/portable filename and in-app update check stay aligned.
  */
 
 import fs from "node:fs";
@@ -19,6 +22,46 @@ function readAppVersion() {
     throw new Error(`Could not parse __version__ from ${VERSION_PY}`);
   }
   return match[1];
+}
+
+function formatBuildStamp(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const yy = String(date.getFullYear()).slice(2);
+  return `${yy}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function resolveStampArg() {
+  const fromEnv = String(process.env.TINY_BUILD_STAMP || "").trim();
+  if (/^\d{6}_\d{6}$/.test(fromEnv)) {
+    return fromEnv;
+  }
+  for (const arg of process.argv.slice(2)) {
+    if (arg === "--refresh-stamp") {
+      return formatBuildStamp();
+    }
+    const match = /^--stamp=(.+)$/.exec(arg);
+    if (match && /^\d{6}_\d{6}$/.test(match[1].trim())) {
+      return match[1].trim();
+    }
+  }
+  return null;
+}
+
+function syncBuildStamp(stamp) {
+  let text = fs.readFileSync(VERSION_PY, "utf8");
+  if (/APP_BUILD_STAMP\s*=\s*"[^"]*"/.test(text)) {
+    text = text.replace(
+      /APP_BUILD_STAMP\s*=\s*"[^"]*"/,
+      `APP_BUILD_STAMP = "${stamp}"`,
+    );
+  } else {
+    text = text.replace(
+      /(__version__\s*=\s*"[^"]*"\s*\n)/,
+      `$1\nAPP_BUILD_STAMP = "${stamp}"\n`,
+    );
+  }
+  fs.writeFileSync(VERSION_PY, text, "utf8");
+  console.log(`[sync-version] APP_BUILD_STAMP -> ${stamp}`);
 }
 
 function syncPackageJson(version) {
@@ -102,24 +145,41 @@ function syncReadme(version) {
 
 function syncMsiLicenseRtf(version) {
   const filePath = path.join(ROOT, "msi", "License.rtf");
+  const lines = [
+    `Tiny PDF Editor v${version}`,
+    "https://note4all.tistory.com",
+    "https://github.com/soonpyopark/Tiny-PDF-Editor",
+    "",
+    "Source code: MIT License. See LICENSE in the installation folder",
+    "or the project repository for full terms and third-party notices",
+    "(PyMuPDF, PyQt6, openpyxl, ko-pii, and others).",
+  ];
+  const body = lines.map((line) => `${line}\\par`).join("\n");
   const content =
     "{\\rtf1\\ansi\\ansicpg65001\\deff0{\\fonttbl{\\f0\\fnil\\fcharset0 Segoe UI;}}\n" +
-    "\\viewkind4\\uc1\\pard\\sa200\\sl276\\slmult1\\f0\\fs22 Tiny PDF Editor v" +
-    version +
-    "\\par\n" +
-    "https://note4all.tistory.com\\par\n" +
-    "}\n";
+    "\\viewkind4\\uc1\\pard\\sa200\\sl276\\slmult1\\f0\\fs22 " +
+    body +
+    "\n}\n";
   fs.writeFileSync(filePath, content, "utf8");
 }
 
 function main() {
+  const stamp = resolveStampArg();
+  if (stamp) {
+    syncBuildStamp(stamp);
+  }
+
   const version = readAppVersion();
   syncPackageJson(version);
   syncPackageLock(version);
   syncReadme(version);
   syncLicense(version);
   syncMsiLicenseRtf(version);
-  console.log(`[sync-version] synced v${version}`);
+  console.log(
+    stamp
+      ? `[sync-version] synced v${version}, build ${stamp}`
+      : `[sync-version] synced v${version}`,
+  );
 }
 
 main();
