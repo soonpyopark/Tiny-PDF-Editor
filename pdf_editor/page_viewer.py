@@ -1579,7 +1579,7 @@ class PageViewer(QWidget):
         elif local_scroll is not None:
             pending = start + float(local_scroll)
         else:
-            pending = start
+            pending = self._document_align_offset(index)
         if index != self._current_index:
             self._cancel_text_edit()
             self._stop_scroll_animation()
@@ -1780,7 +1780,7 @@ class PageViewer(QWidget):
             self._stop_scroll_animation()
             self._current_index = self._normalize_page_index(page_index)
             self.scroll_area.horizontalScrollBar().setValue(0)
-            self._pending_strip_offset = self._document_row_start(self._current_index)
+            self._pending_strip_offset = self._document_align_offset(self._current_index)
             self._update_page_info()
             self._render_current_page()
             self.page_changed.emit(self._current_index)
@@ -1810,7 +1810,7 @@ class PageViewer(QWidget):
             self._stop_scroll_animation()
             self._current_index = self._normalize_page_index(page_index)
             self.scroll_area.horizontalScrollBar().setValue(0)
-            self._pending_strip_offset = self._document_row_start(self._current_index)
+            self._pending_strip_offset = self._document_align_offset(self._current_index)
             self._update_page_info()
             self._render_current_page()
             self.page_changed.emit(self._current_index)
@@ -2140,21 +2140,27 @@ class PageViewer(QWidget):
         indices = self._document_row_indices()
         if not indices:
             return 0.0
-        total = 0.0
+        total = float(PAGE_STACK_GAP_PX)
         last = len(indices) - 1
         for i, index in enumerate(indices):
             total += self._document_row_height(index)
             if i < last:
                 total += PAGE_STACK_GAP_PX
-        return total
+        return total + PAGE_STACK_GAP_PX
 
     def _document_row_start(self, page_index: int) -> float:
-        offset = 0.0
+        offset = float(PAGE_STACK_GAP_PX)
         for index in self._document_row_indices():
             if index >= page_index:
                 return offset
             offset += self._document_row_height(index) + PAGE_STACK_GAP_PX
         return offset
+
+    def _document_align_offset(self, page_index: int) -> float:
+        rows = self._document_row_indices()
+        if rows and page_index <= rows[0]:
+            return 0.0
+        return self._document_row_start(page_index)
 
     def _document_scroll_offset(self) -> float:
         if not self._document or self._document.page_count == 0:
@@ -2183,7 +2189,7 @@ class PageViewer(QWidget):
         view_top = doc_offset - buffer
         view_bottom = doc_offset + viewport_h + buffer
         selected: list[int] = []
-        cursor = 0.0
+        cursor = float(PAGE_STACK_GAP_PX)
         last = len(rows) - 1
         for i, index in enumerate(rows):
             height = self._document_row_height(index)
@@ -2207,7 +2213,7 @@ class PageViewer(QWidget):
     def _update_current_from_viewport(self, doc_offset: float, viewport_h: int) -> None:
         best = self._current_index
         best_overlap = -1.0
-        cursor = 0.0
+        cursor = float(PAGE_STACK_GAP_PX)
         rows = self._document_row_indices()
         last = len(rows) - 1
         for i, index in enumerate(rows):

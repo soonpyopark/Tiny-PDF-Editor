@@ -5,7 +5,7 @@ __version__ = "1.1.8"
 # Package build id (YYMMDD_HHMMSS) — matches MSI/portable/DMG filename suffix.
 # Refreshed by build:release / build:dist:msi / build:dist:portable /
 # build:dist:macos for update checks when the GitHub tag version is unchanged.
-APP_BUILD_STAMP = "260827_154224"
+APP_BUILD_STAMP = "260827_161830"
 
 APP_NAME = "Tiny PDF Editor"
 
