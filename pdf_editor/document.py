@@ -1292,6 +1292,8 @@ class PdfDocument:
                     continue
                 if not bbox.contains(point):
                     continue
+                if self._rect_hits_page_number(page, bbox):
+                    continue
                 text = "".join(span["text"] for span in spans)
                 if not text.strip():
                     continue
@@ -1351,10 +1353,17 @@ class PdfDocument:
         if record_undo:
             self._record_undo_checkpoint()
 
+        if self._rect_hits_page_number(page, line_rect):
+            return False
         fill = self._sample_background_color(page, line_rect)
         redact_rect = fitz.Rect(line_rect)
         redact_rect.y0 -= 1
         redact_rect.y1 += 1
+        for marker in self._page_number_rects(page):
+            if redact_rect.intersects(marker):
+                redact_rect = self._rect_minus_overlap(redact_rect, marker)
+                if redact_rect is None:
+                    return False
         page.add_redact_annot(redact_rect, fill=fill)
         try:
             page.apply_redactions(images=getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0))
@@ -1392,13 +1401,20 @@ class PdfDocument:
             try:
                 writer = fitz.TextWriter(page.rect)
                 writer.append(origin, text, font=font, fontsize=size)
-                writer.write_text(page, color=rgb)
+                writer.write_text(page, color=rgb, overlay=True)
                 return
             except Exception:
                 pass
         # Last-resort fallback for pure-ASCII text.
         try:
-            page.insert_text(origin, text, fontsize=size, color=rgb, fontname="helv")
+            page.insert_text(
+                origin,
+                text,
+                fontsize=size,
+                color=rgb,
+                fontname="helv",
+                overlay=True,
+            )
         except Exception:
             pass
 
@@ -1464,7 +1480,7 @@ class PdfDocument:
             font = fitz.Font("helv")
             fontname, fontfile = "helv", None
         text_width = float(font.text_length(text, fontsize=options.font_size))
-        origin, marker = page_number_insert_geometry(
+        _insert_origin, marker = page_number_insert_geometry(
             page,
             text_width,
             options.font_size,
@@ -1486,7 +1502,7 @@ class PdfDocument:
                 page.draw_rect(marker, fill=options.background_rgb, overlay=True)
         written = self._write_page_number_text(
             page,
-            origin,
+            _insert_origin,
             text,
             options.font_size,
             options.color_rgb,
@@ -1571,6 +1587,7 @@ class PdfDocument:
             "color": rgb,
             "fontname": fontname if fontname else "helv",
             "rotate": rotate,
+            "overlay": True,
         }
         if fontfile:
             kwargs["fontfile"] = fontfile
@@ -1588,10 +1605,53 @@ class PdfDocument:
                 color=rgb,
                 fontname="helv",
                 rotate=rotate,
+                overlay=True,
             )
             return True
         except Exception:
             return False
+
+    def _page_number_rects(self, page) -> list[fitz.Rect]:
+        return [
+            fitz.Rect(annot.rect)
+            for annot in PdfDocument._iter_page_annots(page)
+            if is_page_number_annot(annot)
+        ]
+
+    def _rect_hits_page_number(self, page, rect: fitz.Rect) -> bool:
+        probe = fitz.Rect(rect)
+        if probe.is_empty or probe.is_infinite:
+            return False
+        for marker in self._page_number_rects(page):
+            inter = probe & marker
+            if inter.is_empty:
+                continue
+            probe_area = max(probe.get_area(), 1.0)
+            marker_area = max(marker.get_area(), 1.0)
+            if inter.get_area() >= 0.35 * min(probe_area, marker_area):
+                return True
+        return False
+
+    @staticmethod
+    def _rect_minus_overlap(rect: fitz.Rect, other: fitz.Rect) -> fitz.Rect | None:
+        clipped = fitz.Rect(rect)
+        inter = clipped & other
+        if inter.is_empty:
+            return clipped
+        candidates = [
+            fitz.Rect(clipped.x0, clipped.y0, clipped.x1, inter.y0),
+            fitz.Rect(clipped.x0, inter.y1, clipped.x1, clipped.y1),
+            fitz.Rect(clipped.x0, clipped.y0, inter.x0, clipped.y1),
+            fitz.Rect(inter.x1, clipped.y0, clipped.x1, clipped.y1),
+        ]
+        leftovers = [
+            piece
+            for piece in candidates
+            if not piece.is_empty and piece.width >= 2 and piece.height >= 2
+        ]
+        if not leftovers:
+            return None
+        return max(leftovers, key=lambda piece: piece.get_area())
 
     @staticmethod
     def _add_page_number_marker(page, rect: fitz.Rect, options: PageNumberOptions) -> None:
@@ -1628,10 +1688,6 @@ class PdfDocument:
                 page.apply_redactions(images=getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0))
             except TypeError:
                 page.apply_redactions()
-            try:
-                page.clean_contents()
-            except Exception:
-                pass
             changed += 1
         return changed
 
