@@ -1579,9 +1579,11 @@ class PdfDocument:
             style=style,
             add_hyphens=add_hyphens,
             start_page=start_page,
+            end_page=0,
             start_number=displayed,
             font_size=font_size,
             color_rgb=color_rgb,
+            background_transparent=False,
         )
 
     @staticmethod

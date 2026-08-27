@@ -166,6 +166,7 @@ class PageNumberDialog(QDialog):
             prefix=self._affix_value(self._prefix_combo),
             suffix=self._affix_value(self._suffix_combo),
             start_page=self._start_page_spin.value(),
+            end_page=self._end_page_spin.value(),
             start_number=self._start_number_spin.value(),
             font_size=float(self._size_combo.currentData() or DEFAULT_PAGE_NUMBER_SIZE),
             color_rgb=(self._color.redF(), self._color.greenF(), self._color.blueF()),
@@ -193,9 +194,12 @@ class PageNumberDialog(QDialog):
         self._hyphen_check.setChecked(options.add_hyphens)
         self._set_affix_combo(self._prefix_combo, options.prefix)
         self._set_affix_combo(self._suffix_combo, options.suffix)
-        self._start_page_spin.setValue(
-            min(max(1, options.start_page), self._start_page_spin.maximum())
-        )
+        page_count = max(1, self._document.page_count)
+        start_page = min(max(1, options.start_page), page_count)
+        end_page = options.end_page if options.end_page > 0 else page_count
+        end_page = min(max(start_page, end_page), page_count)
+        self._start_page_spin.setValue(start_page)
+        self._end_page_spin.setValue(end_page)
         self._start_number_spin.setValue(
             min(max(1, options.start_number), self._start_number_spin.maximum())
         )
@@ -381,14 +385,15 @@ class PageNumberDialog(QDialog):
         self._start_page_spin.setRange(1, page_count)
         self._start_page_spin.setValue(1)
         self._start_page_spin.setFixedWidth(72)
-        start_page_row = QWidget()
-        start_page_layout = QHBoxLayout(start_page_row)
-        start_page_layout.setContentsMargins(0, 0, 0, 0)
-        start_page_layout.setSpacing(6)
-        start_page_layout.addWidget(self._start_page_spin)
-        start_page_layout.addWidget(QLabel("페이지"))
-        start_page_layout.addStretch(1)
-        form.addRow("시작 위치:", start_page_row)
+        self._start_page_spin.valueChanged.connect(self._on_start_page_changed)
+        form.addRow("쪽 번호 시작 페이지:", self._start_page_spin)
+
+        self._end_page_spin = QSpinBox()
+        self._end_page_spin.setRange(1, page_count)
+        self._end_page_spin.setValue(page_count)
+        self._end_page_spin.setFixedWidth(72)
+        self._end_page_spin.valueChanged.connect(self._on_end_page_changed)
+        form.addRow("쪽 번호 끝 페이지:", self._end_page_spin)
 
         self._start_number_spin = QSpinBox()
         self._start_number_spin.setRange(1, 9999)
@@ -411,6 +416,7 @@ class PageNumberDialog(QDialog):
         self._bg_color_btn = self._make_swatch_button("배경 색상")
         self._bg_color_btn.clicked.connect(self._pick_background_color)
         self._bg_transparent_check = QCheckBox("투명")
+        self._bg_transparent_check.setChecked(True)
         self._bg_transparent_check.toggled.connect(self._on_background_transparent_toggled)
         bg_row = QWidget()
         bg_layout = QHBoxLayout(bg_row)
@@ -460,6 +466,18 @@ class PageNumberDialog(QDialog):
         self._sync_enabled()
         self._update_preview()
 
+    def _on_start_page_changed(self, value: int) -> None:
+        if value > self._end_page_spin.value():
+            self._end_page_spin.blockSignals(True)
+            self._end_page_spin.setValue(value)
+            self._end_page_spin.blockSignals(False)
+
+    def _on_end_page_changed(self, value: int) -> None:
+        if value < self._start_page_spin.value():
+            self._start_page_spin.blockSignals(True)
+            self._start_page_spin.setValue(value)
+            self._start_page_spin.blockSignals(False)
+
     def _sync_enabled(self) -> None:
         options = self.selected_options()
         enabled = not options.remove_only
@@ -469,6 +487,7 @@ class PageNumberDialog(QDialog):
             self._prefix_combo,
             self._suffix_combo,
             self._start_page_spin,
+            self._end_page_spin,
             self._start_number_spin,
             self._size_combo,
             self._color_btn,

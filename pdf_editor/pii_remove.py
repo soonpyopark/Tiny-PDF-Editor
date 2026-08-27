@@ -31,7 +31,7 @@ class RedactStyle(str, Enum):
     LABEL = "label"
 
 
-DEFAULT_REDACT_STYLE = RedactStyle.GRAY
+DEFAULT_REDACT_STYLE = RedactStyle.BLACK
 
 REDACT_FILL_RGB: dict[RedactStyle, tuple[float, float, float]] = {
     RedactStyle.GRAY: (0.72, 0.72, 0.72),

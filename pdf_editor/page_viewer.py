@@ -1617,16 +1617,19 @@ class PageViewer(QWidget):
     def fit_width(self) -> None:
         self._fit_zoom_scale = 1.0
         self._fit_mode = "width"
+        self._pending_strip_offset = self._document_align_offset(self._current_index)
         self._render_current_page()
 
     def fit_height(self) -> None:
         self._fit_zoom_scale = 1.0
         self._fit_mode = "height"
+        self._pending_strip_offset = self._document_align_offset(self._current_index)
         self._render_current_page()
 
     def fit_page(self) -> None:
         self._fit_zoom_scale = 1.0
         self._fit_mode = "page"
+        self._pending_strip_offset = self._document_align_offset(self._current_index)
         self._render_current_page()
 
     def rotate_view_cw(self) -> None:
@@ -2157,10 +2160,7 @@ class PageViewer(QWidget):
         return offset
 
     def _document_align_offset(self, page_index: int) -> float:
-        rows = self._document_row_indices()
-        if rows and page_index <= rows[0]:
-            return 0.0
-        return self._document_row_start(page_index)
+        return max(0.0, self._document_row_start(page_index) - PAGE_STACK_GAP_PX)
 
     def _document_scroll_offset(self) -> float:
         if not self._document or self._document.page_count == 0:
@@ -2172,11 +2172,15 @@ class PageViewer(QWidget):
         canvas = self._mounted.get(page)
         if canvas is not None and canvas.height() > 0:
             local = self.scroll_area.verticalScrollBar().value() - canvas.y()
+            if local < 0:
+                return page, -1.0
             ratio = max(0.0, min(1.0, local / canvas.height()))
             return page, ratio
         start = self._document_row_start(page)
         height = self._document_row_height(page)
         offset = self._document_scroll_offset()
+        if offset < start:
+            return page, -1.0
         ratio = 0.0 if height <= 0 else max(0.0, min(1.0, (offset - start) / height))
         return page, ratio
 
@@ -2516,13 +2520,15 @@ class PageViewer(QWidget):
                 gap_px = SPREAD_GAP_PX
         viewport = self.scroll_area.viewport().size()
         margin = 24
+        height_margin = PAGE_STACK_GAP_PX * 2
+        avail_h = max(1.0, float(viewport.height() - height_margin))
         if self._fit_mode == "width":
             return max(0.1, (viewport.width() - margin - gap_px) / content_w)
         if self._fit_mode == "height":
-            return max(0.1, (viewport.height() - margin) / content_h)
+            return max(0.1, avail_h / content_h)
         if self._fit_mode == "page":
             width_fit = (viewport.width() - margin - gap_px) / content_w
-            height_fit = (viewport.height() - margin) / content_h
+            height_fit = avail_h / content_h
             return max(0.1, min(width_fit, height_fit))
         return self._zoom
 
@@ -2629,9 +2635,12 @@ class PageViewer(QWidget):
             self._sync_zoom_controls()
 
             if pending is None and anchor_page is not None:
-                pending = self._document_row_start(anchor_page) + (
-                    anchor_ratio * self._document_row_height(anchor_page)
-                )
+                if anchor_ratio < 0:
+                    pending = self._document_align_offset(anchor_page)
+                else:
+                    pending = self._document_row_start(anchor_page) + (
+                        anchor_ratio * self._document_row_height(anchor_page)
+                    )
             self._pending_strip_offset = None
             self._rebuild_visible_strip(restore_offset=pending, force_render=True)
             self._update_preview_stack()

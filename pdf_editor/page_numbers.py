@@ -77,11 +77,12 @@ class PageNumberOptions:
     prefix: str = ""
     suffix: str = ""
     start_page: int = 1
+    end_page: int = 0
     start_number: int = 1
     font_size: float = DEFAULT_PAGE_NUMBER_SIZE
     color_rgb: tuple[float, float, float] = DEFAULT_PAGE_NUMBER_RGB
     background_rgb: tuple[float, float, float] = DEFAULT_PAGE_NUMBER_BACKGROUND_RGB
-    background_transparent: bool = False
+    background_transparent: bool = True
     margin_x_mm: float = DEFAULT_PAGE_NUMBER_MARGIN_X_MM
     margin_y_mm: float = DEFAULT_PAGE_NUMBER_MARGIN_Y_MM
 
@@ -102,6 +103,7 @@ def serialize_page_number_options(
         "prefix": options.prefix,
         "suffix": options.suffix,
         "start_page": options.start_page,
+        "end_page": options.end_page,
         "start_number": options.start_number,
         "font_size": options.font_size,
         "color_rgb": list(options.color_rgb),
@@ -175,6 +177,10 @@ def parse_page_number_options(content: str) -> PageNumberOptions | None:
         start_number = int(data.get("start_number") or 1)
     except (TypeError, ValueError):
         start_page, start_number = 1, 1
+    try:
+        end_page = int(data.get("end_page") or 0)
+    except (TypeError, ValueError):
+        end_page = 0
     return PageNumberOptions(
         position=position,
         style=style,
@@ -182,6 +188,7 @@ def parse_page_number_options(content: str) -> PageNumberOptions | None:
         prefix=str(data.get("prefix") or ""),
         suffix=str(data.get("suffix") or ""),
         start_page=max(1, start_page),
+        end_page=max(0, end_page),
         start_number=max(1, start_number),
         font_size=font_size,
         color_rgb=rgb,
@@ -291,6 +298,8 @@ def page_number_for_index(page_index: int, options: PageNumberOptions) -> int | 
     """Return the displayed number for a 0-based page, or None if skipped."""
     page_1based = page_index + 1
     if page_1based < options.start_page:
+        return None
+    if options.end_page > 0 and page_1based > options.end_page:
         return None
     return options.start_number + (page_1based - options.start_page)
 
