@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from contextlib import contextmanager
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from enum import Enum
 
 from PyQt6.QtCore import Qt, QTimer
@@ -106,6 +106,7 @@ class DocumentPrintDialog(QDialog):
         title: str = "인쇄",
         page_from: int | None = None,
         page_to: int | None = None,
+        page_indices: Sequence[int] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -120,19 +121,28 @@ class DocumentPrintDialog(QDialog):
         # Default to A4 so the preview matches typical KR/EU output paper.
         self._printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
         count = document.page_count
-        if count > 0 and page_from is not None:
+        if page_indices is not None:
+            pages = sorted({
+                int(index)
+                for index in page_indices
+                if 0 <= int(index) < count
+            })
+        elif count > 0 and page_from is not None:
             start = max(1, min(int(page_from), count))
             end = max(start, min(int(page_to if page_to is not None else start), count))
-            self._range_lo = start - 1
-            self._range_hi = end - 1
-            self._page_index = self._range_lo
-            self._printer.setPrintRange(QPrinter.PrintRange.PageRange)
-            self._printer.setFromTo(start, end)
+            pages = list(range(start - 1, end))
         else:
-            self._range_lo = 0
-            self._range_hi = max(0, count - 1)
-            if count > 0:
+            pages = list(range(count)) if count > 0 else []
+        self._print_pages = pages
+        if pages:
+            self._page_index = pages[0]
+            if len(pages) < count:
+                self._printer.setPrintRange(QPrinter.PrintRange.PageRange)
+                self._printer.setFromTo(pages[0] + 1, pages[-1] + 1)
+            else:
                 self._printer.setFromTo(1, count)
+        else:
+            self._page_index = 0
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -238,16 +248,24 @@ class DocumentPrintDialog(QDialog):
     def _page_count(self) -> int:
         return self._document.page_count
 
+    def _page_pos(self) -> int:
+        try:
+            return self._print_pages.index(self._page_index)
+        except ValueError:
+            return 0
+
     def _go_prev(self) -> None:
-        if self._page_index <= self._range_lo:
+        pos = self._page_pos()
+        if pos <= 0:
             return
-        self._page_index -= 1
+        self._page_index = self._print_pages[pos - 1]
         self._refresh_preview()
 
     def _go_next(self) -> None:
-        if self._page_index >= self._range_hi:
+        pos = self._page_pos()
+        if pos >= len(self._print_pages) - 1:
             return
-        self._page_index += 1
+        self._page_index = self._print_pages[pos + 1]
         self._refresh_preview()
 
     def _set_fit_mode(self, mode: _PreviewFit) -> None:
@@ -323,10 +341,18 @@ class DocumentPrintDialog(QDialog):
             self._btn_next.setEnabled(False)
             return
 
-        self._page_index = max(self._range_lo, min(self._page_index, self._range_hi))
-        self._page_label.setText(f"{self._page_index + 1} / {count}")
-        self._btn_prev.setEnabled(self._page_index > self._range_lo)
-        self._btn_next.setEnabled(self._page_index < self._range_hi)
+        if self._page_index not in self._print_pages and self._print_pages:
+            self._page_index = self._print_pages[0]
+        pos = self._page_pos()
+        selected_total = len(self._print_pages)
+        if selected_total == count:
+            self._page_label.setText(f"{self._page_index + 1} / {count}")
+        else:
+            self._page_label.setText(
+                f"{self._page_index + 1}페이지 · 선택 {pos + 1}/{selected_total}"
+            )
+        self._btn_prev.setEnabled(pos > 0)
+        self._btn_next.setEnabled(pos < selected_total - 1)
 
         pixmap = self._pixmap_for(self._page_index)
         if pixmap.isNull():
@@ -351,8 +377,8 @@ class DocumentPrintDialog(QDialog):
             if dialog.exec() != QPrintDialog.DialogCode.Accepted:
                 return
 
-        total_guess = self._range_hi - self._range_lo + 1
-        progress = QProgressDialog("인쇄 중…", "취소", 0, max(1, total_guess), self)
+        total_guess = max(1, len(self._print_pages))
+        progress = QProgressDialog("인쇄 중…", "취소", 0, total_guess, self)
         progress.setWindowTitle("인쇄")
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(400)
@@ -369,7 +395,12 @@ class DocumentPrintDialog(QDialog):
             return True
 
         try:
-            print_document(self._document, self._printer, progress=on_progress)
+            print_document(
+                self._document,
+                self._printer,
+                progress=on_progress,
+                page_indices=self._print_pages or None,
+            )
         except Exception as exc:
             progress.close()
             QMessageBox.critical(self, "인쇄 오류", str(exc))

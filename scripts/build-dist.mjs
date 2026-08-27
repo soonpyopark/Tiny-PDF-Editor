@@ -154,7 +154,9 @@ function formatTimestamp(date = new Date()) {
 }
 
 export function ensurePythonDeps() {
-  run("python -m pip install -r requirements.txt pyinstaller --quiet");
+  run(
+    "python -m pip install -r requirements.txt pyinstaller pyinstaller-hooks-contrib pillow numpy --quiet",
+  );
 }
 
 function ensureHwpHelper() {

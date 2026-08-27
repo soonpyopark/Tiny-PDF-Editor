@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPageLayout, QPen, QPixmap
@@ -162,13 +162,21 @@ def print_document(
     *,
     progress: Callable[[int, int], bool] | None = None,
     max_dpi: float | None = None,
+    page_indices: Sequence[int] | None = None,
 ) -> None:
     """Print document pages using the settings chosen in QPrintDialog.
 
     ``progress(current_1based, total)`` may return False to cancel.
     Between pages the UI event loop is pumped so the app stays responsive.
     """
-    page_indices = _iter_print_page_indices(printer, document.page_count)
+    if page_indices is not None:
+        page_indices = [
+            int(index)
+            for index in page_indices
+            if 0 <= int(index) < document.page_count
+        ]
+    else:
+        page_indices = _iter_print_page_indices(printer, document.page_count)
     if not page_indices:
         return
 

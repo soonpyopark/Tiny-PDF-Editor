@@ -13,6 +13,7 @@
     "build:dist:msi": "node scripts/build-msi.mjs",
     "build:dist:portable": "node scripts/build-portable.mjs",
     "build:release": "node scripts/build-release.mjs",
+    "upgrade:release-deps": "node scripts/upgrade-release-deps.mjs",
     "build:dist:macos": "node scripts/sync-version.mjs && node scripts/build-macos.mjs",
     "update:all": "node scripts/update-all.mjs",
     "build:update_all": "update_all.bat _inner build"

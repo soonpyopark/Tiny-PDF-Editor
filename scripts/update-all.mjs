@@ -17,13 +17,10 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { updateNpmStack, updatePythonStack } from "./upgrade-release-deps.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
-const REQUIREMENTS_PATH = path.join(root, "requirements.txt");
-
-/** Packages used by build scripts but not listed in requirements.txt. */
-const EXTRA_PYTHON_PACKAGES = ["pyinstaller", "pillow", "numpy"];
 
 /**
  * @param {string[]} argv
@@ -93,117 +90,6 @@ async function gitPull() {
   run("git pull", "git", ["pull", "--ff-only"]);
 }
 
-/**
- * @param {ReturnType<typeof parseArgs>} opts
- */
-async function updateNpmStack(opts) {
-  if (opts.force) {
-    await clearForcedCaches();
-    run("npm install --force", "npm", ["install", "--force"]);
-  } else {
-    run("npm install", "npm", ["install"]);
-  }
-  run("npm update", "npm", ["update"]);
-}
-
-function readRequirementNames() {
-  if (!fs.existsSync(REQUIREMENTS_PATH)) {
-    return [];
-  }
-  const names = [];
-  for (const line of fs.readFileSync(REQUIREMENTS_PATH, "utf8").split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) {
-      continue;
-    }
-    const match = trimmed.match(/^([A-Za-z0-9_.-]+)/);
-    if (match) {
-      names.push(match[1]);
-    }
-  }
-  return names;
-}
-
-function getInstalledVersion(packageName) {
-  try {
-    const output = spawnSync("python", ["-m", "pip", "show", packageName], {
-      cwd: root,
-      encoding: "utf8",
-      shell: process.platform === "win32",
-    });
-    if (output.status !== 0) {
-      return null;
-    }
-    const match = String(output.stdout || "").match(/^Version:\s*(.+)$/m);
-    return match ? match[1].trim() : null;
-  } catch {
-    return null;
-  }
-}
-
-function syncRequirementsFile() {
-  if (!fs.existsSync(REQUIREMENTS_PATH)) {
-    return;
-  }
-  const lines = fs.readFileSync(REQUIREMENTS_PATH, "utf8").split(/\r?\n/);
-  const updated = lines.map((line) => {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) {
-      return line;
-    }
-    const match = trimmed.match(/^([A-Za-z0-9_.-]+)/);
-    if (!match) {
-      return line;
-    }
-    const name = match[1];
-    const version = getInstalledVersion(name);
-    if (!version) {
-      return line;
-    }
-    return `${name}>=${version}`;
-  });
-  const text = updated.join("\n");
-  fs.writeFileSync(
-    REQUIREMENTS_PATH,
-    text.endsWith("\n") ? text : `${text}\n`,
-    "utf8",
-  );
-  console.log(
-    `[update-all] refreshed ${path.relative(root, REQUIREMENTS_PATH)}`,
-  );
-}
-
-function printInstalledVersions(packages) {
-  console.log("[update-all] installed Python versions:");
-  for (const name of packages) {
-    const version = getInstalledVersion(name);
-    if (version) {
-      console.log(`  - ${name} ${version}`);
-    }
-  }
-}
-
-function updatePythonStack() {
-  run("upgrade pip", "python", ["-m", "pip", "install", "--upgrade", "pip"]);
-
-  const runtimePackages = readRequirementNames();
-  const packages = [...new Set([...runtimePackages, ...EXTRA_PYTHON_PACKAGES])];
-  if (packages.length === 0) {
-    throw new Error("No Python packages found to upgrade.");
-  }
-
-  run("upgrade Python packages", "python", [
-    "-m",
-    "pip",
-    "install",
-    "--upgrade",
-    ...packages,
-  ]);
-
-  syncRequirementsFile();
-  printInstalledVersions(packages);
-}
-
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
 
@@ -214,8 +100,12 @@ async function main() {
     await gitPull();
   }
 
+  if (opts.force) {
+    await clearForcedCaches();
+  }
+
   if (!opts.skipNpm) {
-    await updateNpmStack(opts);
+    updateNpmStack(opts);
   }
 
   if (!opts.skipPython) {

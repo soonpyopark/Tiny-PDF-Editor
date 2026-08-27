@@ -144,12 +144,12 @@ function ensurePythonDeps() {
   }
 
   try {
-    run(`"${PYTHON}" -m pip install -r requirements.txt pyinstaller pillow numpy --quiet`);
+    run(`"${PYTHON}" -m pip install -r requirements.txt pyinstaller pyinstaller-hooks-contrib pillow numpy --quiet`);
   } catch {
     // uv-managed venvs may not include pip
     const uv = path.join(process.env.HOME || "", ".local", "bin", "uv");
     if (fs.existsSync(uv)) {
-      run(`"${uv}" pip install -r requirements.txt pyinstaller pillow numpy --python "${PYTHON}"`);
+      run(`"${uv}" pip install -r requirements.txt pyinstaller pyinstaller-hooks-contrib pillow numpy --python "${PYTHON}"`);
       return;
     }
     throw new Error(

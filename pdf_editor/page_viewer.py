@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QScrollBar,
     QSizePolicy,
     QSlider,
     QSpinBox,
@@ -64,6 +65,8 @@ WHEEL_SCROLL_MULTIPLIER = 1.5
 SMOOTH_SCROLL_DURATION_MS = 260
 PREVIEW_BACKGROUND = "#efefef"
 SPREAD_GAP_PX = 12
+PAGE_STACK_GAP_PX = 16
+DOC_SCROLL_WIDTH = 12
 PREVIEW_SCROLLBAR_STYLE = """
 QScrollBar:vertical {
     background: transparent;
@@ -259,6 +262,8 @@ class PageCanvas(QLabel):
         self._text_underlines: list[tuple[tuple[float, float, float, float], QColor]] = []
         self._search_highlights: list[QRect] = []
         self._active_search_highlight = -1
+        self._review_rects: list[QRect] = []
+        self._review_focus_rects: list[QRect] = []
         self._viewer: PageViewer | None = None
         self._stored_segment_highlights: list[QRect] = []
 
@@ -331,6 +336,20 @@ class PageCanvas(QLabel):
     ) -> None:
         self._search_highlights = highlights
         self._active_search_highlight = active_index
+        self.update()
+
+    def clear_review_rects(self) -> None:
+        self._review_rects = []
+        self._review_focus_rects = []
+        self.update()
+
+    def set_review_rects(
+        self,
+        others: list[QRect],
+        focus: list[QRect],
+    ) -> None:
+        self._review_rects = others
+        self._review_focus_rects = focus
         self.update()
 
     def selected_text(self) -> str:
@@ -892,6 +911,8 @@ class PageCanvas(QLabel):
             not self._text_highlights
             and not self._text_underlines
             and not self._search_highlights
+            and not self._review_rects
+            and not self._review_focus_rects
             and not self._selection_highlights
             and not self._stored_segment_highlights
         ):
@@ -917,6 +938,15 @@ class PageCanvas(QLabel):
                     painter.setBrush(QColor(255, 152, 0, 150))
                 else:
                     painter.setBrush(QColor(255, 235, 59, 110))
+                painter.drawRect(rect)
+        if self._review_rects or self._review_focus_rects:
+            painter.setBrush(QColor(220, 38, 38, 40))
+            painter.setPen(QPen(QColor(185, 28, 28, 200), 1))
+            for rect in self._review_rects:
+                painter.drawRect(rect)
+            painter.setBrush(QColor(220, 38, 38, 70))
+            painter.setPen(QPen(QColor(185, 28, 28), 2))
+            for rect in self._review_focus_rects:
                 painter.drawRect(rect)
         if self._stored_segment_highlights or self._selection_highlights:
             painter.setPen(Qt.PenStyle.NoPen)
@@ -967,6 +997,9 @@ class PageViewer(QWidget):
         self._fit_zoom_scale = 1.0
         self._search_page_rects: list[fitz.Rect] = []
         self._search_active_index = -1
+        self._review_page_index = -1
+        self._review_other_rects: list[fitz.Rect] = []
+        self._review_focus_rects: list[fitz.Rect] = []
         self._cross_page_selection: CrossPageSelection | None = None
         self._awaiting_continuation = False
 
@@ -1000,7 +1033,7 @@ class PageViewer(QWidget):
         self.scroll_area.setWidgetResizable(False)
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         viewport = self.scroll_area.viewport()
         viewport.setStyleSheet(preview_bg)
@@ -1012,7 +1045,11 @@ class PageViewer(QWidget):
         )
         self._scroll_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._scroll_anim.setDuration(SMOOTH_SCROLL_DURATION_MS)
+        self._scroll_anim.finished.connect(self._on_scroll_anim_finished)
         self._scroll_target: int | None = None
+        self._page_stack_mode: str | None = None
+        self._page_stack_index = -1
+        self._doc_scroll_syncing = False
 
         self._facing_mode = False
         self._search_page_index = -1
@@ -1038,13 +1075,57 @@ class PageViewer(QWidget):
             self.text_selection_changed.emit
         )
 
+        self.page_canvas_stack = PageCanvas(self._spread_host)
+        self.page_canvas_stack.set_page_viewer(self)
+        self.page_canvas_stack.setVisible(False)
+        self.page_canvas_stack.text_highlight_added.connect(
+            self._on_canvas_highlight_added
+        )
+        self.page_canvas_stack.text_edited.connect(self._on_canvas_text_edited)
+        self.page_canvas_stack.markup_clicked.connect(self._on_canvas_markup_clicked)
+        self.page_canvas_stack.text_selection_changed.connect(
+            self.text_selection_changed.emit
+        )
+
+        self.page_canvas_stack_right = PageCanvas(self._spread_host)
+        self.page_canvas_stack_right.set_page_viewer(self)
+        self.page_canvas_stack_right.setVisible(False)
+        self.page_canvas_stack_right.text_highlight_added.connect(
+            self._on_canvas_highlight_added
+        )
+        self.page_canvas_stack_right.text_edited.connect(self._on_canvas_text_edited)
+        self.page_canvas_stack_right.markup_clicked.connect(self._on_canvas_markup_clicked)
+        self.page_canvas_stack_right.text_selection_changed.connect(
+            self.text_selection_changed.emit
+        )
+
         self._inline_editor: _InlineTextEditor | None = None
         self._text_edit_ctx: dict | None = None
         self._text_edit_active = False
         self.scroll_area.setWidget(self._spread_host)
         self.preview_stack.addWidget(self.scroll_area)
         self.preview_stack.setStyleSheet(preview_bg)
-        root.addWidget(self.preview_stack, 1)
+
+        self._preview_row = QWidget()
+        self._preview_row.setStyleSheet(preview_bg)
+        preview_row_layout = QHBoxLayout(self._preview_row)
+        preview_row_layout.setContentsMargins(0, 0, 0, 0)
+        preview_row_layout.setSpacing(0)
+        preview_row_layout.addWidget(self.preview_stack, 1)
+
+        self._doc_scroll = QScrollBar(Qt.Orientation.Vertical)
+        self._doc_scroll.setObjectName("docScroll")
+        self._doc_scroll.setStyleSheet(PREVIEW_SCROLLBAR_STYLE)
+        self._doc_scroll.setFixedWidth(DOC_SCROLL_WIDTH)
+        self._doc_scroll.setVisible(False)
+        self._doc_scroll.valueChanged.connect(self._on_doc_scroll_changed)
+        self._doc_scroll.installEventFilter(self)
+        preview_row_layout.addWidget(self._doc_scroll, 0, Qt.AlignmentFlag.AlignRight)
+        root.addWidget(self._preview_row, 1)
+
+        self.scroll_area.verticalScrollBar().valueChanged.connect(
+            self._sync_document_scrollbar
+        )
 
         self._log_section = QWidget()
         self._log_section.setVisible(False)
@@ -1157,6 +1238,7 @@ class PageViewer(QWidget):
         QApplication.processEvents()
 
     def set_document(self, document: PdfDocument | None) -> None:
+        self._discard_page_stack()
         self._document = document
         self._current_index = 0
         self._fit_mode = "page"
@@ -1179,6 +1261,7 @@ class PageViewer(QWidget):
         enabled = bool(enabled)
         if self._facing_mode == enabled:
             return
+        self._discard_page_stack()
         self._facing_mode = enabled
         if not enabled:
             self.page_canvas_right.clear_selection(clear_cross_page=False)
@@ -1223,6 +1306,10 @@ class PageViewer(QWidget):
         canvases = [self.page_canvas]
         if self._facing_mode and self.page_canvas_right.isVisible():
             canvases.append(self.page_canvas_right)
+        if self.page_canvas_stack.isVisible():
+            canvases.append(self.page_canvas_stack)
+        if self.page_canvas_stack_right.isVisible():
+            canvases.append(self.page_canvas_stack_right)
         return canvases
 
     def _canvas_for_page(self, page_index: int) -> PageCanvas | None:
@@ -1231,6 +1318,16 @@ class PageViewer(QWidget):
         right = self._right_page_index()
         if right is not None and page_index == right:
             return self.page_canvas_right
+        if (
+            self.page_canvas_stack.isVisible()
+            and page_index == self._page_stack_index
+        ):
+            return self.page_canvas_stack
+        if (
+            self.page_canvas_stack_right.isVisible()
+            and page_index == self._page_stack_index + 1
+        ):
+            return self.page_canvas_stack_right
         return None
 
     def clear_other_canvas_selection(self, keep: PageCanvas) -> None:
@@ -1399,9 +1496,11 @@ class PageViewer(QWidget):
         *,
         preserve_cross_page: bool = False,
         scroll_to_bottom: bool = False,
+        local_scroll: int | None = None,
     ) -> None:
         if not self._document or self._document.page_count == 0:
             return
+        self._discard_page_stack()
         index = self._normalize_page_index(index)
         if index != self._current_index:
             self._cancel_text_edit()
@@ -1414,13 +1513,21 @@ class PageViewer(QWidget):
             self.refresh()
             if scroll_to_bottom:
                 self._scroll_to_page_bottom()
+            elif local_scroll is not None:
+                self._apply_scroll_value(local_scroll)
             self.page_changed.emit(index)
             if self._awaiting_continuation:
                 QTimer.singleShot(0, self._prime_continuation_selection)
-        elif preserve_cross_page:
-            self.refresh()
-            if self._awaiting_continuation:
-                QTimer.singleShot(0, self._prime_continuation_selection)
+        else:
+            self._sync_spread_host_size()
+            if local_scroll is not None:
+                self._stop_scroll_animation()
+                self._apply_scroll_value(local_scroll)
+            elif preserve_cross_page:
+                self.refresh()
+                if self._awaiting_continuation:
+                    QTimer.singleShot(0, self._prime_continuation_selection)
+            self._sync_document_scrollbar()
 
     def set_zoom_percent(self, percent: float) -> None:
         target = max(0.1, min(percent / 100.0, MAX_ZOOM))
@@ -1574,6 +1681,48 @@ class PageViewer(QWidget):
         for canvas in (self.page_canvas, self.page_canvas_right):
             canvas.clear_search_highlights()
 
+    def clear_review_rects(self) -> None:
+        self._review_page_index = -1
+        self._review_other_rects = []
+        self._review_focus_rects = []
+        for canvas in (self.page_canvas, self.page_canvas_right):
+            canvas.clear_review_rects()
+
+    def show_review_rects(
+        self,
+        page_index: int,
+        focus_rects: list[fitz.Rect],
+        other_rects: list[fitz.Rect] | None = None,
+        *,
+        focus_rect: fitz.Rect | None = None,
+    ) -> None:
+        self._review_page_index = page_index
+        self._review_focus_rects = list(focus_rects)
+        self._review_other_rects = list(other_rects or [])
+        if not self._document or self._document.page_count == 0:
+            return
+        page_index = max(0, min(page_index, self._document.page_count - 1))
+        self._review_page_index = page_index
+        right = self._right_page_index()
+        already_visible = page_index == self._current_index or (
+            right is not None and page_index == right
+        )
+        if not already_visible:
+            self._cancel_text_edit()
+            self._discard_page_stack()
+            self._stop_scroll_animation()
+            self._current_index = self._normalize_page_index(page_index)
+            self.scroll_area.verticalScrollBar().setValue(0)
+            self.scroll_area.horizontalScrollBar().setValue(0)
+            self._update_page_info()
+            self._render_current_page()
+            self.page_changed.emit(self._current_index)
+        else:
+            self._apply_review_rects()
+        target = focus_rect or (focus_rects[0] if focus_rects else None)
+        if target is not None:
+            self.reveal_page_rect(target, page_index=page_index)
+
     def show_search_result(
         self,
         page_index: int,
@@ -1595,6 +1744,7 @@ class PageViewer(QWidget):
         )
         if not already_visible:
             self._cancel_text_edit()
+            self._discard_page_stack()
             self._stop_scroll_animation()
             self._current_index = self._normalize_page_index(page_index)
             self.scroll_area.verticalScrollBar().setValue(0)
@@ -1650,6 +1800,30 @@ class PageViewer(QWidget):
         ]
         canvas.set_search_highlights(highlights, self._search_active_index)
 
+    def _apply_review_rects(self) -> None:
+        for canvas in (self.page_canvas, self.page_canvas_right):
+            canvas.clear_review_rects()
+        if self._review_page_index < 0:
+            return
+        page = self._review_page_index
+        canvas = self._canvas_for_page(page)
+        if canvas is None:
+            return
+        zoom = self._effective_zoom()
+
+        def _to_qrect(rect: fitz.Rect) -> QRect:
+            return QRect(
+                int(rect.x0 * zoom),
+                int(rect.y0 * zoom),
+                max(1, int((rect.x1 - rect.x0) * zoom)),
+                max(1, int((rect.y1 - rect.y0) * zoom)),
+            )
+
+        canvas.set_review_rects(
+            [_to_qrect(rect) for rect in self._review_other_rects],
+            [_to_qrect(rect) for rect in self._review_focus_rects],
+        )
+
     def _apply_text_highlights_overlay(self) -> None:
         if not self._document or self._document.page_count == 0:
             self.page_canvas.set_text_highlights([])
@@ -1662,6 +1836,10 @@ class PageViewer(QWidget):
         right = self._right_page_index()
         if right is not None:
             pages.append(right)
+        if self._page_stack_index >= 0 and self.page_canvas_stack.isVisible():
+            pages.append(self._page_stack_index)
+            if self.page_canvas_stack_right.isVisible():
+                pages.append(self._page_stack_index + 1)
         for page in pages:
             canvas = self._canvas_for_page(page)
             if canvas is None:
@@ -1691,6 +1869,7 @@ class PageViewer(QWidget):
             self._document
             and self._document.page_count > 0
             and self._fit_mode
+            and not self._page_stack_mode
         ):
             self._render_current_page()
 
@@ -1698,14 +1877,24 @@ class PageViewer(QWidget):
         super().resizeEvent(event)
         if not self._busy_overlay.isHidden():
             self._busy_overlay.setGeometry(self.preview_stack.rect())
-        if self._fit_mode and not self._rendering:
+        if self._fit_mode and not self._rendering and not self._page_stack_mode:
             # Defer so scrollbar show/hide from spread size does not re-enter render.
             QTimer.singleShot(0, self._render_current_page_if_fitting)
 
     def eventFilter(self, obj, event) -> bool:
+        if obj is self._doc_scroll and event.type() == QEvent.Type.Wheel:
+            wheel = event
+            if self._handle_preview_wheel(
+                wheel.angleDelta().y(),
+                wheel.modifiers(),
+            ):
+                event.accept()
+                return True
         if obj is self.scroll_area.viewport():
             if event.type() == QEvent.Type.MouseButtonPress:
                 self.scroll_area.viewport().setFocus()
+            elif event.type() == QEvent.Type.Resize:
+                QTimer.singleShot(0, self._sync_document_scrollbar)
             elif event.type() == QEvent.Type.Wheel:
                 wheel = event
                 if self._handle_preview_wheel(
@@ -1805,6 +1994,231 @@ class PageViewer(QWidget):
         bar.setValue(bar.maximum())
         QTimer.singleShot(0, lambda: bar.setValue(bar.maximum()))
 
+    def _apply_scroll_value(self, value: int) -> None:
+        bar = self.scroll_area.verticalScrollBar()
+        clamped = max(bar.minimum(), min(bar.maximum(), int(value)))
+        bar.setValue(clamped)
+        QTimer.singleShot(
+            0,
+            lambda v=clamped: bar.setValue(
+                max(bar.minimum(), min(bar.maximum(), v))
+            ),
+        )
+
+    def _on_scroll_anim_finished(self) -> None:
+        self._scroll_target = None
+        self._maybe_commit_page_stack()
+        self._sync_document_scrollbar()
+
+    def _hide_stack_canvases(self) -> None:
+        for canvas in (self.page_canvas_stack, self.page_canvas_stack_right):
+            canvas.setVisible(False)
+            canvas.setPixmap(QPixmap())
+            canvas.setFixedSize(0, 0)
+            canvas.clear_selection(clear_cross_page=False)
+
+    def _discard_page_stack(self) -> None:
+        if not self._page_stack_mode:
+            return
+        self._page_stack_mode = None
+        self._page_stack_index = -1
+        self._hide_stack_canvases()
+        self._stop_scroll_animation()
+
+    def _neighbor_page_index(self, direction: int) -> int | None:
+        if not self._document or self._document.page_count == 0:
+            return None
+        step = self._page_step()
+        if direction > 0:
+            incoming = self._current_index + step
+            last = self._normalize_page_index(self._document.page_count - 1)
+            if incoming > last:
+                return None
+            return incoming
+        incoming = self._current_index - step
+        if incoming < 0:
+            return None
+        return incoming
+
+    def _row_size(self, left: PageCanvas, right: PageCanvas) -> tuple[int, int]:
+        left_w = max(0, left.width())
+        left_h = max(0, left.height())
+        if right.isVisible():
+            return (
+                left_w + SPREAD_GAP_PX + max(0, right.width()),
+                max(left_h, right.height()),
+            )
+        return left_w, left_h
+
+    def _place_spread_row(
+        self,
+        left: PageCanvas,
+        right: PageCanvas,
+        *,
+        top: int,
+        host_width: int,
+    ) -> None:
+        row_w, row_h = self._row_size(left, right)
+        origin_x = max(0, (host_width - row_w) // 2)
+        left_h = max(0, left.height())
+        left.move(origin_x, top + max(0, (row_h - left_h) // 2))
+        if right.isVisible():
+            right_h = max(0, right.height())
+            right.move(
+                origin_x + left.width() + SPREAD_GAP_PX,
+                top + max(0, (row_h - right_h) // 2),
+            )
+
+    def _fill_stack_canvases(self, page_index: int) -> None:
+        if not self._document:
+            return
+        zoom = self._effective_zoom()
+        pix = self._document.render_page_pixmap(page_index, zoom)
+        self.page_canvas_stack.setVisible(True)
+        self.page_canvas_stack.set_content(
+            pixmap_from_fitz(pix),
+            self._document,
+            page_index,
+            zoom,
+            clear_selection=True,
+        )
+        right_index = page_index + 1
+        if (
+            self._facing_mode
+            and right_index < self._document.page_count
+        ):
+            right_pix = self._document.render_page_pixmap(right_index, zoom)
+            self.page_canvas_stack_right.setVisible(True)
+            self.page_canvas_stack_right.set_content(
+                pixmap_from_fitz(right_pix),
+                self._document,
+                right_index,
+                zoom,
+                clear_selection=True,
+            )
+        else:
+            self.page_canvas_stack_right.setVisible(False)
+            self.page_canvas_stack_right.setPixmap(QPixmap())
+            self.page_canvas_stack_right.setFixedSize(0, 0)
+
+    def _layout_page_stack(self) -> None:
+        current_w, current_h = self._row_size(
+            self.page_canvas, self.page_canvas_right
+        )
+        stack_w, stack_h = self._row_size(
+            self.page_canvas_stack, self.page_canvas_stack_right
+        )
+        gap = PAGE_STACK_GAP_PX
+        host_w = max(current_w, stack_w)
+        host_h = current_h + gap + stack_h
+        if self._page_stack_mode == "prev":
+            stack_y = 0
+            current_y = stack_h + gap
+            shift = stack_h + gap
+        else:
+            current_y = 0
+            stack_y = current_h + gap
+            shift = 0
+        self._place_spread_row(
+            self.page_canvas,
+            self.page_canvas_right,
+            top=current_y,
+            host_width=host_w,
+        )
+        self._place_spread_row(
+            self.page_canvas_stack,
+            self.page_canvas_stack_right,
+            top=stack_y,
+            host_width=host_w,
+        )
+        self._spread_host.setFixedSize(host_w, host_h)
+        if shift:
+            bar = self.scroll_area.verticalScrollBar()
+            base = self._effective_scroll_value()
+            self._stop_scroll_animation()
+            bar.setValue(base + shift)
+        self._sync_document_scrollbar()
+
+    def _ensure_page_stack(self, direction: int) -> bool:
+        incoming = self._neighbor_page_index(direction)
+        if incoming is None:
+            return False
+        wanted = "next" if direction > 0 else "prev"
+        if self._page_stack_mode == wanted:
+            return True
+        if self._page_stack_mode:
+            self._finish_page_stack(commit=self._page_stack_should_commit())
+            incoming = self._neighbor_page_index(direction)
+            if incoming is None:
+                return False
+        if self._text_edit_active:
+            self._cancel_text_edit()
+        self._fill_stack_canvases(incoming)
+        self._page_stack_mode = wanted
+        self._page_stack_index = incoming
+        self._layout_page_stack()
+        self._apply_search_highlights()
+        self._apply_review_rects()
+        self._apply_text_highlights_overlay()
+        return True
+
+    def _page_stack_visible_overlap(self, top: int, height: int) -> int:
+        viewport_h = max(1, self.scroll_area.viewport().height())
+        scroll = self._effective_scroll_value()
+        visible_top = max(scroll, top)
+        visible_bottom = min(scroll + viewport_h, top + height)
+        return max(0, visible_bottom - visible_top)
+
+    def _page_stack_should_commit(self) -> bool:
+        if not self._page_stack_mode:
+            return False
+        _current_w, current_h = self._row_size(
+            self.page_canvas, self.page_canvas_right
+        )
+        _stack_w, stack_h = self._row_size(
+            self.page_canvas_stack, self.page_canvas_stack_right
+        )
+        incoming = self._page_stack_visible_overlap(
+            self.page_canvas_stack.y(), stack_h
+        )
+        current = self._page_stack_visible_overlap(
+            self.page_canvas.y(), current_h
+        )
+        return incoming > current
+
+    def _finish_page_stack(self, *, commit: bool) -> None:
+        if not self._page_stack_mode:
+            return
+        incoming = self._page_stack_index
+        incoming_y = self.page_canvas_stack.y()
+        current_y = self.page_canvas.y()
+        old_scroll = self._effective_scroll_value()
+        self._discard_page_stack()
+        if commit and incoming >= 0:
+            self._current_index = incoming
+            self._update_page_info()
+            self._render_current_page()
+            self.page_changed.emit(self._current_index)
+            self._apply_scroll_value(old_scroll - incoming_y)
+        else:
+            self._sync_spread_host_size()
+            self._apply_scroll_value(old_scroll - current_y)
+
+    def _maybe_commit_page_stack(self) -> None:
+        if not self._page_stack_mode:
+            return
+        if self._page_stack_should_commit():
+            self._finish_page_stack(commit=True)
+            return
+        _stack_w, stack_h = self._row_size(
+            self.page_canvas_stack, self.page_canvas_stack_right
+        )
+        incoming_visible = self._page_stack_visible_overlap(
+            self.page_canvas_stack.y(), stack_h
+        )
+        if incoming_visible <= 0:
+            self._finish_page_stack(commit=False)
+
     def scroll_by_key(self, *, up: bool, page: bool) -> None:
         """Scroll mode navigation: scroll within a page, turn at boundaries.
 
@@ -1818,22 +2232,6 @@ class PageViewer(QWidget):
         )
         self._handle_preview_wheel(step if up else -step, Qt.KeyboardModifier.NoModifier)
 
-    def _change_page_by_wheel(self, delta_y: int) -> bool:
-        if not self._document or self._document.page_count == 0:
-            return False
-        step = self._page_step()
-        if delta_y > 0 and self._current_index > 0:
-            self.set_current_index(
-                self._current_index - step,
-                scroll_to_bottom=True,
-            )
-            return True
-        last_left = self._normalize_page_index(self._document.page_count - 1)
-        if delta_y < 0 and self._current_index < last_left:
-            self.set_current_index(self._current_index + step)
-            return True
-        return False
-
     def _handle_preview_wheel(self, delta_y: int, modifiers: Qt.KeyboardModifier) -> bool:
         if modifiers & Qt.KeyboardModifier.ControlModifier:
             factor = ZOOM_STEP_FACTOR if delta_y > 0 else 1.0 / ZOOM_STEP_FACTOR
@@ -1841,17 +2239,125 @@ class PageViewer(QWidget):
             return True
         if not self._document or self._document.page_count == 0:
             return False
-        if self._has_vertical_scroll():
+        going_up = delta_y > 0
+        going_down = delta_y < 0
+        scroll_delta = int(delta_y * WHEEL_SCROLL_MULTIPLIER)
+        if self._has_vertical_scroll() or self._page_stack_mode:
             bar = self.scroll_area.verticalScrollBar()
             position = self._effective_scroll_value()
             at_top = position <= bar.minimum()
             at_bottom = position >= bar.maximum()
-            if (delta_y > 0 and at_top) or (delta_y < 0 and at_bottom):
-                if self._change_page_by_wheel(delta_y):
+            if going_down and (at_bottom or self._page_stack_mode == "next"):
+                if self._ensure_page_stack(1):
+                    self._scroll_vertically(scroll_delta)
                     return True
-            self._scroll_vertically(int(delta_y * WHEEL_SCROLL_MULTIPLIER))
+                if at_bottom:
+                    return True
+            if going_up and (at_top or self._page_stack_mode == "prev"):
+                if self._ensure_page_stack(-1):
+                    self._scroll_vertically(scroll_delta)
+                    return True
+                if at_top:
+                    return True
+            self._scroll_vertically(scroll_delta)
             return True
-        return self._change_page_by_wheel(delta_y)
+        if self._ensure_page_stack(-1 if going_up else 1):
+            self._scroll_vertically(scroll_delta)
+            return True
+        return True
+
+    def _document_row_indices(self) -> list[int]:
+        if not self._document or self._document.page_count == 0:
+            return []
+        return list(range(0, self._document.page_count, self._page_step()))
+
+    def _document_row_height(self, page_index: int) -> float:
+        if not self._document:
+            return 0.0
+        zoom = self._effective_zoom()
+        height = self._document.get_page_rect(page_index).height * zoom
+        right = page_index + 1
+        if self._facing_mode and right < self._document.page_count:
+            height = max(
+                height,
+                self._document.get_page_rect(right).height * zoom,
+            )
+        return max(1.0, height)
+
+    def _document_scroll_length(self) -> float:
+        indices = self._document_row_indices()
+        if not indices:
+            return 0.0
+        total = 0.0
+        last = len(indices) - 1
+        for i, index in enumerate(indices):
+            total += self._document_row_height(index)
+            if i < last:
+                total += PAGE_STACK_GAP_PX
+        return total
+
+    def _document_row_start(self, page_index: int) -> float:
+        offset = 0.0
+        for index in self._document_row_indices():
+            if index >= page_index:
+                return offset
+            offset += self._document_row_height(index) + PAGE_STACK_GAP_PX
+        return offset
+
+    def _document_scroll_offset(self) -> float:
+        if not self._document or self._document.page_count == 0:
+            return 0.0
+        local = float(self._effective_scroll_value())
+        if self._page_stack_mode == "prev" and self._page_stack_index >= 0:
+            return self._document_row_start(self._page_stack_index) + local
+        return self._document_row_start(self._current_index) + local
+
+    def _sync_document_scrollbar(self, *_args) -> None:
+        if not hasattr(self, "_doc_scroll"):
+            return
+        has_pages = bool(self._document and self._document.page_count > 0)
+        self._doc_scroll.setVisible(has_pages)
+        if not has_pages:
+            return
+        viewport_h = max(1, self.scroll_area.viewport().height())
+        total = self._document_scroll_length()
+        maximum = max(0, int(round(total - viewport_h)))
+        value = max(0, min(maximum, int(round(self._document_scroll_offset()))))
+        self._doc_scroll_syncing = True
+        self._doc_scroll.setRange(0, maximum)
+        self._doc_scroll.setPageStep(max(1, viewport_h))
+        self._doc_scroll.setSingleStep(ARROW_SCROLL_STEP)
+        self._doc_scroll.setValue(value)
+        self._doc_scroll_syncing = False
+
+    def _on_doc_scroll_changed(self, value: int) -> None:
+        if self._doc_scroll_syncing:
+            return
+        self._jump_to_document_offset(value)
+
+    def _jump_to_document_offset(self, offset: float) -> None:
+        if not self._document or self._document.page_count == 0:
+            return
+        indices = self._document_row_indices()
+        if not indices:
+            return
+        viewport_h = max(1, self.scroll_area.viewport().height())
+        cursor = 0.0
+        target_page = indices[-1]
+        local = 0.0
+        last = len(indices) - 1
+        for i, index in enumerate(indices):
+            height = self._document_row_height(index)
+            span = height if i == last else height + PAGE_STACK_GAP_PX
+            if offset < cursor + span or i == last:
+                target_page = index
+                local = min(max(0.0, offset - cursor), max(0.0, height - viewport_h))
+                break
+            cursor += span
+        self.set_current_index(
+            target_page,
+            local_scroll=int(round(local)),
+        )
 
     def _apply_scroll_resize_mode(self) -> None:
         self.scroll_area.setWidgetResizable(False)
@@ -2099,12 +2605,15 @@ class PageViewer(QWidget):
     def _update_preview_stack(self) -> None:
         has_pages = bool(self._document and self._document.page_count > 0)
         self.preview_stack.setCurrentIndex(1 if has_pages else 0)
+        self._sync_document_scrollbar()
 
     def _render_current_page_if_fitting(self) -> None:
-        if self._fit_mode and not self._rendering:
+        if self._fit_mode and not self._rendering and not self._page_stack_mode:
             self._render_current_page()
 
     def _sync_spread_host_size(self) -> None:
+        if self._page_stack_mode:
+            return
         left_w = max(0, self.page_canvas.width())
         left_h = max(0, self.page_canvas.height())
         self.page_canvas.move(0, 0)
@@ -2128,6 +2637,8 @@ class PageViewer(QWidget):
     def _render_current_page(self) -> None:
         if self._rendering:
             return
+        if self._page_stack_mode:
+            self._discard_page_stack()
         self._rendering = True
         try:
             self._apply_scroll_resize_mode()
@@ -2182,6 +2693,7 @@ class PageViewer(QWidget):
 
             self._sync_spread_host_size()
             self._apply_search_highlights()
+            self._apply_review_rects()
             self._apply_text_highlights_overlay()
             self._update_preview_stack()
         finally:

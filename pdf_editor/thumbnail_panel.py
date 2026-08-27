@@ -88,15 +88,28 @@ def _selection_header_text(indices: list[int]) -> str:
     return f"선택한 페이지 {count}개"
 
 
+def _scoped_page_action_label(verb: str, indices: list[int]) -> str:
+    count = len(indices)
+    if count <= 0:
+        return verb
+    if count == 1:
+        return f"{indices[0] + 1}페이지 {verb}"
+    return f"선택한 {count}개 페이지 {verb}"
+
+
+def _pii_remove_action_label(indices: list[int]) -> str:
+    return _scoped_page_action_label("개인정보 제거", indices)
+
+
 def _selection_action_label(verb: str, indices: list[int], *, particle: str = "") -> str:
-    """Build labels like '3페이지 삭제' / '선택한 3페이지를 이미지로 저장'."""
+    """Build labels like '3페이지 삭제' / '선택한 3개 페이지를 이미지로 저장'."""
     count = len(indices)
     if count <= 0:
         return verb
     if count == 1:
         target = f"{indices[0] + 1}페이지"
     else:
-        target = f"선택한 {count}페이지"
+        target = f"선택한 {count}개 페이지"
     if particle:
         return f"{target}{particle}{verb}"
     return f"{target} {verb}"
@@ -1585,9 +1598,24 @@ class ThumbnailListWidget(QListWidget):
             self._menu_page_index = self.currentRow()
         else:
             self._menu_page_index = -1
-        act_print_page = menu.addAction("해당 페이지 인쇄")
-        act_print_page.setEnabled(self._menu_page_index >= 0)
-        act_print_page.triggered.connect(lambda: self.context_action.emit("print_page"))
+        menu_indices = self._effective_menu_indices()
+        act_pii_pages = menu.addAction(_pii_remove_action_label(menu_indices))
+        act_pii_pages.setEnabled(bool(menu_indices))
+        act_pii_pages.triggered.connect(
+            lambda: self.context_action.emit("remove_pii_pages")
+        )
+        act_pii_all = menu.addAction("전체 페이지 개인정보 제거")
+        act_pii_all.setEnabled(self.count() > 0)
+        act_pii_all.triggered.connect(
+            lambda: self.context_action.emit("remove_pii_all")
+        )
+
+        menu.addSeparator()
+        act_print_pages = menu.addAction(_scoped_page_action_label("인쇄", menu_indices))
+        act_print_pages.setEnabled(bool(menu_indices))
+        act_print_pages.triggered.connect(
+            lambda: self.context_action.emit("print_pages")
+        )
         act_print_all = menu.addAction("전체 페이지 인쇄")
         act_print_all.setEnabled(self.count() > 0)
         act_print_all.triggered.connect(lambda: self.context_action.emit("print_all"))
@@ -1615,8 +1643,9 @@ class ThumbnailPanel(QWidget):
     copy_pages_requested = pyqtSignal(list)
     cut_pages_requested = pyqtSignal(list)
     paste_pages_requested = pyqtSignal(int)
-    print_page_requested = pyqtSignal(int)
+    print_pages_requested = pyqtSignal(list)
     print_all_requested = pyqtSignal()
+    remove_pii_requested = pyqtSignal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -2194,14 +2223,18 @@ class ThumbnailPanel(QWidget):
             self.blank_page_requested.emit(self.resolve_paste_index())
         elif action == "export_images":
             self.export_images_requested.emit(indices or [self.current_index()])
-        elif action == "print_page":
-            page_index = getattr(self.list_widget, "_menu_page_index", -1)
-            if page_index < 0:
-                page_index = self.current_index()
-            if page_index >= 0:
-                self.print_page_requested.emit(page_index)
+        elif action == "print_pages":
+            print_indices = self.list_widget._effective_menu_indices()
+            if print_indices:
+                self.print_pages_requested.emit(print_indices)
         elif action == "print_all":
             self.print_all_requested.emit()
+        elif action == "remove_pii_pages":
+            pii_indices = self.list_widget._effective_menu_indices()
+            if pii_indices:
+                self.remove_pii_requested.emit(pii_indices)
+        elif action == "remove_pii_all":
+            self.remove_pii_requested.emit(None)
 
     def _insert_index_after_current(self) -> int:
         if self.list_widget.count() == 0:

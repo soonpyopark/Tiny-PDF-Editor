@@ -74,7 +74,12 @@ from pdf_editor.print_dialog import DocumentPrintDialog
 from pdf_editor.page_viewer import PageViewer
 from pdf_editor.page_number_dialog import PageNumberDialog
 from pdf_editor.reduce_size_dialog import ReduceSizeDialog
-from pdf_editor.pii_remove import redact_document_bytes
+from pdf_editor.pii_remove import (
+    PiiHit,
+    format_pii_count,
+    redact_document_bytes,
+    tightened_hit_rects,
+)
 from pdf_editor.pii_remove_dialog import PiiRemoveDialog
 from pdf_editor.merge_pdf_dialog import MergePdfDialog
 from pdf_editor.export_images_dialog import (
@@ -699,8 +704,9 @@ class DocumentTab(QWidget):
     self.thumbnails.copy_pages_requested.connect(self._on_copy_pages)
     self.thumbnails.cut_pages_requested.connect(self._on_cut_pages)
     self.thumbnails.paste_pages_requested.connect(self._on_paste_pages)
-    self.thumbnails.print_page_requested.connect(self._on_print_page)
+    self.thumbnails.print_pages_requested.connect(self._on_print_pages)
     self.thumbnails.print_all_requested.connect(self._on_print_all)
+    self.thumbnails.remove_pii_requested.connect(self._on_remove_pii)
     self.thumbnails.thumb_scale_changed.connect(
       lambda _scale: self._apply_panel_width_limits()
     )
@@ -1300,22 +1306,28 @@ class DocumentTab(QWidget):
       self.viewer.refresh()
     self._notify_history_changed()
 
-  def _on_print_page(self, page_index: int) -> None:
+  def _on_print_pages(self, page_indices: list) -> None:
     window = self.window()
     opener = getattr(window, "_open_print_dialog", None)
-    if callable(opener):
-      opener(
-        self,
-        title="해당 페이지 인쇄",
-        page_from=page_index + 1,
-        page_to=page_index + 1,
-      )
+    if not callable(opener) or not page_indices:
+      return
+    if len(page_indices) == 1:
+      title = f"{page_indices[0] + 1}페이지 인쇄"
+    else:
+      title = f"선택한 {len(page_indices)}개 페이지 인쇄"
+    opener(self, title=title, page_indices=page_indices)
 
   def _on_print_all(self) -> None:
     window = self.window()
     opener = getattr(window, "_open_print_dialog", None)
     if callable(opener):
       opener(self, title="전체 페이지 인쇄")
+
+  def _on_remove_pii(self, page_indices: object) -> None:
+    window = self.window()
+    opener = getattr(window, "_open_pii_remove_dialog", None)
+    if callable(opener):
+      opener(page_indices if isinstance(page_indices, list) else None)
 
   def _on_export_pdf(self, indices: list[int]) -> None:
     if not indices:
@@ -1730,7 +1742,9 @@ class MainWindow(QMainWindow):
 
     security_menu.addSeparator()
     self._act_remove_pii = QAction("개인정보 제거...", self)
-    self._act_remove_pii.triggered.connect(self._open_pii_remove_dialog)
+    self._act_remove_pii.triggered.connect(
+      lambda: self._open_pii_remove_dialog()
+    )
     security_menu.addAction(self._act_remove_pii)
 
     view_menu = self.menuBar().addMenu("보기(&V)")
@@ -2495,6 +2509,7 @@ class MainWindow(QMainWindow):
     title: str = "인쇄",
     page_from: int | None = None,
     page_to: int | None = None,
+    page_indices: list[int] | None = None,
   ) -> None:
     if not tab or tab.document.page_count == 0:
       QMessageBox.information(self, "인쇄", "인쇄할 문서가 없습니다.")
@@ -2506,6 +2521,7 @@ class MainWindow(QMainWindow):
       title=title,
       page_from=page_from,
       page_to=page_to,
+      page_indices=page_indices,
     )
     dialog.exec()
 
@@ -2546,7 +2562,36 @@ class MainWindow(QMainWindow):
       "비밀번호가 제거되었습니다. 저장하면 암호 없는 PDF로 저장됩니다."
     )
 
-  def _open_pii_remove_dialog(self) -> None:
+  def _preview_pii_hit(self, hit: PiiHit, selected: list[PiiHit]) -> None:
+    tab = self._current_tab()
+    if tab is None or tab.document.page_count == 0:
+      return
+    page_index = max(0, min(hit.page_index, tab.document.page_count - 1))
+    focus_rects = tightened_hit_rects(hit)
+    other_rects: list = []
+    for other in selected:
+      if other.page_index != page_index or other is hit:
+        continue
+      other_rects.extend(tightened_hit_rects(other))
+    tab.viewer.clear_search_highlights()
+    if focus_rects or other_rects:
+      tab.viewer.show_review_rects(
+        page_index,
+        focus_rects,
+        other_rects,
+        focus_rect=focus_rects[0] if focus_rects else None,
+      )
+    else:
+      tab.viewer.clear_review_rects()
+      tab.go_to_page(page_index)
+    tab.thumbnails.blockSignals(True)
+    tab.thumbnails.set_current_index(page_index)
+    tab.thumbnails.blockSignals(False)
+
+  def _open_pii_remove_dialog(
+    self,
+    page_indices: list[int] | None = None,
+  ) -> None:
     tab = self._current_tab()
     if tab is None or tab.document.page_count == 0:
       QMessageBox.information(
@@ -2556,8 +2601,17 @@ class MainWindow(QMainWindow):
       )
       return
     source_bytes = tab.document.save_to_bytes()
-    dialog = PiiRemoveDialog(source_bytes, parent=self)
-    if dialog.exec() != QDialog.DialogCode.Accepted:
+    dialog = PiiRemoveDialog(
+      source_bytes,
+      parent=self,
+      preview_callback=self._preview_pii_hit,
+      bytes_provider=tab.document.save_to_bytes,
+      page_indices=page_indices,
+    )
+    accepted = dialog.exec() == QDialog.DialogCode.Accepted
+    tab.viewer.clear_search_highlights()
+    tab.viewer.clear_review_rects()
+    if not accepted:
       return
     hits = dialog.selected_hits()
     style = dialog.selected_style()
@@ -2568,7 +2622,7 @@ class MainWindow(QMainWindow):
     QApplication.processEvents()
     applied = False
     try:
-      payload, count = redact_document_bytes(
+      payload, hit_count, area_count = redact_document_bytes(
         source_bytes,
         hits,
         style=style,
@@ -2576,12 +2630,13 @@ class MainWindow(QMainWindow):
       )
       tab.document.apply_reduced_payload(payload)
       applied = True
-      tab.viewer.append_log_line(f"완료: {count}개 영역을 제거했습니다.")
-      self.statusBar().showMessage(f"개인정보 제거 완료: {count}개 영역")
+      summary = format_pii_count(hit_count, area_count)
+      tab.viewer.append_log_line(f"완료: {summary}를 제거했습니다.")
+      self.statusBar().showMessage(f"개인정보 제거 완료: {summary}")
       QMessageBox.information(
         self,
         "개인정보 제거",
-        f"{count}개 영역의 원본 내용을 제거했습니다.\n"
+        f"{summary}의 원본 내용을 제거했습니다.\n"
         "저장 전에 결과를 확인하세요.",
       )
     except Exception as exc:
