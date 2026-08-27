@@ -32,6 +32,7 @@ from pdf_editor.page_numbers import (
     page_number_background_rect,
     page_number_insert_geometry,
     parse_page_number_options,
+    parse_wipe_rects,
     serialize_page_number_options,
 )
 
@@ -1438,6 +1439,10 @@ class PdfDocument:
             self._require_page_number_font(sample)
         if record_undo:
             self._record_undo_checkpoint()
+        wipe_history = [
+            self._collect_page_number_wipe_rects(self._doc[page_index])
+            for page_index in range(len(self._doc))
+        ]
         removed = self._remove_page_numbers_impl()
         if options.remove_only:
             if removed:
@@ -1456,7 +1461,12 @@ class PdfDocument:
                 options.prefix,
                 options.suffix,
             )
-            if self._insert_page_number(page_index, text, options):
+            if self._insert_page_number(
+                page_index,
+                text,
+                options,
+                extra_wipe_rects=wipe_history[page_index],
+            ):
                 applied += 1
         if applied or removed:
             self._touch()
@@ -1467,6 +1477,7 @@ class PdfDocument:
         page_index: int,
         text: str,
         options: PageNumberOptions,
+        extra_wipe_rects: list[fitz.Rect] | None = None,
     ) -> bool:
         if not text.strip() or not (0 <= page_index < len(self._doc)):
             return False
@@ -1512,7 +1523,12 @@ class PdfDocument:
         )
         if not written:
             return False
-        self._add_page_number_marker(page, marker, options)
+        self._add_page_number_marker(
+            page,
+            marker,
+            options,
+            extra_wipe_rects=extra_wipe_rects,
+        )
         return True
 
     def load_applied_page_number_options(self) -> PageNumberOptions | None:
@@ -1654,36 +1670,76 @@ class PdfDocument:
         return max(leftovers, key=lambda piece: piece.get_area())
 
     @staticmethod
-    def _add_page_number_marker(page, rect: fitz.Rect, options: PageNumberOptions) -> None:
+    def _add_page_number_marker(
+        page,
+        rect: fitz.Rect,
+        options: PageNumberOptions,
+        extra_wipe_rects: list[fitz.Rect] | None = None,
+    ) -> None:
         annot = page.add_rect_annot(rect)
         annot.set_colors(stroke=None, fill=None)
         annot.set_border(width=0)
         annot.set_opacity(0)
+        wipe_rects = [
+            (float(item.x0), float(item.y0), float(item.x1), float(item.y1))
+            for item in (extra_wipe_rects or [])
+            if not item.is_empty
+        ]
+        wipe_rects.append((float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)))
         annot.set_info(
             title=PAGE_NUMBER_ANNOT_TITLE,
-            content=serialize_page_number_options(options),
+            content=serialize_page_number_options(options, wipe_rects=wipe_rects[-12:]),
         )
         annot.set_flags(2 | 32)  # Hidden | NoView
         annot.update()
+
+    @staticmethod
+    def _inflate_rect(rect: fitz.Rect, pad: float) -> fitz.Rect:
+        grown = fitz.Rect(rect)
+        grown.x0 -= pad
+        grown.y0 -= pad
+        grown.x1 += pad
+        grown.y1 += pad
+        grown.normalize()
+        return grown
+
+    def _collect_page_number_wipe_rects(self, page) -> list[fitz.Rect]:
+        rects: list[fitz.Rect] = []
+        for annot in PdfDocument._iter_page_annots(page):
+            if not is_page_number_annot(annot):
+                continue
+            rects.append(fitz.Rect(annot.rect))
+            content = ((annot.info or {}).get("content") or "")
+            rects.extend(parse_wipe_rects(content))
+        unique: list[fitz.Rect] = []
+        for rect in rects:
+            if rect.is_empty or rect.is_infinite:
+                continue
+            rect.normalize()
+            if any(abs(existing.x0 - rect.x0) < 0.4 and abs(existing.y0 - rect.y0) < 0.4
+                   and abs(existing.x1 - rect.x1) < 0.4 and abs(existing.y1 - rect.y1) < 0.4
+                   for existing in unique):
+                continue
+            unique.append(rect)
+        return unique
 
     def _remove_page_numbers_impl(self) -> int:
         changed = 0
         for page_index in range(len(self._doc)):
             page = self._doc[page_index]
-            rects: list[fitz.Rect] = []
+            rects = self._collect_page_number_wipe_rects(page)
             markers = [
                 annot
                 for annot in PdfDocument._iter_page_annots(page)
                 if is_page_number_annot(annot)
             ]
-            if not markers:
+            if not markers and not rects:
                 continue
             for annot in markers:
-                rects.append(fitz.Rect(annot.rect))
                 page.delete_annot(annot)
             for rect in rects:
-                fill = self._sample_background_color(page, rect)
-                page.add_redact_annot(rect, fill=fill)
+                wipe = self._inflate_rect(rect, 3.0)
+                page.add_redact_annot(wipe, fill=None)
             try:
                 page.apply_redactions(images=getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0))
             except TypeError:

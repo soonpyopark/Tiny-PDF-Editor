@@ -90,26 +90,53 @@ class PageNumberOptions:
         return self.position == "none"
 
 
-def serialize_page_number_options(options: PageNumberOptions) -> str:
-    return json.dumps(
-        {
-            "v": 1,
-            "position": options.position,
-            "style": options.style,
-            "add_hyphens": options.add_hyphens,
-            "prefix": options.prefix,
-            "suffix": options.suffix,
-            "start_page": options.start_page,
-            "start_number": options.start_number,
-            "font_size": options.font_size,
-            "color_rgb": list(options.color_rgb),
-            "background_rgb": list(options.background_rgb),
-            "background_transparent": options.background_transparent,
-            "margin_x_mm": options.margin_x_mm,
-            "margin_y_mm": options.margin_y_mm,
-        },
-        separators=(",", ":"),
-    )
+def serialize_page_number_options(
+    options: PageNumberOptions,
+    wipe_rects: list[tuple[float, float, float, float]] | None = None,
+) -> str:
+    payload = {
+        "v": 1,
+        "position": options.position,
+        "style": options.style,
+        "add_hyphens": options.add_hyphens,
+        "prefix": options.prefix,
+        "suffix": options.suffix,
+        "start_page": options.start_page,
+        "start_number": options.start_number,
+        "font_size": options.font_size,
+        "color_rgb": list(options.color_rgb),
+        "background_rgb": list(options.background_rgb),
+        "background_transparent": options.background_transparent,
+        "margin_x_mm": options.margin_x_mm,
+        "margin_y_mm": options.margin_y_mm,
+    }
+    if wipe_rects:
+        payload["wipe_rects"] = [list(rect) for rect in wipe_rects]
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def parse_wipe_rects(content: str) -> list[fitz.Rect]:
+    text = (content or "").strip()
+    if not text.startswith("{"):
+        return []
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    raw = data.get("wipe_rects") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        return []
+    rects: list[fitz.Rect] = []
+    for item in raw:
+        try:
+            rect = fitz.Rect(float(item[0]), float(item[1]), float(item[2]), float(item[3]))
+        except (TypeError, ValueError, IndexError):
+            continue
+        if rect.is_empty or rect.is_infinite:
+            continue
+        rect.normalize()
+        rects.append(rect)
+    return rects
 
 
 def parse_page_number_options(content: str) -> PageNumberOptions | None:
