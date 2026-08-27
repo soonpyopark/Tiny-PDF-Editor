@@ -1002,6 +1002,8 @@ class PageViewer(QWidget):
         self._review_focus_rects: list[fitz.Rect] = []
         self._cross_page_selection: CrossPageSelection | None = None
         self._awaiting_continuation = False
+        self._doc_scroll = None
+        self._doc_scroll_syncing = False
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -1049,7 +1051,6 @@ class PageViewer(QWidget):
         self._scroll_target: int | None = None
         self._page_stack_mode: str | None = None
         self._page_stack_index = -1
-        self._doc_scroll_syncing = False
 
         self._facing_mode = False
         self._search_page_index = -1
@@ -2313,7 +2314,7 @@ class PageViewer(QWidget):
         return self._document_row_start(self._current_index) + local
 
     def _sync_document_scrollbar(self, *_args) -> None:
-        if not hasattr(self, "_doc_scroll"):
+        if self._doc_scroll is None or self._doc_scroll_syncing:
             return
         has_pages = bool(self._document and self._document.page_count > 0)
         self._doc_scroll.setVisible(has_pages)
