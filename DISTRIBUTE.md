@@ -59,6 +59,8 @@ macOS에서는 다음 기능이 Windows 전용입니다.
 - macOS 12 이상, Apple Silicon (arm64)
 - 일반 기능은 오프라인 사용 가능
 - 업데이트 확인만 인터넷 필요 (GitHub Releases)
+- 한글 쪽 번호·텍스트 덮어쓰기: 시스템에 설치된 한글 글꼴 필요
+  (Windows 맑은 고딕 등, macOS Apple SD Gothic Neo). 글꼴은 배포판에 포함하지 않습니다.
 - HWP/HWPX (Windows): 한컴 한글 2020/2022/2024 설치 필요
 
 ## 주의 사항

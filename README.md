@@ -1,6 +1,6 @@
-# Tiny PDF Editor v1.1.7
+# Tiny PDF Editor v1.1.8
 
-**포터블 PDF 편집기**입니다. Windows(exe·MSI·포터블 zip)와 macOS(`.app`·DMG) 배포판을 제공하며, 페이지 병합·편집·검색·용량 줄이기·개인정보 제거 등 일상적인 PDF 작업을 한 프로그램에서 처리할 수 있습니다.
+**포터블 PDF 편집기**입니다. Windows(exe·MSI·포터블 zip)와 macOS(`.app`·DMG) 배포판을 제공하며, 페이지 병합·편집·검색·용량 줄이기·쪽 번호 매기기·개인정보 제거 등 일상적인 PDF 작업을 한 프로그램에서 처리할 수 있습니다.
 
 - 개발자 홈페이지: [https://note4all.tistory.com](https://note4all.tistory.com)
 - GitHub: [https://github.com/soonpyopark/Tiny-PDF-Editor](https://github.com/soonpyopark/Tiny-PDF-Editor)
@@ -10,15 +10,15 @@
 
 ### Windows — 포터블 zip
 
-1. 릴리스 또는 배포 페이지에서 `Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS_portable.zip`을 받습니다.
-2. 압축을 푼 뒤, 폴더 안의 `Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS.exe`를 실행합니다.
+1. 릴리스 또는 배포 페이지에서 `Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS_portable.zip`을 받습니다.
+2. 압축을 푼 뒤, 폴더 안의 `Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.exe`를 실행합니다.
 3. `_internal` 폴더와 exe는 **같은 위치**에 있어야 합니다. exe만 따로 복사하면 실행되지 않습니다.
 
 USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
 ### Windows — MSI 설치판
 
-1. `Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS.msi`를 더블 클릭해 설치합니다.
+1. `Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.msi`를 더블 클릭해 설치합니다.
 2. 관리자 권한 없이 **현재 사용자** 계정에 설치됩니다 (`%LocalAppData%`).
 3. 설치 시 PDF 파일 연결(HKCU)과 시작 메뉴·바탕화면 바로가기가 등록됩니다.
 4. 설치 과정의 사용권 계약에는 [https://note4all.tistory.com](https://note4all.tistory.com)이 표시됩니다.
@@ -26,7 +26,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
 ### macOS — DMG / .app
 
-1. `Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS.dmg`를 열어 `Tiny PDF Editor.app`을 **응용 프로그램** 폴더로 복사합니다.
+1. `Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.dmg`를 열어 `Tiny PDF Editor.app`을 **응용 프로그램** 폴더로 복사합니다.
 2. 앱을 실행합니다. (서명·공증되지 않은 빌드이므로 최초 실행 시 Gatekeeper 경고가 날 수 있습니다.)
 3. 경고가 뜨면 앱을 **Control-클릭 → 열기**, 또는 **시스템 설정 → 개인정보 보호 및 보안**에서 허용하세요.
 
@@ -38,7 +38,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 - **macOS**: macOS 12 이상, Apple Silicon (arm64)
 - 일반 편집은 **오프라인**으로 사용 가능합니다.
 - **업데이트 확인**(`도움말` 메뉴)만 GitHub Releases 조회를 위해 인터넷이 필요합니다.
-- 한글 텍스트 덮어쓰기·개인정보 라벨 표시 시 시스템에 설치된 한글 글꼴이 사용됩니다.
+- 한글 텍스트 덮어쓰기·쪽 번호 매기기·개인정보 라벨 표시 시 시스템에 설치된 한글 글꼴이 사용됩니다. (Windows: 맑은 고딕 등, macOS: Apple SD Gothic Neo)
 - HWP/HWPX 열기(Windows): PC에 **한컴 오피스 한글**(2020 / 2022 / 2024)이 설치되어 있어야 합니다.
 
 > Windows Defender / macOS Gatekeeper에서 처음 실행 시 경고가 나올 수 있습니다. 직접 빌드하거나 신뢰하는 출처의 배포본이라면 안내된 방법으로 실행을 허용하세요.
@@ -56,7 +56,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 - **PDF 병합...**: 여러 파일을 골라 순서·미리보기를 확인한 뒤 새 PDF로 병합합니다. (HWP/HWPX 포함, Windows+한컴)
 - **저장** (`Ctrl+S`) / **다른 이름으로 저장...** (`Ctrl+Shift+S`)
 - **PDF를 이미지로 저장...**: 문서 페이지를 PNG/JPEG 등으로보냅니다.
-- **인쇄...** (`Ctrl+P`): 프린터 선택 대화상자에서 장치·범위를 고른 뒤 **직접 인쇄**합니다.
+- **인쇄...** (`Ctrl+P`): 프린터 선택 대화상자에서 장치·범위를 고른 뒤 **직접 인쇄**합니다. 썸네일 우클릭으로 **해당 페이지 인쇄** 또는 **전체 페이지 인쇄**도 할 수 있습니다.
 - **PDF 파일 연결...** (Windows): 이 프로그램을 PDF 연결 프로그램 목록에 등록하거나 해제합니다.
 - **탭**: 여러 PDF 문서를 동시에 열기. 탭을 닫을 때 저장 여부를 묻습니다.
 
@@ -79,6 +79,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 - **회전**: 시계/반시계 방향
 - **페이지 보내기**: 선택 페이지만 새 PDF로 저장
 - **이미지로 보내기**: 선택 페이지를 PNG/JPEG로 저장
+- **해당 페이지 인쇄** / **전체 페이지 인쇄**: 썸네일 우클릭
 - **썸네일 크기**: `+` / `-` 버튼으로 조절
 - **패널 접기**: 썸네일·형광펜 탭 아이콘을 **같은 탭에서 다시 클릭**하거나, 패널 상단의 접기 탭 버튼으로 왼쪽 패널을 숨기고 미리보기 영역을 넓힐 수 있습니다.
 
@@ -106,11 +107,17 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
 ### 편집
 
-- **되돌리기 / 재실행** (`Ctrl+Z`, `Ctrl+Y`): 페이지 삽입·삭제·회전·붙여넣기·텍스트 덮어쓰기·개인정보 제거 등
+- **되돌리기 / 재실행** (`Ctrl+Z`, `Ctrl+Y`): 페이지 삽입·삭제·회전·붙여넣기·텍스트 덮어쓰기·쪽 번호 매기기·개인정보 제거 등
 - **텍스트 검색** (`Ctrl+F`, `F3` / `Shift+F3`): 본문 텍스트 검색, 하이라이트, `[ 현재 / 전체 ]` 결과 표시
 - **선택 페이지 삭제** (`Delete`)
 - **모든 페이지 시계방향 회전** / **모든 페이지 반시계방향 회전**
 - **용량 줄이기** (`편집` 메뉴): PDF 파일 크기를 줄이는 도구 (아래 참고)
+- **쪽 번호 매기기** (`편집` 메뉴): 위·아래 × 왼쪽/가운데/오른쪽에 쪽 번호를 넣거나, **쪽 번호 없음**으로 이 프로그램이 넣은 번호만 제거합니다.
+  - 숫자 스타일(`1, 2, 3` / `i, ii, iii` / `I, II, III`), 줄표, 접두사·접미사
+  - 시작 위치·시작 번호, 글자 크기, 쪽 번호 색상, 배경 색상(또는 투명)
+  - 가로·세로 여백(0~30mm). 가운데 위치에서는 가로 여백을 쓰지 않습니다.
+  - 한글 접두·접미는 시스템에 설치된 한글 글꼴이 필요합니다. 없으면 안내 후 적용하지 않습니다.
+  - 원본 PDF에 이미 있는 쪽 번호는 지우지 않습니다. 흰 배경으로 가리거나, 투명 배경이면 겹쳐 보일 수 있습니다.
 
 ### 도움말
 
@@ -220,8 +227,8 @@ npm run build:dist:portable
 npm run build:release
 ```
 
-산출물 예: `msi/Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS.msi` 와
-`msi/Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS_portable.zip` (스탬프 공유).
+산출물 예: `msi/Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.msi` 와
+`msi/Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS_portable.zip` (스탬프 공유).
 앱에 심어진 `APP_BUILD_STAMP`도 이 시각과 같아, 같은 태그로 재배포해도 업데이트 확인이 새 빌드를 구분합니다.
 
 ### macOS 배포판 빌드 (Apple Silicon)
@@ -242,8 +249,8 @@ DMG 파일명과 동일한 `APP_BUILD_STAMP`를 앱에 심으며, 업데이트 �
 
 ```
 dist/
-  Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS/
-    Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS.exe
+  Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS/
+    Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.exe
     _internal/          (실행에 필요한 라이브러리)
     LICENSE
     README.md
@@ -255,20 +262,20 @@ dist/
 ```
 dist/
   Tiny PDF Editor.app
-  Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS/
+  Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS/
     Tiny PDF Editor.app
     LICENSE
     README.md
     DISTRIBUTE.md
-  Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS.dmg
+  Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.dmg
 ```
 
 **MSI / 포터블 zip 빌드 결과** (`msi/`):
 
 ```
 msi/
-  Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS.msi
-  Tiny PDF Editor v1.1.7_YYMMDD_HHMMSS_portable.zip
+  Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.msi
+  Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS_portable.zip
 ```
 
 포터블 빌드 폴더는 최근 **3개**만 유지됩니다.  

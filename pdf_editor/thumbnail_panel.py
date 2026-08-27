@@ -361,6 +361,7 @@ class ThumbnailListWidget(QListWidget):
         self.viewport().installEventFilter(self)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
+        self._menu_page_index = -1
         self.setItemDelegate(_ThumbnailListDelegate(self))
         self.setStyleSheet(
             """
@@ -1576,6 +1577,21 @@ class ThumbnailListWidget(QListWidget):
         act_redo.setEnabled(can_redo)
         act_redo.triggered.connect(lambda: self.context_action.emit("redo"))
 
+        menu.addSeparator()
+        item = self.itemAt(pos)
+        if item is not None:
+            self._menu_page_index = self.row(item)
+        elif 0 <= self.currentRow() < self.count():
+            self._menu_page_index = self.currentRow()
+        else:
+            self._menu_page_index = -1
+        act_print_page = menu.addAction("해당 페이지 인쇄")
+        act_print_page.setEnabled(self._menu_page_index >= 0)
+        act_print_page.triggered.connect(lambda: self.context_action.emit("print_page"))
+        act_print_all = menu.addAction("전체 페이지 인쇄")
+        act_print_all.setEnabled(self.count() > 0)
+        act_print_all.triggered.connect(lambda: self.context_action.emit("print_all"))
+
         menu.exec(self.mapToGlobal(pos))
 
         self._show_drop_indicator(None)
@@ -1599,6 +1615,8 @@ class ThumbnailPanel(QWidget):
     copy_pages_requested = pyqtSignal(list)
     cut_pages_requested = pyqtSignal(list)
     paste_pages_requested = pyqtSignal(int)
+    print_page_requested = pyqtSignal(int)
+    print_all_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -2176,6 +2194,14 @@ class ThumbnailPanel(QWidget):
             self.blank_page_requested.emit(self.resolve_paste_index())
         elif action == "export_images":
             self.export_images_requested.emit(indices or [self.current_index()])
+        elif action == "print_page":
+            page_index = getattr(self.list_widget, "_menu_page_index", -1)
+            if page_index < 0:
+                page_index = self.current_index()
+            if page_index >= 0:
+                self.print_page_requested.emit(page_index)
+        elif action == "print_all":
+            self.print_all_requested.emit()
 
     def _insert_index_after_current(self) -> int:
         if self.list_widget.count() == 0:

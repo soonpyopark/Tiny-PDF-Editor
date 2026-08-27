@@ -72,6 +72,7 @@ from pdf_editor.password_dialog import SetPasswordDialog, prompt_pdf_password
 from pdf_editor.recent_files import RecentFilesStore
 from pdf_editor.print_dialog import DocumentPrintDialog
 from pdf_editor.page_viewer import PageViewer
+from pdf_editor.page_number_dialog import PageNumberDialog
 from pdf_editor.reduce_size_dialog import ReduceSizeDialog
 from pdf_editor.pii_remove import redact_document_bytes
 from pdf_editor.pii_remove_dialog import PiiRemoveDialog
@@ -698,6 +699,8 @@ class DocumentTab(QWidget):
     self.thumbnails.copy_pages_requested.connect(self._on_copy_pages)
     self.thumbnails.cut_pages_requested.connect(self._on_cut_pages)
     self.thumbnails.paste_pages_requested.connect(self._on_paste_pages)
+    self.thumbnails.print_page_requested.connect(self._on_print_page)
+    self.thumbnails.print_all_requested.connect(self._on_print_all)
     self.thumbnails.thumb_scale_changed.connect(
       lambda _scale: self._apply_panel_width_limits()
     )
@@ -1297,6 +1300,23 @@ class DocumentTab(QWidget):
       self.viewer.refresh()
     self._notify_history_changed()
 
+  def _on_print_page(self, page_index: int) -> None:
+    window = self.window()
+    opener = getattr(window, "_open_print_dialog", None)
+    if callable(opener):
+      opener(
+        self,
+        title="해당 페이지 인쇄",
+        page_from=page_index + 1,
+        page_to=page_index + 1,
+      )
+
+  def _on_print_all(self) -> None:
+    window = self.window()
+    opener = getattr(window, "_open_print_dialog", None)
+    if callable(opener):
+      opener(self, title="전체 페이지 인쇄")
+
   def _on_export_pdf(self, indices: list[int]) -> None:
     if not indices:
       QMessageBox.information(self, "새 파일로 저장", "저장할 페이지를 선택하세요.")
@@ -1488,6 +1508,8 @@ class MainWindow(QMainWindow):
       self._act_rotate_all_cw.setEnabled(can_add)
     if hasattr(self, "_act_rotate_all_ccw"):
       self._act_rotate_all_ccw.setEnabled(can_add)
+    if hasattr(self, "_act_page_number"):
+      self._act_page_number.setEnabled(can_add)
     self._update_window_title()
 
   def _copy_current_tab(self) -> None:
@@ -1685,6 +1707,16 @@ class MainWindow(QMainWindow):
     self._act_rotate_all_ccw = QAction("모든 페이지 반시계방향 회전", self)
     self._act_rotate_all_ccw.triggered.connect(self._rotate_all_pages_ccw)
     edit_menu.addAction(self._act_rotate_all_ccw)
+
+    edit_menu.addSeparator()
+    self._act_page_number = QWidgetAction(self)
+    page_number_btn = QPushButton("쪽 번호 매기기...")
+    page_number_btn.setFlat(True)
+    page_number_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    page_number_btn.setStyleSheet(_REDUCE_MENU_BTN_STYLE)
+    page_number_btn.clicked.connect(self._open_page_number_dialog)
+    self._act_page_number.setDefaultWidget(page_number_btn)
+    edit_menu.addAction(self._act_page_number)
 
     security_menu = self.menuBar().addMenu("보안(&S)")
 
@@ -2454,12 +2486,27 @@ class MainWindow(QMainWindow):
     return False
 
   def _print(self) -> None:
-    tab = self._current_tab()
+    self._open_print_dialog(self._current_tab())
+
+  def _open_print_dialog(
+    self,
+    tab: DocumentTab | None,
+    *,
+    title: str = "인쇄",
+    page_from: int | None = None,
+    page_to: int | None = None,
+  ) -> None:
     if not tab or tab.document.page_count == 0:
       QMessageBox.information(self, "인쇄", "인쇄할 문서가 없습니다.")
       return
     # Single-page lazy preview (safe for large PDFs). Final print uses HighResolution.
-    dialog = DocumentPrintDialog(tab.document, self, title="인쇄")
+    dialog = DocumentPrintDialog(
+      tab.document,
+      self,
+      title=title,
+      page_from=page_from,
+      page_to=page_to,
+    )
     dialog.exec()
 
   def _set_document_password(self) -> None:
@@ -2547,6 +2594,30 @@ class MainWindow(QMainWindow):
         index = tab.thumbnails.current_index()
         tab.refresh_all(keep_index=index)
         self._update_edit_actions()
+
+  def _open_page_number_dialog(self) -> None:
+    tab = self._current_tab()
+    if tab is None or tab.document.page_count == 0:
+      QMessageBox.information(self, "쪽 번호 매기기", "페이지가 있는 문서를 열어주세요.")
+      return
+    dialog = PageNumberDialog(tab.document, parent=self)
+    if dialog.exec() != QDialog.DialogCode.Accepted:
+      return
+    options = dialog.selected_options()
+    try:
+      count = tab.document.apply_page_numbers(options)
+    except Exception as exc:
+      QMessageBox.critical(self, "쪽 번호 매기기", str(exc))
+      return
+    index = tab.thumbnails.current_index()
+    tab.refresh_all(keep_index=index)
+    self._update_edit_actions()
+    if options.remove_only:
+      self.statusBar().showMessage("쪽 번호를 제거했습니다.")
+    elif count == 0:
+      QMessageBox.warning(self, "쪽 번호 매기기", "쪽 번호를 넣지 못했습니다.")
+    else:
+      self.statusBar().showMessage(f"{count}개 페이지에 쪽 번호를 넣었습니다.")
 
   def _open_reduce_size_dialog(self) -> None:
     tab = self._current_tab()

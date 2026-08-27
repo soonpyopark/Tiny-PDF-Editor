@@ -104,6 +104,8 @@ class DocumentPrintDialog(QDialog):
         parent: QWidget | None = None,
         *,
         title: str = "인쇄",
+        page_from: int | None = None,
+        page_to: int | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
@@ -117,8 +119,20 @@ class DocumentPrintDialog(QDialog):
         self._printer.setDocName(document.display_name)
         # Default to A4 so the preview matches typical KR/EU output paper.
         self._printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
-        if document.page_count > 0:
-            self._printer.setFromTo(1, document.page_count)
+        count = document.page_count
+        if count > 0 and page_from is not None:
+            start = max(1, min(int(page_from), count))
+            end = max(start, min(int(page_to if page_to is not None else start), count))
+            self._range_lo = start - 1
+            self._range_hi = end - 1
+            self._page_index = self._range_lo
+            self._printer.setPrintRange(QPrinter.PrintRange.PageRange)
+            self._printer.setFromTo(start, end)
+        else:
+            self._range_lo = 0
+            self._range_hi = max(0, count - 1)
+            if count > 0:
+                self._printer.setFromTo(1, count)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -225,13 +239,13 @@ class DocumentPrintDialog(QDialog):
         return self._document.page_count
 
     def _go_prev(self) -> None:
-        if self._page_index <= 0:
+        if self._page_index <= self._range_lo:
             return
         self._page_index -= 1
         self._refresh_preview()
 
     def _go_next(self) -> None:
-        if self._page_index >= self._page_count() - 1:
+        if self._page_index >= self._range_hi:
             return
         self._page_index += 1
         self._refresh_preview()
@@ -309,10 +323,10 @@ class DocumentPrintDialog(QDialog):
             self._btn_next.setEnabled(False)
             return
 
-        self._page_index = max(0, min(self._page_index, count - 1))
+        self._page_index = max(self._range_lo, min(self._page_index, self._range_hi))
         self._page_label.setText(f"{self._page_index + 1} / {count}")
-        self._btn_prev.setEnabled(self._page_index > 0)
-        self._btn_next.setEnabled(self._page_index < count - 1)
+        self._btn_prev.setEnabled(self._page_index > self._range_lo)
+        self._btn_next.setEnabled(self._page_index < self._range_hi)
 
         pixmap = self._pixmap_for(self._page_index)
         if pixmap.isNull():
@@ -337,7 +351,7 @@ class DocumentPrintDialog(QDialog):
             if dialog.exec() != QPrintDialog.DialogCode.Accepted:
                 return
 
-        total_guess = self._page_count()
+        total_guess = self._range_hi - self._range_lo + 1
         progress = QProgressDialog("인쇄 중…", "취소", 0, max(1, total_guess), self)
         progress.setWindowTitle("인쇄")
         progress.setWindowModality(Qt.WindowModality.WindowModal)

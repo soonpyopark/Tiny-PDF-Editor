@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import io
 import os
+import sys
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -16,6 +18,21 @@ from pdf_editor.cross_page_selection import PageSelectionSegment
 from pdf_editor.hwp_convert import (
     HWP_EXTENSIONS,
     convert_hwp_to_temp_pdf,
+)
+from pdf_editor.page_numbers import (
+    DEFAULT_PAGE_NUMBER_RGB,
+    DEFAULT_PAGE_NUMBER_SIZE,
+    PAGE_NUMBER_ANNOT_TITLE,
+    PageNumberOptions,
+    format_page_number_text,
+    infer_page_number_style,
+    infer_position_from_rect,
+    is_page_number_annot,
+    page_number_for_index,
+    page_number_background_rect,
+    page_number_insert_geometry,
+    parse_page_number_options,
+    serialize_page_number_options,
 )
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".tif", ".webp"}
@@ -1177,18 +1194,74 @@ class PdfDocument:
         return any(ord(ch) > 0x2000 for ch in text)
 
     @staticmethod
+    def _cjk_font_candidates() -> tuple[tuple[str, Path], ...]:
+        home = Path.home()
+        if sys.platform == "win32":
+            system = Path(os.environ.get("WINDIR") or r"C:\Windows") / "Fonts"
+            user = Path(os.environ.get("LOCALAPPDATA") or "") / "Microsoft" / "Windows" / "Fonts"
+            names = (
+                ("malgun", "malgun.ttf"),
+                ("gulim", "gulim.ttc"),
+                ("batang", "batang.ttc"),
+            )
+            return tuple(
+                (name, folder / filename)
+                for name, filename in names
+                for folder in (system, user)
+                if folder.name
+            )
+        if sys.platform == "darwin":
+            return (
+                ("apple-sd", Path("/System/Library/Fonts/AppleSDGothicNeo.ttc")),
+                ("apple-sd", Path("/System/Library/Fonts/Supplemental/AppleSDGothicNeo.ttc")),
+                ("apple-sd", Path("/Library/Fonts/AppleSDGothicNeo.ttc")),
+                ("apple-sd", home / "Library/Fonts/AppleSDGothicNeo.ttc"),
+                ("applegothic", Path("/System/Library/Fonts/Supplemental/AppleGothic.ttf")),
+                ("applegothic", Path("/Library/Fonts/AppleGothic.ttf")),
+                ("applegothic", home / "Library/Fonts/AppleGothic.ttf"),
+            )
+        return (
+            ("nanum", Path("/usr/share/fonts/truetype/nanum/NanumGothic.ttf")),
+            ("noto", Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")),
+            ("noto", Path("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc")),
+        )
+
+    @staticmethod
+    @functools.lru_cache(maxsize=1)
+    def _find_installed_cjk_font() -> tuple[str, str] | None:
+        for name, path in PdfDocument._cjk_font_candidates():
+            if path.is_file():
+                return name, str(path)
+        return None
+
+    @staticmethod
     def _resolve_edit_font(text: str) -> tuple[str, str | None]:
-        """Return (fontname, fontfile). Uses a Korean-capable font for CJK text."""
-        if PdfDocument._needs_cjk_font(text):
-            for name, path in (
-                ("malgun", r"C:\\Windows\\Fonts\\malgun.ttf"),
-                ("gulim", r"C:\\Windows\\Fonts\\gulim.ttc"),
-                ("batang", r"C:\\Windows\\Fonts\\batang.ttc"),
-            ):
-                if os.path.exists(path):
-                    return name, path
-            return "korea", None
-        return "helv", None
+        """Return (fontname, fontfile). Uses an installed Korean font for CJK text."""
+        if not PdfDocument._needs_cjk_font(text):
+            return "helv", None
+        found = PdfDocument._find_installed_cjk_font()
+        if found is None:
+            return "", None
+        return found[0], found[1]
+
+    @staticmethod
+    def _require_page_number_font(text: str) -> tuple[str, str | None]:
+        fontname, fontfile = PdfDocument._resolve_edit_font(text)
+        if PdfDocument._needs_cjk_font(text) and not fontfile:
+            raise RuntimeError(
+                "이 컴퓨터에 한글 폰트가 없습니다.\n"
+                "Windows는 맑은 고딕, macOS는 Apple SD Gothic Neo가 있어야 "
+                "한글 쪽 번호를 넣을 수 있습니다."
+            )
+        if fontfile:
+            try:
+                fitz.Font(fontfile=fontfile)
+            except Exception as exc:
+                raise RuntimeError(
+                    "한글 폰트는 찾았지만 열 수 없습니다.\n"
+                    f"{fontfile}"
+                ) from exc
+        return fontname, fontfile
 
     def find_text_line_at(
         self, page_index: int, x: float, y: float
@@ -1328,6 +1401,239 @@ class PdfDocument:
             page.insert_text(origin, text, fontsize=size, color=rgb, fontname="helv")
         except Exception:
             pass
+
+    def apply_page_numbers(
+        self,
+        options: PageNumberOptions,
+        *,
+        record_undo: bool = True,
+    ) -> int:
+        """Insert or remove page numbers. Returns the number of pages changed."""
+        if len(self._doc) == 0:
+            return 0
+        if not options.remove_only:
+            sample = format_page_number_text(
+                options.start_number,
+                options.style,
+                options.add_hyphens,
+                options.prefix,
+                options.suffix,
+            )
+            self._require_page_number_font(sample)
+        if record_undo:
+            self._record_undo_checkpoint()
+        removed = self._remove_page_numbers_impl()
+        if options.remove_only:
+            if removed:
+                self._touch()
+            return removed
+
+        applied = 0
+        for page_index in range(len(self._doc)):
+            number = page_number_for_index(page_index, options)
+            if number is None:
+                continue
+            text = format_page_number_text(
+                number,
+                options.style,
+                options.add_hyphens,
+                options.prefix,
+                options.suffix,
+            )
+            if self._insert_page_number(page_index, text, options):
+                applied += 1
+        if applied or removed:
+            self._touch()
+        return applied
+
+    def _insert_page_number(
+        self,
+        page_index: int,
+        text: str,
+        options: PageNumberOptions,
+    ) -> bool:
+        if not text.strip() or not (0 <= page_index < len(self._doc)):
+            return False
+        page = self._doc[page_index]
+        fontname, fontfile = self._require_page_number_font(text)
+        try:
+            font = fitz.Font(fontfile=fontfile) if fontfile else fitz.Font("helv")
+        except Exception:
+            if self._needs_cjk_font(text):
+                return False
+            font = fitz.Font("helv")
+            fontname, fontfile = "helv", None
+        text_width = float(font.text_length(text, fontsize=options.font_size))
+        origin, marker = page_number_insert_geometry(
+            page,
+            text_width,
+            options.font_size,
+            options.position,
+            options.margin_x_mm,
+            options.margin_y_mm,
+        )
+        marker = page_number_background_rect(marker, options.font_size)
+        if not options.background_transparent:
+            try:
+                page.draw_rect(
+                    marker,
+                    color=None,
+                    fill=options.background_rgb,
+                    width=0,
+                    overlay=True,
+                )
+            except Exception:
+                page.draw_rect(marker, fill=options.background_rgb, overlay=True)
+        written = self._write_page_number_text(
+            page,
+            origin,
+            text,
+            options.font_size,
+            options.color_rgb,
+            fontname,
+            fontfile,
+            rotate=page.rotation,
+        )
+        if not written:
+            return False
+        self._add_page_number_marker(page, marker, options)
+        return True
+
+    def load_applied_page_number_options(self) -> PageNumberOptions | None:
+        """Return settings stored on existing page-number markers, if any."""
+        for page_index in range(len(self._doc)):
+            page = self._doc[page_index]
+            for annot in PdfDocument._iter_page_annots(page):
+                if not is_page_number_annot(annot):
+                    continue
+                content = ((annot.info or {}).get("content") or "").strip()
+                parsed = parse_page_number_options(content)
+                if parsed is not None:
+                    return parsed
+                return self._infer_page_number_options(page_index, page, annot, content)
+        return None
+
+    def _infer_page_number_options(
+        self,
+        page_index: int,
+        page,
+        annot,
+        content: str,
+    ) -> PageNumberOptions:
+        style, add_hyphens, displayed = infer_page_number_style(content)
+        start_page = page_index + 1
+        font_size = DEFAULT_PAGE_NUMBER_SIZE
+        color_rgb = DEFAULT_PAGE_NUMBER_RGB
+        clip = fitz.Rect(annot.rect)
+        try:
+            data = page.get_text("dict", clip=clip)
+        except Exception:
+            data = {}
+        for block in data.get("blocks", []):
+            if block.get("type", 0) != 0:
+                continue
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    text = (span.get("text") or "").strip()
+                    if not text:
+                        continue
+                    font_size = float(span.get("size") or font_size)
+                    color_rgb = self._srgb_int_to_rgb(int(span.get("color", 0)))
+                    if not content:
+                        style, add_hyphens, displayed = infer_page_number_style(text)
+                    break
+        return PageNumberOptions(
+            position=infer_position_from_rect(page, clip),
+            style=style,
+            add_hyphens=add_hyphens,
+            start_page=start_page,
+            start_number=displayed,
+            font_size=font_size,
+            color_rgb=color_rgb,
+        )
+
+    @staticmethod
+    def _write_page_number_text(
+        page,
+        origin: fitz.Point,
+        text: str,
+        size: float,
+        rgb: tuple[float, float, float],
+        fontname: str,
+        fontfile: str | None,
+        *,
+        rotate: int = 0,
+    ) -> bool:
+        if PdfDocument._needs_cjk_font(text) and not fontfile:
+            return False
+        kwargs: dict[str, object] = {
+            "fontsize": size,
+            "color": rgb,
+            "fontname": fontname if fontname else "helv",
+            "rotate": rotate,
+        }
+        if fontfile:
+            kwargs["fontfile"] = fontfile
+        try:
+            page.insert_text(origin, text, **kwargs)
+            return True
+        except Exception:
+            if PdfDocument._needs_cjk_font(text):
+                return False
+        try:
+            page.insert_text(
+                origin,
+                text,
+                fontsize=size,
+                color=rgb,
+                fontname="helv",
+                rotate=rotate,
+            )
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _add_page_number_marker(page, rect: fitz.Rect, options: PageNumberOptions) -> None:
+        annot = page.add_rect_annot(rect)
+        annot.set_colors(stroke=None, fill=None)
+        annot.set_border(width=0)
+        annot.set_opacity(0)
+        annot.set_info(
+            title=PAGE_NUMBER_ANNOT_TITLE,
+            content=serialize_page_number_options(options),
+        )
+        annot.set_flags(2 | 32)  # Hidden | NoView
+        annot.update()
+
+    def _remove_page_numbers_impl(self) -> int:
+        changed = 0
+        for page_index in range(len(self._doc)):
+            page = self._doc[page_index]
+            rects: list[fitz.Rect] = []
+            markers = [
+                annot
+                for annot in PdfDocument._iter_page_annots(page)
+                if is_page_number_annot(annot)
+            ]
+            if not markers:
+                continue
+            for annot in markers:
+                rects.append(fitz.Rect(annot.rect))
+                page.delete_annot(annot)
+            for rect in rects:
+                fill = self._sample_background_color(page, rect)
+                page.add_redact_annot(rect, fill=fill)
+            try:
+                page.apply_redactions(images=getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0))
+            except TypeError:
+                page.apply_redactions()
+            try:
+                page.clean_contents()
+            except Exception:
+                pass
+            changed += 1
+        return changed
 
     @staticmethod
     def _word_line_id(word) -> tuple[int, int]:
