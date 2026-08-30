@@ -82,6 +82,7 @@ from pdf_editor.pii_remove import (
 )
 from pdf_editor.pii_remove_dialog import PiiRemoveDialog
 from pdf_editor.merge_pdf_dialog import MergePdfDialog
+from pdf_editor.hwp_to_pdf_dialog import HwpToPdfDialog
 from pdf_editor.export_images_dialog import (
   ExportImagesDialog,
   export_folder_name_for_document,
@@ -1552,6 +1553,30 @@ class MainWindow(QMainWindow):
   def _build_menu(self) -> None:
     menu = self.menuBar().addMenu("파일(&F)")
     menu.setObjectName("fileMenu")
+    if sys.platform == "win32":
+      file_widget_items = """
+        QMenu#fileMenu::item:nth-child(5),
+        QMenu#fileMenu::item:nth-child(6),
+        QMenu#fileMenu::item:nth-child(10) {
+            padding: 0px;
+        }
+        QMenu#fileMenu::item:nth-child(5):selected,
+        QMenu#fileMenu::item:nth-child(6):selected,
+        QMenu#fileMenu::item:nth-child(10):selected {
+            background-color: #cfe0fb;
+        }
+        """
+    else:
+      file_widget_items = """
+        QMenu#fileMenu::item:nth-child(5),
+        QMenu#fileMenu::item:nth-child(9) {
+            padding: 0px;
+        }
+        QMenu#fileMenu::item:nth-child(5):selected,
+        QMenu#fileMenu::item:nth-child(9):selected {
+            background-color: #cfe0fb;
+        }
+        """
     menu.setStyleSheet(
         """
         QMenu#fileMenu::item {
@@ -1562,15 +1587,8 @@ class MainWindow(QMainWindow):
             background-color: #e8f0fe;
             color: #000000;
         }
-        QMenu#fileMenu::item:nth-child(5),
-        QMenu#fileMenu::item:nth-child(9) {
-            padding: 0px;
-        }
-        QMenu#fileMenu::item:nth-child(5):selected,
-        QMenu#fileMenu::item:nth-child(9):selected {
-            background-color: #cfe0fb;
-        }
         """
+        + file_widget_items
     )
 
     act_new = QAction("새 문서", self)
@@ -1602,6 +1620,16 @@ class MainWindow(QMainWindow):
     merge_btn.clicked.connect(self._merge_pdfs)
     act_merge.setDefaultWidget(merge_btn)
     menu.addAction(act_merge)
+
+    if sys.platform == "win32":
+      act_hwp = QWidgetAction(self)
+      hwp_btn = QPushButton("한글(HWP, HWPX) → PDF...")
+      hwp_btn.setFlat(True)
+      hwp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+      hwp_btn.setStyleSheet(_REDUCE_MENU_BTN_STYLE)
+      hwp_btn.clicked.connect(self._convert_hwp_to_pdf)
+      act_hwp.setDefaultWidget(hwp_btn)
+      menu.addAction(act_hwp)
 
     menu.addSeparator()
 
@@ -2106,6 +2134,29 @@ class MainWindow(QMainWindow):
       return
     if self._open_paths([output]):
       self.statusBar().showMessage(f"병합 완료: {output}")
+
+  def _convert_hwp_to_pdf(self) -> None:
+    dialog = HwpToPdfDialog(self._app_settings, parent=self)
+    if dialog.exec() != QDialog.DialogCode.Accepted:
+      return
+    converted = dialog.converted_paths()
+    if not converted:
+      return
+    self.statusBar().showMessage(
+      f"한글(HWP, HWPX) → PDF 완료: {len(converted)}개 파일"
+    )
+    if not dialog.open_after_convert():
+      return
+    opened = 0
+    for path in converted:
+      if opened >= 8:
+        extra = len(converted) - opened
+        self.statusBar().showMessage(
+          f"한글(HWP, HWPX) → PDF 완료: {len(converted)}개 중 {opened}개를 열었습니다. 나머지 {extra}개는 저장 폴더에 있습니다."
+        )
+        break
+      if self._open_paths([path]):
+        opened += 1
 
   def _open_pending_launch_paths(self) -> None:
     paths = self._pending_launch_paths

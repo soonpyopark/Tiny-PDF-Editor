@@ -34,6 +34,8 @@ class AppSettings:
     def __init__(self) -> None:
         self._path = _store_path()
         self.merge_save_folder: str = default_downloads_folder()
+        self.hwp_save_folder: str = default_downloads_folder()
+        self.hwp_save_beside_source: bool = True
         self.load()
 
     def load(self) -> None:
@@ -51,10 +53,22 @@ class AppSettings:
                 self.merge_save_folder = str(candidate)
             else:
                 self.merge_save_folder = default_downloads_folder()
+        hwp_folder = data.get("hwp_save_folder")
+        if isinstance(hwp_folder, str) and hwp_folder.strip():
+            candidate = Path(hwp_folder)
+            if candidate.is_dir():
+                self.hwp_save_folder = str(candidate)
+            else:
+                self.hwp_save_folder = default_downloads_folder()
+        beside = data.get("hwp_save_beside_source")
+        if isinstance(beside, bool):
+            self.hwp_save_beside_source = beside
 
     def save(self) -> None:
         payload = {
             "merge_save_folder": self.merge_save_folder,
+            "hwp_save_folder": self.hwp_save_folder,
+            "hwp_save_beside_source": self.hwp_save_beside_source,
         }
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
