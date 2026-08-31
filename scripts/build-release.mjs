@@ -7,6 +7,11 @@
  * Output (same YYMMDD_HHMMSS):
  *   msi/Tiny PDF Editor v{version}_{stamp}.msi
  *   msi/Tiny PDF Editor v{version}_{stamp}_portable.zip
+ *   msi/OCR PACK_v{version}_{stamp}.zip
+ *
+ * Flags:
+ *   --skip-upgrade   skip npm/Python package upgrades
+ *   --skip-ocr       skip OCR pack zip
  */
 
 import { execSync } from "node:child_process";
@@ -43,6 +48,7 @@ function formatTimestamp(date = new Date()) {
 
 async function main() {
   const skipUpgrade = process.argv.includes("--skip-upgrade");
+  const skipOcr = process.argv.includes("--skip-ocr");
   if (!skipUpgrade) {
     log("upgrade release-related packages (npm + Python)");
     await upgradeReleaseDeps();
@@ -71,7 +77,18 @@ async function main() {
   run("node scripts/build-msi.mjs", { env });
   run("node scripts/build-portable.mjs", { env });
 
-  log(`done — MSI + portable share stamp ${stamp}`);
+  if (!skipOcr) {
+    log("build OCR pack (same stamp)");
+    run("node scripts/build-ocr-pack.mjs", { env });
+  } else {
+    log("skip OCR pack (--skip-ocr)");
+  }
+
+  log(
+    skipOcr
+      ? `done — MSI + portable share stamp ${stamp}`
+      : `done — MSI + portable + OCR pack share stamp ${stamp}`,
+  );
 }
 
 main().catch((error) => {

@@ -10,7 +10,17 @@ from collections.abc import Callable, Sequence
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, QSize, QTimer, pyqtSignal
 
-from PyQt6.QtGui import QCursor, QIcon, QMouseEvent, QPainter, QPen, QColor, QPixmap
+from PyQt6.QtGui import (
+    QCursor,
+    QIcon,
+    QKeyEvent,
+    QKeySequence,
+    QMouseEvent,
+    QPainter,
+    QPen,
+    QColor,
+    QPixmap,
+)
 
 from PyQt6.QtWidgets import (
     QApplication,
@@ -123,6 +133,46 @@ _COLOR_PICKER_TOOL_BUTTON_STYLE = f"""
 _SUBMENU_ARROW_ICON_PX = 10
 
 
+def _color_submenu_anchor(row: QWidget, color_menu: QMenu, parent_menu: QMenu) -> QPoint:
+    """Place the color strip next to the parent menu, staying on-screen."""
+    color_menu.adjustSize()
+    size = color_menu.sizeHint()
+    screen = QApplication.screenAt(parent_menu.mapToGlobal(parent_menu.rect().center()))
+    if screen is None:
+        screen = QApplication.primaryScreen()
+    avail = screen.availableGeometry() if screen is not None else parent_menu.rect()
+    window = parent_menu.window()
+    window_geo = window.frameGeometry() if window is not None else None
+    parent_geo = parent_menu.frameGeometry()
+    y = row.mapToGlobal(QPoint(0, 0)).y()
+    y = min(y, avail.bottom() - size.height() + 1)
+    y = max(avail.top(), y)
+    right = QPoint(parent_geo.right(), y)
+    left = QPoint(parent_geo.left() - size.width(), y)
+
+    def fits(point: QPoint) -> bool:
+        return (
+            point.x() >= avail.left()
+            and point.x() + size.width() <= avail.right()
+        )
+
+    def over_window(point: QPoint) -> bool:
+        if window_geo is None:
+            return True
+        mid = QPoint(point.x() + size.width() // 2, point.y() + 4)
+        return window_geo.contains(mid)
+
+    for point in (right, left):
+        if fits(point) and over_window(point):
+            return point
+    for point in (right, left):
+        if fits(point):
+            return point
+    x = min(right.x(), avail.right() - size.width())
+    x = max(avail.left(), x)
+    return QPoint(x, y)
+
+
 def _submenu_arrow_icon(*, size: int = _SUBMENU_ARROW_ICON_PX) -> QIcon:
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
@@ -206,6 +256,14 @@ class _MarkupMenuHoverFilter(QObject):
                 menu._block_markup_hover = False
             for row in getattr(menu, "_markup_rows", []):
                 row.sync_hover(global_pos)
+            return False
+
+        if event.type() == QEvent.Type.KeyPress and isinstance(event, QKeyEvent):
+            if event.matches(QKeySequence.StandardKey.Copy):
+                copy_fn = getattr(menu, "_copy_selection", None)
+                if copy_fn is not None:
+                    copy_fn()
+                    return True
             return False
 
         if event.type() == QEvent.Type.Leave:
@@ -508,8 +566,9 @@ class _HighlightSplitMenuItem(QWidget):
         if self._hover_blocked():
             return
         self.force_set_hovered(True)
-        anchor = self._arrow.mapToGlobal(QPoint(self._arrow.width(), 0))
-        self._color_menu.popup(anchor)
+        self._color_menu.popup(
+            _color_submenu_anchor(self, self._color_menu, self._parent_menu)
+        )
 
     def _hover_blocked(self) -> bool:
         return bool(getattr(self._parent_menu, "_block_markup_hover", False))
@@ -781,7 +840,10 @@ def build_text_selection_context_menu(
         remove_action = menu.addAction("밑줄 제거")
         remove_action.triggered.connect(on_remove_underline)
     copy_action = menu.addAction("복사")
+    copy_action.setShortcut(QKeySequence.StandardKey.Copy)
+    copy_action.setShortcutVisibleInContextMenu(False)
     copy_action.triggered.connect(on_copy)
+    menu._copy_selection = on_copy
     if show_continue_selection and on_continue_selection is not None:
         continue_action = menu.addAction("계속 선택하기")
         continue_action.triggered.connect(on_continue_selection)

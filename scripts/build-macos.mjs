@@ -1,13 +1,18 @@
 #!/usr/bin/env node
 /**
- * Build macOS .app (PyInstaller onedir/windowed) and a DMG (unsigned).
+ * Build macOS .app (PyInstaller onedir/windowed), a DMG (unsigned),
+ * and a sidecar OCR pack zip (same YYMMDD_HHMMSS stamp).
  * Target: Apple Silicon (arm64) on the build machine.
+ *
+ * Flags:
+ *   --skip-ocr   skip OCR PACK_macOS_*.zip
  */
 
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildOcrPack } from "./build-ocr-pack.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -457,13 +462,16 @@ function pruneReleases() {
     }
   }
   for (const name of fs.existsSync(DIST_DIR) ? fs.readdirSync(DIST_DIR) : []) {
-    if (!name.endsWith(".dmg")) {
-      continue;
-    }
-    const match = name.match(/_(\d{6}_\d{6})\.dmg$/);
-    if (match && !keep.has(match[1])) {
+    const dmgMatch = name.match(/_(\d{6}_\d{6})\.dmg$/);
+    if (dmgMatch && !keep.has(dmgMatch[1])) {
       removePath(path.join(DIST_DIR, name));
       log(`removed old dmg: ${name}`);
+      continue;
+    }
+    const ocrMatch = name.match(/^OCR PACK_macOS_v.+_(\d{6}_\d{6})\.zip$/);
+    if (ocrMatch && !keep.has(ocrMatch[1])) {
+      removePath(path.join(DIST_DIR, name));
+      log(`removed old ocr pack: ${name}`);
     }
   }
   return [...keep];
@@ -500,6 +508,7 @@ function main() {
     throw new Error("macOS 빌드는 darwin에서만 실행할 수 있습니다.");
   }
 
+  const skipOcr = process.argv.includes("--skip-ocr");
   const timestamp = resolveBuildStamp();
   if (process.env.TINY_SKIP_STAMP !== "1") {
     stampBuildId(timestamp);
@@ -529,11 +538,23 @@ function main() {
   copyAppBundle(builtApp, distApp);
 
   const dmgPath = createDmg(builtApp, releaseDir, releaseName);
+
+  let ocrZip = "";
+  if (!skipOcr) {
+    log("build macOS OCR pack (same stamp)");
+    ocrZip = buildOcrPack({ stamp: timestamp, outputDir: DIST_DIR });
+  } else {
+    log("skip OCR pack (--skip-ocr)");
+  }
+
   const kept = pruneReleases();
 
   log(`release folder: ${releaseDir}`);
   log(`app: ${path.join(releaseDir, "Tiny PDF Editor.app")}`);
   log(`dmg: ${dmgPath}`);
+  if (ocrZip) {
+    log(`ocr pack: ${ocrZip}`);
+  }
   log(`kept releases (max ${MAX_RELEASES}): ${kept.join(", ") || "(none)"}`);
   log(
     "서명되지 않은 빌드입니다. 최초 실행 시 제어클릭 → 열기, 또는 시스템 설정 → 개인정보 보호 및 보안에서 허용하세요.",

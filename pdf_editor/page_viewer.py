@@ -1319,6 +1319,18 @@ class PageViewer(QWidget):
                 seen.append(canvas)
         return seen
 
+    def has_selected_text(self) -> bool:
+        return any(
+            canvas.selected_text().strip() for canvas in self._iter_known_canvases()
+        )
+
+    def copy_selected_text(self) -> bool:
+        for canvas in self._iter_known_canvases():
+            if canvas.selected_text().strip():
+                canvas._copy_selection()
+                return True
+        return False
+
     def _visible_canvases(self) -> list[PageCanvas]:
         return [canvas for canvas in self._mounted.values() if canvas.isVisible()]
 
@@ -1971,6 +1983,10 @@ class PageViewer(QWidget):
             self._go_last()
             event.accept()
             return
+        if ctrl and key == Qt.Key.Key_C:
+            if self.copy_selected_text():
+                event.accept()
+                return
         if key in (Qt.Key.Key_Up, Qt.Key.Key_PageUp):
             step = (
                 self.scroll_area.verticalScrollBar().pageStep()

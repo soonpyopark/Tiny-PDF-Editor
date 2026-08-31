@@ -1419,6 +1419,86 @@ class PdfDocument:
         except Exception:
             pass
 
+    def apply_ocr_spans(
+        self,
+        page_index: int,
+        spans: list[tuple[str, fitz.Rect]],
+    ) -> int:
+        """Insert invisible searchable text. Returns the number of spans written."""
+        if not (0 <= page_index < len(self._doc)) or not spans:
+            return 0
+        page = self._doc[page_index]
+        written = 0
+        ordered = sorted(
+            ((text, fitz.Rect(rect)) for text, rect in spans),
+            key=lambda item: (item[1].y0, item[1].x0, item[1].x1),
+        )
+        for text, rect in ordered:
+            written += self._write_ocr_span(page, text, rect)
+        if written:
+            self._touch()
+        return written
+
+    def _write_ocr_span(self, page, text: str, rect: fitz.Rect) -> int:
+        value = (text or "").strip()
+        box = fitz.Rect(rect)
+        if not value or box.is_empty or box.is_infinite:
+            return 0
+        fontname, fontfile = self._resolve_edit_font(value)
+        if self._needs_cjk_font(value) and not fontfile:
+            return 0
+        try:
+            font = fitz.Font(fontfile=fontfile) if fontfile else fitz.Font("helv")
+        except Exception:
+            return 0
+        size = max(4.0, min(36.0, float(box.height) * 0.88))
+        return 1 if self._insert_ocr_fitted_run(
+            page, box, value, size, font, fontname, fontfile
+        ) else 0
+
+    def _insert_ocr_fitted_run(
+        self,
+        page,
+        box: fitz.Rect,
+        text: str,
+        size: float,
+        font: fitz.Font,
+        fontname: str,
+        fontfile: str | None,
+    ) -> bool:
+        value = (text or "").strip()
+        if not value or box.is_empty:
+            return False
+        natural = float(font.text_length(value, fontsize=size))
+        if natural <= 0:
+            return False
+        scale_x = float(box.width) / natural
+        if scale_x < 0.82:
+            size = max(4.0, size * scale_x)
+            natural = float(font.text_length(value, fontsize=size))
+            if natural <= 0:
+                return False
+            scale_x = float(box.width) / natural
+        scale_x = max(0.7, min(1.7, scale_x))
+        origin = fitz.Point(box.x0, box.y1 - max(0.6, size * 0.16))
+        kwargs: dict = {
+            "fontsize": size,
+            "render_mode": 3,
+            "overlay": True,
+        }
+        if abs(scale_x - 1.0) > 0.02:
+            kwargs["morph"] = (origin, fitz.Matrix(scale_x, 1))
+        if fontfile:
+            kwargs["fontfile"] = fontfile
+            kwargs["fontname"] = fontname or "ocr"
+        else:
+            kwargs["fontname"] = fontname or "helv"
+        try:
+            page.insert_text(origin, value, **kwargs)
+        except Exception:
+            return False
+        return True
+
     def apply_page_numbers(
         self,
         options: PageNumberOptions,
@@ -1750,12 +1830,21 @@ class PdfDocument:
         return changed
 
     @staticmethod
-    def _word_line_id(word) -> tuple[int, int]:
-        return int(word[5]), int(word[6])
+    def _word_visual_y(word) -> float:
+        return 0.5 * (float(word[1]) + float(word[3]))
 
     @staticmethod
-    def _word_sort_key(word) -> tuple[int, int, int]:
-        return int(word[5]), int(word[6]), int(word[7])
+    def _word_line_id(word) -> tuple[int, int]:
+        """Group words by on-page row, not PDF insertion block order."""
+        return (int(round(PdfDocument._word_visual_y(word) / 6.0)), 0)
+
+    @staticmethod
+    def _word_sort_key(word) -> tuple[int, float, int]:
+        return (
+            int(round(PdfDocument._word_visual_y(word) / 6.0)),
+            float(word[0]),
+            int(word[7]),
+        )
 
     @staticmethod
     def _word_index_at_point(words: list, point: fitz.Point) -> int:
@@ -1783,24 +1872,33 @@ class PdfDocument:
         if not words:
             return ""
         lines: list[str] = []
+        line_sizes: list[int] = []
         current_line: tuple[int, int] | None = None
         parts: list[str] = []
         for word in words:
             line_id = PdfDocument._word_line_id(word)
+            token = str(word[4]).strip()
+            if not token:
+                continue
             if line_id != current_line:
                 if parts:
                     lines.append(" ".join(parts))
-                parts = [str(word[4])]
+                    line_sizes.append(len(parts))
+                parts = [token]
                 current_line = line_id
             else:
-                parts.append(str(word[4]))
+                parts.append(token)
         if parts:
             lines.append(" ".join(parts))
+            line_sizes.append(len(parts))
 
         result: list[str] = []
-        for line_text in lines:
-            if result and result[-1].rstrip().endswith("."):
-                result.append(" ")
+        for index, line_text in enumerate(lines):
+            if result:
+                prev = result[-1].rstrip()
+                short_title = line_sizes[index - 1] <= 2 and line_sizes[index] >= 3
+                if prev.endswith(".") or short_title:
+                    result.append(" ")
             result.append(line_text)
         return "".join(result)
 
@@ -2909,8 +3007,9 @@ class PdfDocument:
         zoom: float = 1.0,
         *,
         annots: bool = False,
+        ignore_pause: bool = False,
     ) -> fitz.Pixmap:
-        if self.rendering_paused:
+        if self.rendering_paused and not ignore_pause:
             raise RuntimeError("rendering paused")
         page = self._doc[index]
         matrix = fitz.Matrix(zoom, zoom)

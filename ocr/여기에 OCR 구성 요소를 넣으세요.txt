@@ -1,0 +1,15 @@
+Tiny PDF Editor OCR 구성 요소
+==========================
+
+이 폴더에 아래 파일을 넣어 주세요.
+
+  ocr_helper.exe
+  models\          (한글·한자·영어 인식 모델, 선택)
+  VERSION.txt      (선택)
+
+받는 곳:
+  https://github.com/soonpyopark/Tiny-PDF-Editor/releases
+  앱과 같은 릴리스 목록에서 OCR 팩을 받아 이 폴더에 압축을 푸세요.
+
+인터넷이 되는 PC에서 받은 뒤, 필요하면 이 폴더로 복사하면 됩니다.
+앱을 다시 실행하거나 OCR 메뉴를 다시 열면 인식이 켜집니다.

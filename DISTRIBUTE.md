@@ -37,10 +37,22 @@ wix eula accept wix7
 
 ## macOS — DMG / .app
 
-1. `npm run build:dist:macos`로 `dist/`에 `.app`과 `.dmg`를 만듭니다. (Apple Silicon, 서명·공증 없음)
+1. `npm run build:dist:macos`로 `dist/`에 `.app`, `.dmg`, 맥용 OCR 팩(`OCR PACK_macOS_*.zip`)을 만듭니다. (Apple Silicon, 서명·공증 없음)
    DMG 파일명의 `YYMMDD_HHMMSS`가 앱의 `APP_BUILD_STAMP`와 같아 업데이트 확인에 사용됩니다.
 2. DMG를 연 뒤 `Tiny PDF Editor.app`을 **응용 프로그램**으로 드래그합니다.
+   OCR이 필요하면 같은 릴리스의 `OCR PACK_macOS_*.zip`을 OCR 폴더에 풀어 넣습니다.
 3. 최초 실행 시 Gatekeeper 경고가 나오면 앱을 Control-클릭 → **열기**, 또는 **시스템 설정 → 개인정보 보호 및 보안**에서 허용합니다.
+
+## OCR 팩 (선택)
+
+메인 앱에는 OCR 엔진이 없습니다. 스캔·이미지 PDF 인식이 필요하면
+같은 릴리스의 OS별 zip을 받아 OCR 폴더에 풉니다.
+
+- Windows: `msi/OCR PACK_v{버전}_YYMMDD_HHMMSS.zip` (`npm run build:release` 또는 `npm run build:ocr`)
+- macOS: `dist/OCR PACK_macOS_v{버전}_YYMMDD_HHMMSS.zip` (`npm run build:dist:macos`)
+
+앱의 `OCR` → **OCR 팩 설치...**에서 폴더를 연 뒤 zip을 「여기에 풀기」하세요.
+Windows 팩은 맥에서, 맥 팩은 Windows에서 동작하지 않습니다.
 
 macOS에서는 다음 기능이 Windows 전용입니다.
 
@@ -68,11 +80,11 @@ macOS에서는 다음 기능이 Windows 전용입니다.
 - Windows Defender / macOS Gatekeeper에서 처음 실행 시 경고가 나올 수 있습니다. 직접 빌드한 배포본이라면 안내된 방법으로 실행을 허용하세요.
 - 편집한 PDF는 **파일 → 저장** 또는 **다른 이름으로 저장**으로 저장하세요.
 - **개인정보 제거**는 원본 텍스트를 삭제하는 레닥션입니다. 자동 탐지는 완전하지 않으니 저장 전 결과를 확인하세요.
-- `*.msi`, `*_portable.zip` 등 대용량 산출물은 Git에 올리지 마세요 (100MB 제한).
+- `*.msi`, `*_portable.zip`, `OCR PACK_*.zip` 등 대용량 산출물은 Git에 올리지 마세요 (100MB 제한).
 
 ## 라이선스
 
-소스 코드는 MIT입니다. 배포판 재배포 시 `LICENSE`의 서드파티 고지(PyMuPDF, PyQt6, openpyxl, ko-pii 등)를 함께 제공하세요.
+소스 코드는 MIT입니다. 배포판·OCR 팩 재배포 시 `LICENSE`의 서드파티 고지(PyMuPDF, PyQt6, RapidOCR, PP-OCR 모델 등)를 함께 제공하세요.
 
 ## 문의
 

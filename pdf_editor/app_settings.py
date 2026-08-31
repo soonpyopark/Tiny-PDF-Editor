@@ -36,6 +36,7 @@ class AppSettings:
         self.merge_save_folder: str = default_downloads_folder()
         self.hwp_save_folder: str = default_downloads_folder()
         self.hwp_save_beside_source: bool = True
+        self.ocr_folder: str = ""
         self.load()
 
     def load(self) -> None:
@@ -63,12 +64,22 @@ class AppSettings:
         beside = data.get("hwp_save_beside_source")
         if isinstance(beside, bool):
             self.hwp_save_beside_source = beside
+        ocr_folder = data.get("ocr_folder")
+        if isinstance(ocr_folder, str) and ocr_folder.strip():
+            candidate = Path(ocr_folder)
+            if candidate.is_dir():
+                self.ocr_folder = str(candidate)
+            else:
+                self.ocr_folder = ""
+        else:
+            self.ocr_folder = ""
 
     def save(self) -> None:
         payload = {
             "merge_save_folder": self.merge_save_folder,
             "hwp_save_folder": self.hwp_save_folder,
             "hwp_save_beside_source": self.hwp_save_beside_source,
+            "ocr_folder": self.ocr_folder,
         }
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)

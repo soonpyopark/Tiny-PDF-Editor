@@ -1,6 +1,6 @@
 # Tiny PDF Editor v1.1.8
 
-**포터블 PDF 편집기**입니다. Windows(exe·MSI·포터블 zip)와 macOS(`.app`·DMG) 배포판을 제공하며, 페이지 병합·편집·검색·용량 줄이기·쪽 번호 매기기·개인정보 제거 등 일상적인 PDF 작업을 한 프로그램에서 처리할 수 있습니다.
+**포터블 PDF 편집기**입니다. Windows(exe·MSI·포터블 zip)와 macOS(`.app`·DMG) 배포판을 제공하며, 페이지 병합·편집·검색·용량 줄이기·쪽 번호 매기기·개인정보 제거·OCR(선택 팩) 등 일상적인 PDF 작업을 한 프로그램에서 처리할 수 있습니다.
 
 - 개발자 홈페이지: [https://note4all.tistory.com](https://note4all.tistory.com)
 - GitHub: [https://github.com/soonpyopark/Tiny-PDF-Editor](https://github.com/soonpyopark/Tiny-PDF-Editor)
@@ -30,6 +30,15 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 2. 앱을 실행합니다. (서명·공증되지 않은 빌드이므로 최초 실행 시 Gatekeeper 경고가 날 수 있습니다.)
 3. 경고가 뜨면 앱을 **Control-클릭 → 열기**, 또는 **시스템 설정 → 개인정보 보호 및 보안**에서 허용하세요.
 
+### OCR 팩 (선택, Windows / macOS)
+
+스캔·이미지 PDF에서 글자를 찾아 검색·복사할 수 있게 하려면, 앱과 **같은 릴리스**의 OCR 팩을 따로 받아 설치합니다. 메인 앱에는 OCR 엔진이 들어 있지 않습니다.
+
+- Windows: `OCR PACK_v1.1.8_YYMMDD_HHMMSS.zip`
+- macOS: `OCR PACK_macOS_v1.1.8_YYMMDD_HHMMSS.zip` (Windows 팩은 맥에서 동작하지 않습니다)
+
+설치 방법은 아래 **OCR** 절을 참고하세요.
+
 자세한 배포·USB 사용법은 `DISTRIBUTE.md`를 참고하세요.
 
 ### 시스템 요구 사항
@@ -40,6 +49,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 - **업데이트 확인**(`도움말` 메뉴)만 GitHub Releases 조회를 위해 인터넷이 필요합니다.
 - 한글 텍스트 덮어쓰기·쪽 번호 매기기·개인정보 라벨 표시 시 시스템에 설치된 한글 글꼴이 사용됩니다. (Windows: 맑은 고딕 등, macOS: Apple SD Gothic Neo)
 - HWP/HWPX 열기(Windows): PC에 **한컴 오피스 한글**(2020 / 2022 / 2024)이 설치되어 있어야 합니다.
+- **OCR**(선택): 같은 릴리스의 OCR 팩이 필요합니다. 설치 후 인식은 **오프라인**으로 동작합니다. 팩 용량은 약 200MB입니다.
 
 > Windows Defender / macOS Gatekeeper에서 처음 실행 시 경고가 나올 수 있습니다. 직접 빌드하거나 신뢰하는 출처의 배포본이라면 안내된 방법으로 실행을 허용하세요.
 
@@ -55,7 +65,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 - **추가...**: 현재 문서 **맨 뒤**에 PDF·이미지·(Windows) HWP/HWPX 페이지를 이어 붙입니다.
 - **PDF 병합...**: 여러 파일을 골라 순서·미리보기를 확인한 뒤 새 PDF로 병합합니다. (HWP/HWPX 포함, Windows+한컴)
 - **저장** (`Ctrl+S`) / **다른 이름으로 저장...** (`Ctrl+Shift+S`)
-- **PDF를 이미지로 저장...**: 문서 페이지를 PNG/JPEG 등으로보냅니다.
+- **PDF를 이미지로 저장...**: 문서 페이지를 PNG/JPEG 등으로 보냅니다.
 - **인쇄...** (`Ctrl+P`): 프린터 선택 대화상자에서 장치·범위를 고른 뒤 **직접 인쇄**합니다. 썸네일 우클릭으로 선택 페이지 또는 **전체 페이지 인쇄**도 할 수 있습니다.
 - **PDF 파일 연결...** (Windows): 이 프로그램을 PDF 연결 프로그램 목록에 등록하거나 해제합니다.
 - **탭**: 여러 PDF 문서를 동시에 열기. 탭을 닫을 때 저장 여부를 묻습니다.
@@ -87,7 +97,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 ### 형광펜 · 밑줄 (왼쪽 하단 탭)
 
 - 본문에서 텍스트를 선택한 뒤 우클릭 메뉴로 **형광펜**·**밑줄**을 추가합니다.
-- 왼쪽 **형광펜 & 밑줄** 패널에서 목록 확인, 항목 클릭으로 해당 위치로 이동, 삭제, **Excel로보내기**가 가능합니다.
+- 왼쪽 **형광펜 & 밑줄** 패널에서 목록 확인, 항목 클릭으로 해당 위치로 이동, 삭제, **Excel로 보내기**가 가능합니다.
 - 썸네일 탭과 같이 **같은 탭을 다시 클릭**하면 패널을 접을 수 있습니다.
 
 ### 본문 보기 (오른쪽)
@@ -119,6 +129,31 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
   - 가로·세로 여백(0~30mm). 가운데 위치에서는 가로 여백을 쓰지 않습니다.
   - 한글 접두·접미는 시스템에 설치된 한글 글꼴이 필요합니다. 없으면 안내 후 적용하지 않습니다.
   - 원본 PDF에 이미 있는 쪽 번호는 지우지 않습니다. 흰 배경으로 가리거나, 투명 배경이면 겹쳐 보일 수 있습니다.
+
+### OCR (`OCR` 메뉴)
+
+스캔본·이미지 PDF에 **보이지 않는 텍스트**를 넣어 검색(`Ctrl+F`)과 복사(`Ctrl+C`)가 되게 합니다. 화면 모습은 그대로입니다.
+
+- **현재 페이지** / **선택 페이지** / **전체 페이지**
+- 이미 **보이는 글자**가 있는 페이지는 건너뜁니다. 예전에 이 프로그램으로 넣은 OCR만 있으면 다시 인식할 수 있습니다.
+- 언어: **한국어 + 한자 + 영어**
+- 인식 후 **저장** 또는 **다른 이름으로 저장**으로 파일을 저장하세요.
+
+**OCR 팩 설치**
+
+1. 릴리스에서 OS에 맞는 OCR 팩 zip을 받습니다. (Windows: `OCR PACK_*.zip`, macOS: `OCR PACK_macOS_*.zip`)
+2. `OCR` → **OCR 팩 설치...**에서 폴더를 확인하거나 지정합니다.
+3. zip을 그 폴더에 **여기에 풀기**합니다. (`ocr_helper` 또는 `ocr_helper.exe`, `_internal`, `models`가 폴더 바로 아래에 있어야 합니다.)
+4. 앱을 다시 실행하거나 OCR 메뉴를 다시 엽니다.
+
+기본 폴더:
+
+- Windows: 실행 파일 옆 `ocr\`
+- macOS에서 앱을 **응용 프로그램**에 둔 경우: 사용자 앱 데이터 아래 `ocr`
+- macOS에서 `.app`을 폴더에 두고 쓰는 경우: `.app` 옆 `ocr/`
+- 폴더는 대화상자에서 바꿀 수 있습니다.
+
+소스에서 실행할 때는 저장소의 `ocr/` 또는 `tools/ocr_helper`를 찾습니다.
 
 ### 도움말
 
@@ -190,6 +225,7 @@ python main.py
 ```
 
 의존성: PyMuPDF, PyQt6, openpyxl, ko-pii (`requirements.txt` 참고).
+OCR 엔진(RapidOCR 등)은 메인 앱에 넣지 않습니다. 개발 중 OCR을 쓰려면 `tools/ocr_helper`에 팩을 두거나, `npm run build:ocr`로 만든 팩을 OCR 폴더에 푸세요.
 
 ### Windows 배포판 빌드
 
@@ -229,9 +265,11 @@ npm run build:dist:portable
 npm run build:release
 ```
 
-산출물 예: `msi/Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.msi` 와
-`msi/Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS_portable.zip` (스탬프 공유).
+산출물 예: `msi/Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.msi`,
+`msi/Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS_portable.zip`,
+`msi/OCR PACK_v1.1.8_YYMMDD_HHMMSS.zip` (스탬프 공유).
 앱에 심어진 `APP_BUILD_STAMP`도 이 시각과 같아, 같은 태그로 재배포해도 업데이트 확인이 새 빌드를 구분합니다.
+OCR 팩만 생략하려면 `--skip-ocr`을 붙입니다. OCR 팩만 다시 만들려면 `npm run build:ocr`입니다.
 
 ### macOS 배포판 빌드 (Apple Silicon)
 
@@ -244,6 +282,7 @@ npm run build:dist:macos
 ```
 
 DMG 파일명과 동일한 `APP_BUILD_STAMP`를 앱에 심으며, 업데이트 확인은 `.dmg` 자산만 비교합니다.
+같은 스탬프로 `dist/OCR PACK_macOS_v{버전}_YYMMDD_HHMMSS.zip`도 만듭니다. (`--skip-ocr`로 생략 가능)
 
 빌드 시 `assets/source_logo.png`가 있으면 `scripts/prepare-branding.py`가 아이콘·로고·`.icns`를 자동 생성합니다.
 
@@ -270,6 +309,7 @@ dist/
     README.md
     DISTRIBUTE.md
   Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.dmg
+  OCR PACK_macOS_v1.1.8_YYMMDD_HHMMSS.zip
 ```
 
 **MSI / 포터블 zip 빌드 결과** (`msi/`):
@@ -278,10 +318,11 @@ dist/
 msi/
   Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.msi
   Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS_portable.zip
+  OCR PACK_v1.1.8_YYMMDD_HHMMSS.zip
 ```
 
 포터블 빌드 폴더는 최근 **3개**만 유지됩니다.  
-대용량 산출물(`*.msi`, `*_portable.zip`)은 Git에 올리지 않습니다 (`.gitignore`).
+대용량 산출물(`*.msi`, `*_portable.zip`, `OCR PACK_*.zip`)은 Git에 올리지 않습니다 (`.gitignore`).
 
 ---
 
@@ -289,9 +330,10 @@ msi/
 
 - Python 3, PyQt6 (Qt Print Support 포함)
 - PyMuPDF (fitz) — 렌더링·편집·압축·레닥션·암호
-- openpyxl — 형광펜·밑줄 Excel보내기
+- openpyxl — 형광펜·밑줄 Excel로 보내기
 - ko-pii — 한국어 개인정보 검출 (`보안` → 개인정보 제거)
 - Windows HWP 변환: 로컬 `hwp_to_pdf_helper` + 한컴 한글 COM (별도 한컴 설치 필요)
+- OCR(선택 팩): RapidOCR + ONNX Runtime + PP-OCR 모델(한글·한자·영어). 메인 PyInstaller 앱에는 `cv2`/RapidOCR을 넣지 않습니다.
 
 ---
 
@@ -299,4 +341,4 @@ msi/
 
 본 프로젝트 소스 코드는 **MIT License**입니다. 자세한 내용은 `LICENSE` 파일을 참고하세요.
 
-배포판(exe·MSI·포터블 zip·`.app`·DMG)에는 PyMuPDF, PyQt6, openpyxl, ko-pii 등 서드파티 라이브러리가 포함됩니다. 재배포할 때는 `LICENSE`의 서드파티 고지를 함께 제공해야 합니다.
+배포판(exe·MSI·포터블 zip·`.app`·DMG)과 별도 OCR 팩에는 PyMuPDF, PyQt6, RapidOCR, ONNX Runtime, PP-OCR 모델 등 서드파티가 포함됩니다. 재배포할 때는 `LICENSE`의 서드파티 고지를 함께 제공해야 합니다.
