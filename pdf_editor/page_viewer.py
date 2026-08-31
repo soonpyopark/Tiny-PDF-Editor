@@ -8,6 +8,7 @@ import fitz
 from PyQt6.QtCore import (
     QEasingCurve,
     QEvent,
+    QEventLoop,
     QPoint,
     QPropertyAnimation,
     QRect,
@@ -1126,6 +1127,29 @@ class PageViewer(QWidget):
         preview_row_layout.setSpacing(0)
         preview_row_layout.addWidget(self.preview_stack, 1)
 
+        self._busy_overlay = QLabel(self._preview_row)
+        self._busy_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._busy_overlay.setWordWrap(True)
+        self._busy_overlay.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground, True
+        )
+        if sys.platform == "darwin":
+            # QScrollArea is a native NSView and otherwise paints over this overlay.
+            self._busy_overlay.setAttribute(
+                Qt.WidgetAttribute.WA_NativeWindow, True
+            )
+            self._busy_overlay.setAttribute(
+                Qt.WidgetAttribute.WA_ShowWithoutActivating, True
+            )
+        self._busy_overlay.setStyleSheet(
+            "background-color: rgba(255, 255, 255, 210);"
+            "color: #333333; font-size: 15px; font-weight: bold;"
+            "border: 1px solid #c8c8c8; border-radius: 8px; padding: 20px;"
+        )
+        self._busy_overlay.hide()
+        self._busy_base_message = ""
+        self._busy_progress = 0
+
         self._doc_scroll = QScrollBar(Qt.Orientation.Vertical)
         self._doc_scroll.setObjectName("docScroll")
         self._doc_scroll.setVisible(False)
@@ -1140,6 +1164,9 @@ class PageViewer(QWidget):
         self._log_section = QWidget()
         self._log_section.setVisible(False)
         self._log_expanded = True
+        self._log_section.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+        )
         log_section_layout = QVBoxLayout(self._log_section)
         log_section_layout.setContentsMargins(0, 0, 0, 0)
         log_section_layout.setSpacing(0)
@@ -1193,18 +1220,6 @@ class PageViewer(QWidget):
         self.status_bar = self._build_status_bar()
         root.addWidget(self.status_bar)
 
-        self._busy_overlay = QLabel(self.preview_stack)
-        self._busy_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._busy_overlay.setWordWrap(True)
-        self._busy_overlay.setStyleSheet(
-            "background-color: rgba(255, 255, 255, 210);"
-            "color: #333333; font-size: 15px; font-weight: bold;"
-            "border: 1px solid #c8c8c8; border-radius: 8px; padding: 20px;"
-        )
-        self._busy_overlay.hide()
-        self._busy_base_message = ""
-        self._busy_progress = 0
-
     def show_busy_message(self, message: str) -> None:
         self._busy_base_message = message
         self._busy_progress = 0
@@ -1216,6 +1231,41 @@ class PageViewer(QWidget):
 
     def hide_busy_message(self) -> None:
         self._busy_overlay.hide()
+        self._flush_ui()
+
+    def _log_section_height(self) -> int:
+        if self._log_expanded:
+            return _LOG_HEADER_HEIGHT + self.log_panel.minimumHeight()
+        return _LOG_HEADER_HEIGHT
+
+    def _apply_log_section_size(self) -> None:
+        height = self._log_section_height()
+        self._log_section.setMinimumHeight(height)
+        if self._log_expanded:
+            self._log_section.setMaximumHeight(
+                _LOG_HEADER_HEIGHT + _LOG_BODY_MAX_HEIGHT
+            )
+        else:
+            self._log_section.setMaximumHeight(_LOG_HEADER_HEIGHT)
+
+    def _flush_ui(self) -> None:
+        layout = self.layout()
+        if layout is not None:
+            layout.activate()
+        self._position_busy_overlay()
+        QApplication.processEvents(
+            QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
+        )
+        if sys.platform != "darwin":
+            return
+        if self._log_section.isVisible():
+            self._log_section.repaint()
+            if self.log_panel.isVisible():
+                self.log_panel.repaint()
+        if not self._busy_overlay.isHidden():
+            self._busy_overlay.raise_()
+            self._busy_overlay.repaint()
+        self.repaint()
 
     def _toggle_log_panel(self) -> None:
         self._log_expanded = not self._log_expanded
@@ -1223,29 +1273,39 @@ class PageViewer(QWidget):
         self._log_tab_btn.setText(
             "▼  터미널" if self._log_expanded else "▶  터미널"
         )
+        self._apply_log_section_size()
+        self._flush_ui()
 
     def show_log_panel(self) -> None:
         self.log_panel.clear()
         self._log_expanded = True
         self.log_panel.setVisible(True)
         self._log_tab_btn.setText("▼  터미널")
+        self._apply_log_section_size()
         self._log_section.setVisible(True)
+        self._flush_ui()
 
     def hide_log_panel(self) -> None:
         self._log_section.setVisible(False)
+        self._flush_ui()
 
     def append_log_line(self, text: str) -> None:
         self.log_panel.appendPlainText(text)
         scrollbar = self.log_panel.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
-        QApplication.processEvents()
+        self._flush_ui()
+
+    def _position_busy_overlay(self) -> None:
+        if self._busy_overlay.isHidden():
+            return
+        self._busy_overlay.setGeometry(self.preview_stack.geometry())
+        self._busy_overlay.raise_()
 
     def _refresh_busy_overlay(self) -> None:
         self._busy_overlay.setText(self._busy_base_message)
-        self._busy_overlay.setGeometry(self.preview_stack.rect())
         self._busy_overlay.show()
-        self._busy_overlay.raise_()
-        QApplication.processEvents()
+        self._position_busy_overlay()
+        self._flush_ui()
 
     def set_document(self, document: PdfDocument | None) -> None:
         self._clear_strip()
@@ -1935,8 +1995,7 @@ class PageViewer(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        if not self._busy_overlay.isHidden():
-            self._busy_overlay.setGeometry(self.preview_stack.rect())
+        self._position_busy_overlay()
         if self._fit_mode and not self._rendering:
             # Defer so scrollbar show/hide from spread size does not re-enter render.
             QTimer.singleShot(0, self._render_current_page_if_fitting)
