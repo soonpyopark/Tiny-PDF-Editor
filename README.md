@@ -3,7 +3,8 @@
 **포터블 PDF 편집기**입니다. Windows(exe·MSI·포터블 zip)와 macOS(`.app`·DMG) 배포판을 제공하며, 페이지 병합·편집·검색·용량 줄이기·쪽 번호 매기기·개인정보 제거 등 일상적인 PDF 작업을 한 프로그램에서 처리할 수 있습니다.
 
 - 개발자 홈페이지: [https://note4all.tistory.com](https://note4all.tistory.com)
-- GitHub: [https://github.com/soonpyopark/Tiny-PDF-Editor](https://github.com/soonpyopark/Tiny-PDF-Editor)
+- GitLab (메인): [https://gitlab.aigov.go.kr/soonpyo/tiny-pdf-editor](https://gitlab.aigov.go.kr/soonpyo/tiny-pdf-editor)
+- GitHub (미러): [https://github.com/soonpyopark/Tiny-PDF-Editor](https://github.com/soonpyopark/Tiny-PDF-Editor)
 - 릴리스(설치·포터블 파일): [Releases](https://github.com/soonpyopark/Tiny-PDF-Editor/releases)
 
 ## 다운로드 및 실행
