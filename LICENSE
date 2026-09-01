@@ -31,10 +31,6 @@ macOS `.app` 번들)에는 아래 오픈소스 라이브러리가 함께 포함�
 코드(MIT)와 달리, **실행 파일을 블로그·웹·USB·GitHub Releases 등으로
 재배포**할 때는 각 라이브러리 라이선스도 준수해야 합니다.
 
-별도 배포하는 **OCR 팩**(`OCR PACK_*.zip` / `OCR PACK_macOS_*.zip`)의
-구성 요소는 아래 「OCR 팩」 절을 따릅니다. OCR 엔진은 메인 앱에
-포함되지 않습니다.
-
 프로젝트 홈페이지: https://note4all.tistory.com
 소스 저장소: https://github.com/soonpyopark/Tiny-PDF-Editor
 
@@ -87,50 +83,6 @@ macOS `.app` 번들)에는 아래 오픈소스 라이브러리가 함께 포함�
      포함될 수 있으며, 해당 모듈의 원 출처·라이선스를 확인하세요.
 
 ================================================================================
-OCR 팩 (별도 zip — 메인 앱에 포함되지 않음)
-================================================================================
-
-Windows: `msi/OCR PACK_v{버전}_{스탬프}.zip`
-macOS:   `dist/OCR PACK_macOS_v{버전}_{스탬프}.zip`
-
-팩에는 도우미(`ocr_helper.exe` 또는 `ocr_helper`), `_internal/`,
-`models/`가 들어 있습니다. OCR 팩을 재배포할 때도 아래 라이선스를
-함께 고지하세요.
-
-8. RapidOCR
-   - License: Apache License 2.0
-   - Website: https://github.com/RapidAI/RapidOCR
-   - OCR 팩 도우미의 인식 엔진입니다.
-   - RapidOCR은 엔지니어링 코드를 Apache 2.0으로 배포합니다.
-     OCR 모델 저작권은 아래 PP-OCR(Baidu / PaddleOCR)을 따릅니다.
-
-9. ONNX Runtime
-   - License: MIT License
-   - Website: https://onnxruntime.ai/
-   - RapidOCR의 추론 런타임입니다.
-
-10. OpenCV (opencv-python-headless)
-    - License: Apache License 2.0
-    - Website: https://opencv.org/
-    - OCR 이미지 전처리에 사용됩니다.
-
-11. PP-OCR 모델 (PaddleOCR / RapidOCR 배포본)
-    - License: Apache License 2.0 (PaddleOCR 프로젝트)
-    - Website: https://github.com/PaddlePaddle/PaddleOCR
-      모델 파일: RapidAI RapidOCR (ModelScope 등)
-    - 팩의 `models/`에 한글·한자·영어 검출·인식·방향 분류 ONNX와
-      사전 파일이 들어 있습니다.
-    - RapidOCR이 밝히듯 OCR 모델 저작권은 Baidu에 있습니다.
-      모델과 함께 Apache 2.0 고지를 유지하세요.
-
-12. OCR 팩에 함께 묶일 수 있는 기타 의존성
-    - NumPy: BSD 3-Clause License
-    - Pillow (PIL): HPND License
-    - Shapely: BSD License
-    - pyclipper: MIT License
-    - Python / PyInstaller 번들: 각 구성 요소의 라이선스(PSF, LGPL, BSD 등)
-
-================================================================================
 런타임 의존성 (배포판에 포함되지 않음)
 ================================================================================
 
@@ -141,11 +93,9 @@ macOS:   `dist/OCR PACK_macOS_v{버전}_{스탬프}.zip`
   라이선스를 따릅니다.
 - 한컴 오피스 한글 (Windows, 선택): HWP/HWPX 열기·병합·삽입 시 필요합니다.
   한컴 제품의 라이선스·설치는 사용자 PC에 별도로 준비되어야 합니다.
-- OCR 팩 (선택): 스캔·이미지 PDF 인식에 필요합니다. 메인 앱과 같은
-  릴리스의 OS별 zip을 OCR 폴더에 풉니다. 설치 후 인식은 오프라인입니다.
 - 인터넷 연결 (선택): 「도움말 → 업데이트 확인」만 GitHub Releases API를
-  조회합니다. 문서 편집·개인정보 제거·용량 줄이기·OCR 인식 등 일반
-  기능은 오프라인으로 동작합니다. (OCR 팩 자체는 릴리스에서 받습니다.)
+  조회합니다. 문서 편집·개인정보 제거·용량 줄이기 등 일반 기능은
+  오프라인으로 동작합니다.
 
 ================================================================================
 참고 (포함되지 않는 프로젝트)
@@ -170,5 +120,5 @@ macOS:   `dist/OCR PACK_macOS_v{버전}_{스탬프}.zip`
   본 LICENSE 파일을 따릅니다.
 - 본 저장소의 MIT 라이선스는 Tiny PDF Editor **소스 코드**에 적용됩니다.
   배포판 재배포 시 MIT만으로는 PyMuPDF·PyQt6 의무가 대체되지 않습니다.
-- 대용량 빌드 산출물(`*.msi`, `*_portable.zip`, `OCR PACK_*.zip`)은
+- 대용량 빌드 산출물(`*.msi`, `*_portable.zip`)은
   저장소에 커밋하지 마세요.

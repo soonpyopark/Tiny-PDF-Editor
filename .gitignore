@@ -5,8 +5,6 @@ dist/
 msi/Tiny PDF Editor/
 msi/*.msi
 msi/*_portable.zip
-msi/OCR PACK_*.zip
-msi/*_ocr.zip
 msi/*.wixpdb
 msi/app_icon.ico
 __pycache__/
