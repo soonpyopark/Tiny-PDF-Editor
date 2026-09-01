@@ -241,7 +241,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[${JSON.stringify(toSpecPath(path.join(ROOT, "scripts", "pyi_rth_pyqt6_path.py")))}],
     excludes=excludes,
     noarchive=False,
 )

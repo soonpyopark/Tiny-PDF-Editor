@@ -307,7 +307,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[${JSON.stringify(toSpecPath(path.join(ROOT, "scripts", "pyi_rth_pyqt6_path.py")))}],
     excludes=excludes,
     noarchive=False,
 )
@@ -399,10 +399,56 @@ function assertNoBloatPackages(appDir) {
   log("verified no unused ML/science packages in bundle");
 }
 
+const QT_RUNTIME_DLLS = [
+  "Qt6Core.dll",
+  "Qt6Gui.dll",
+  "Qt6Widgets.dll",
+  "Qt6PrintSupport.dll",
+  "Qt6Network.dll",
+];
+
+function ensureQtRuntimeInBundle(appDir) {
+  const internalDir = path.join(appDir, "_internal");
+  const qtBin = path.join(internalDir, "PyQt6", "Qt6", "bin");
+  if (!fs.existsSync(qtBin)) {
+    throw new Error(`PyInstaller bundle missing Qt6 bin: ${qtBin}`);
+  }
+  for (const name of QT_RUNTIME_DLLS) {
+    const source = path.join(qtBin, name);
+    if (!fs.existsSync(source)) {
+      throw new Error(`PyInstaller bundle missing ${name} in ${qtBin}`);
+    }
+    const dest = path.join(internalDir, name);
+    if (!fs.existsSync(dest) || fileHash(dest) !== fileHash(source)) {
+      fs.copyFileSync(source, dest);
+    }
+  }
+  for (const name of fs.readdirSync(qtBin)) {
+    const lower = name.toLowerCase();
+    if (
+      !lower.startsWith("msvcp140") &&
+      !lower.startsWith("vcruntime140") &&
+      lower !== "concrt140.dll"
+    ) {
+      continue;
+    }
+    const source = path.join(qtBin, name);
+    const dest = path.join(internalDir, name);
+    if (!fs.existsSync(dest) || fileHash(dest) !== fileHash(source)) {
+      fs.copyFileSync(source, dest);
+    }
+  }
+  if (!fs.existsSync(path.join(internalDir, "Qt6Core.dll"))) {
+    throw new Error("PyInstaller bundle missing Qt6Core.dll at _internal root");
+  }
+  log("ensured Qt6 runtime DLLs in bundle");
+}
+
 export function finalizePortableAppBundle(appDir) {
   const socketPyd = pythonStdlibExtension("_socket.pyd");
   ensureSocketInBundle(appDir, socketPyd);
   ensureBundledStdlibExtensions(appDir);
+  ensureQtRuntimeInBundle(appDir);
   assertNoBloatPackages(appDir);
 }
 
