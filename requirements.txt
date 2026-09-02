@@ -2,3 +2,6 @@ PyMuPDF>=1.28.2
 PyQt6>=6.11.0
 openpyxl>=3.1.5
 ko-pii>=1.15.2
+numpy>=2.0.0
+Pillow>=10.0.0
+onnxruntime>=1.20.0

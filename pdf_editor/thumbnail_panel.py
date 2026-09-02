@@ -101,6 +101,15 @@ def _pii_remove_action_label(indices: list[int]) -> str:
     return _scoped_page_action_label("개인정보 제거", indices)
 
 
+def _ocr_pages_action_label(indices: list[int]) -> str:
+    count = len(indices)
+    if count <= 0:
+        return "OCR 실행"
+    if count == 1:
+        return f"{indices[0] + 1}페이지 OCR 실행"
+    return f"선택된 {count}개 페이지 OCR 실행"
+
+
 def _selection_action_label(verb: str, indices: list[int], *, particle: str = "") -> str:
     """Build labels like '3페이지 삭제' / '선택한 3개 페이지를 이미지로 저장'."""
     count = len(indices)
@@ -1599,6 +1608,17 @@ class ThumbnailListWidget(QListWidget):
         else:
             self._menu_page_index = -1
         menu_indices = self._effective_menu_indices()
+        act_ocr_pages = menu.addAction(_ocr_pages_action_label(menu_indices))
+        act_ocr_pages.setEnabled(bool(menu_indices))
+        act_ocr_pages.triggered.connect(
+            lambda: self.context_action.emit("ocr_pages")
+        )
+        act_ocr_all = menu.addAction("전체페이지 OCR 실행")
+        act_ocr_all.setEnabled(self.count() > 0)
+        act_ocr_all.triggered.connect(
+            lambda: self.context_action.emit("ocr_all")
+        )
+        menu.addSeparator()
         act_pii_pages = menu.addAction(_pii_remove_action_label(menu_indices))
         act_pii_pages.setEnabled(bool(menu_indices))
         act_pii_pages.triggered.connect(
@@ -1646,6 +1666,7 @@ class ThumbnailPanel(QWidget):
     print_pages_requested = pyqtSignal(list)
     print_all_requested = pyqtSignal()
     remove_pii_requested = pyqtSignal(object)
+    ocr_requested = pyqtSignal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -2235,6 +2256,12 @@ class ThumbnailPanel(QWidget):
                 self.remove_pii_requested.emit(pii_indices)
         elif action == "remove_pii_all":
             self.remove_pii_requested.emit(None)
+        elif action == "ocr_pages":
+            ocr_indices = self.list_widget._effective_menu_indices()
+            if ocr_indices:
+                self.ocr_requested.emit(ocr_indices)
+        elif action == "ocr_all":
+            self.ocr_requested.emit(None)
 
     def _insert_index_after_current(self) -> int:
         if self.list_widget.count() == 0:

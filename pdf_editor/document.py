@@ -1792,7 +1792,6 @@ class PdfDocument:
         if not words:
             return ""
         lines: list[str] = []
-        line_sizes: list[int] = []
         current_line: tuple[int, int] | None = None
         parts: list[str] = []
         for word in words:
@@ -1803,24 +1802,13 @@ class PdfDocument:
             if line_id != current_line:
                 if parts:
                     lines.append(" ".join(parts))
-                    line_sizes.append(len(parts))
                 parts = [token]
                 current_line = line_id
             else:
                 parts.append(token)
         if parts:
             lines.append(" ".join(parts))
-            line_sizes.append(len(parts))
-
-        result: list[str] = []
-        for index, line_text in enumerate(lines):
-            if result:
-                prev = result[-1].rstrip()
-                short_title = line_sizes[index - 1] <= 2 and line_sizes[index] >= 3
-                if prev.endswith(".") or short_title:
-                    result.append(" ")
-            result.append(line_text)
-        return "".join(result)
+        return "\n".join(lines)
 
     @staticmethod
     def _plain_text_to_markup_text(text: str) -> str:

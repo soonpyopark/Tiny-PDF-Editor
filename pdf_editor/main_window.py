@@ -54,6 +54,7 @@ from PyQt6.QtWidgets import (
 )
 
 from pdf_editor.app_settings import AppSettings
+from pdf_editor.ocr import ocr_ready, run_ocr_on_document
 from pdf_editor.document import (
   PdfDocument,
   PdfPasswordRequired,
@@ -708,6 +709,7 @@ class DocumentTab(QWidget):
     self.thumbnails.print_pages_requested.connect(self._on_print_pages)
     self.thumbnails.print_all_requested.connect(self._on_print_all)
     self.thumbnails.remove_pii_requested.connect(self._on_remove_pii)
+    self.thumbnails.ocr_requested.connect(self._on_ocr_pages)
     self.thumbnails.thumb_scale_changed.connect(
       lambda _scale: self._apply_panel_width_limits()
     )
@@ -1329,6 +1331,12 @@ class DocumentTab(QWidget):
     if callable(opener):
       opener(page_indices if isinstance(page_indices, list) else None)
 
+  def _on_ocr_pages(self, page_indices: object) -> None:
+    window = self.window()
+    runner = getattr(window, "_run_ocr", None)
+    if callable(runner):
+      runner("all" if page_indices is None else "indices", page_indices if isinstance(page_indices, list) else None)
+
   def _on_export_pdf(self, indices: list[int]) -> None:
     if not indices:
       QMessageBox.information(self, "새 파일로 저장", "저장할 페이지를 선택하세요.")
@@ -1522,6 +1530,7 @@ class MainWindow(QMainWindow):
       self._act_rotate_all_ccw.setEnabled(can_add)
     if hasattr(self, "_act_page_number"):
       self._act_page_number.setEnabled(can_add)
+    self._update_ocr_actions()
     self._update_window_title()
 
   def _copy_current_tab(self) -> None:
@@ -1720,15 +1729,6 @@ class MainWindow(QMainWindow):
     edit_menu.addAction(self._act_paste)
 
     edit_menu.addSeparator()
-    act_reduce = QWidgetAction(self)
-    reduce_btn = QPushButton("용량 줄이기...")
-    reduce_btn.setFlat(True)
-    reduce_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    reduce_btn.setStyleSheet(_REDUCE_MENU_BTN_STYLE)
-    reduce_btn.clicked.connect(self._open_reduce_size_dialog)
-    act_reduce.setDefaultWidget(reduce_btn)
-    edit_menu.addAction(act_reduce)
-
     act_find = QAction("텍스트 검색...", self)
     act_find.setShortcut(QKeySequence.StandardKey.Find)
     act_find.triggered.connect(self._focus_search)
@@ -1748,6 +1748,15 @@ class MainWindow(QMainWindow):
     edit_menu.addAction(self._act_rotate_all_ccw)
 
     edit_menu.addSeparator()
+    act_reduce = QWidgetAction(self)
+    reduce_btn = QPushButton("용량 줄이기...")
+    reduce_btn.setFlat(True)
+    reduce_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    reduce_btn.setStyleSheet(_REDUCE_MENU_BTN_STYLE)
+    reduce_btn.clicked.connect(self._open_reduce_size_dialog)
+    act_reduce.setDefaultWidget(reduce_btn)
+    edit_menu.addAction(act_reduce)
+
     self._act_page_number = QWidgetAction(self)
     page_number_btn = QPushButton("쪽 번호 매기기...")
     page_number_btn.setFlat(True)
@@ -1756,6 +1765,19 @@ class MainWindow(QMainWindow):
     page_number_btn.clicked.connect(self._open_page_number_dialog)
     self._act_page_number.setDefaultWidget(page_number_btn)
     edit_menu.addAction(self._act_page_number)
+
+    ocr_menu = self.menuBar().addMenu("OCR(&O)")
+    ocr_menu.aboutToShow.connect(self._update_ocr_actions)
+    self._act_ocr_current = QAction("현재 페이지", self)
+    self._act_ocr_current.triggered.connect(lambda: self._run_ocr("current"))
+    ocr_menu.addAction(self._act_ocr_current)
+    self._act_ocr_selected = QAction("선택 페이지", self)
+    self._act_ocr_selected.triggered.connect(lambda: self._run_ocr("selected"))
+    ocr_menu.addAction(self._act_ocr_selected)
+    self._act_ocr_all = QAction("전체 페이지", self)
+    self._act_ocr_all.triggered.connect(lambda: self._run_ocr("all"))
+    ocr_menu.addAction(self._act_ocr_all)
+    self._update_ocr_actions()
 
     security_menu = self.menuBar().addMenu("보안(&S)")
 
@@ -2692,6 +2714,85 @@ class MainWindow(QMainWindow):
     except Exception as exc:
       tab.viewer.append_log_line(f"오류: {exc}")
       QMessageBox.critical(self, "개인정보 제거 오류", str(exc))
+    finally:
+      tab.document.resume_rendering()
+      tab.viewer.hide_busy_message()
+      if applied:
+        index = tab.thumbnails.current_index()
+        tab.refresh_all(keep_index=index)
+        self._update_edit_actions()
+
+  def _update_ocr_actions(self) -> None:
+    tab = self._current_tab()
+    has_doc = bool(tab and tab.document.page_count > 0)
+    selected = bool(tab and tab.thumbnails.selected_indices()) if tab else False
+    if hasattr(self, "_act_ocr_current"):
+      self._act_ocr_current.setEnabled(has_doc)
+    if hasattr(self, "_act_ocr_selected"):
+      self._act_ocr_selected.setEnabled(has_doc and selected)
+    if hasattr(self, "_act_ocr_all"):
+      self._act_ocr_all.setEnabled(has_doc)
+
+  def _run_ocr(self, scope: str, indices: list[int] | None = None) -> None:
+    tab = self._current_tab()
+    if tab is None or tab.document.page_count == 0:
+      QMessageBox.information(self, "OCR", "페이지가 있는 문서를 열어주세요.")
+      return
+    if not ocr_ready():
+      QMessageBox.warning(
+        self,
+        "OCR",
+        "OCR 모델이 없습니다.\n"
+        "배포본을 다시 설치하거나, 개발 중이라면 ocr/models 에 "
+        "공식 ONNX 파일을 두세요.",
+      )
+      return
+    if scope == "current":
+      page_indices = [tab.thumbnails.current_index()]
+    elif scope == "selected":
+      page_indices = tab.thumbnails.selected_indices()
+      if not page_indices:
+        page_indices = [tab.thumbnails.current_index()]
+    elif scope == "indices":
+      page_indices = list(indices or [])
+    else:
+      page_indices = list(range(tab.document.page_count))
+    page_indices = [index for index in page_indices if 0 <= index < tab.document.page_count]
+    if not page_indices:
+      QMessageBox.information(self, "OCR", "인식할 페이지가 없습니다.")
+      return
+    tab.document.pause_rendering()
+    tab.viewer.show_log_panel()
+    tab.viewer.append_log_line("> OCR을 시작합니다...")
+    tab.viewer.show_busy_message("OCR 중...")
+    QApplication.processEvents()
+    applied = False
+    try:
+      result = run_ocr_on_document(
+        tab.document,
+        page_indices,
+        status_callback=tab.viewer.append_log_line,
+      )
+      applied = result.applied > 0
+      tab.viewer.append_log_line(
+        f"완료: {result.applied}페이지, {result.lines}줄 "
+        f"(건너뜀 {result.skipped}, 실패 {result.failed})"
+      )
+      self.statusBar().showMessage(
+        f"OCR 완료: {result.applied}페이지 / {result.lines}줄"
+      )
+      if result.applied == 0 and result.skipped:
+        QMessageBox.information(
+          self,
+          "OCR",
+          "이미 텍스트가 있는 페이지는 건너뛰었습니다.\n"
+          "스캔본만 다시 선택해 주세요.",
+        )
+      elif result.applied == 0:
+        QMessageBox.warning(self, "OCR", "인식된 줄이 없습니다.")
+    except Exception as exc:
+      tab.viewer.append_log_line(f"오류: {exc}")
+      QMessageBox.critical(self, "OCR 오류", str(exc))
     finally:
       tab.document.resume_rendering()
       tab.viewer.hide_busy_message()

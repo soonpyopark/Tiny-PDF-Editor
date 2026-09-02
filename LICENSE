@@ -76,7 +76,19 @@ macOS `.app` 번들)에는 아래 오픈소스 라이브러리가 함께 포함�
      포함될 수 있습니다.
    - Website: https://numpy.org/ , https://python-pillow.org/
 
-7. Windows HWP 변환 헬퍼 (배포판 `pdf_editor/vendor/` 또는 `_internal`에 포함될 수 있음)
+7. onnxruntime
+   - License: MIT License
+   - Website: https://onnxruntime.ai/
+   - 스캔 PDF OCR 추론에 사용됩니다.
+
+8. Paddle PP-OCRv5 ONNX 모델 (배포판 `ocr/models`)
+   - License: Apache License 2.0
+   - det: https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx
+   - rec: https://huggingface.co/PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx
+   - 공식 Hugging Face ONNX 가중치(`det.onnx`, `rec_korean.onnx`,
+     `rec_korean.yml`)를 배포판에 포함합니다.
+
+9. Windows HWP 변환 헬퍼 (배포판 `pdf_editor/vendor/` 또는 `_internal`에 포함될 수 있음)
    - `hwp_to_pdf_helper.exe`: Tiny PDF Editor용 로컬 헬퍼 (소스: `tools/hwp_to_pdf_helper/`).
      Windows에서 한컴 한글 COM을 통해 HWP/HWPX를 PDF로 변환합니다.
    - `FilePathCheckerModule.dll`: 한컴 자동화 경로 검증용 모듈. 배포 시 함께
@@ -94,7 +106,7 @@ macOS `.app` 번들)에는 아래 오픈소스 라이브러리가 함께 포함�
 - 한컴 오피스 한글 (Windows, 선택): HWP/HWPX 열기·병합·삽입 시 필요합니다.
   한컴 제품의 라이선스·설치는 사용자 PC에 별도로 준비되어야 합니다.
 - 인터넷 연결 (선택): 「도움말 → 업데이트 확인」만 GitHub Releases API를
-  조회합니다. 문서 편집·개인정보 제거·용량 줄이기 등 일반 기능은
+  조회합니다. 문서 편집·OCR·개인정보 제거·용량 줄이기 등 일반 기능은
   오프라인으로 동작합니다.
 
 ================================================================================

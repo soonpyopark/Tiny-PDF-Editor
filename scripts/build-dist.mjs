@@ -33,6 +33,31 @@ function log(msg) {
   console.log(`[build] ${msg}`);
 }
 
+function ocrModelFiles() {
+  const dir = path.join(ROOT, "ocr", "models");
+  return [
+    path.join(dir, "det.onnx"),
+    path.join(dir, "rec_korean.onnx"),
+    path.join(dir, "rec_korean.yml"),
+  ];
+}
+
+function ensureOcrModels() {
+  run(
+    'python -c "from pdf_editor.ocr_models import download_ocr_models; download_ocr_models()"',
+  );
+  for (const file of ocrModelFiles()) {
+    if (!fs.existsSync(file)) {
+      throw new Error(`OCR model missing after download: ${file}`);
+    }
+  }
+  log("verified OCR models");
+}
+
+function ocrModelDatas() {
+  return ocrModelFiles().map((file) => [file, "ocr/models"]);
+}
+
 function run(cmd, options = {}) {
   log(`> ${cmd}`);
   execSync(cmd, { stdio: "inherit", cwd: ROOT, ...options });
@@ -280,7 +305,7 @@ ${binaryEntries}
 datas = [
 ${dataEntries}
 ]
-hiddenimports = ["fitz", "_socket", "socket"]
+hiddenimports = ["fitz", "_socket", "socket", "onnxruntime"]
 
 tmp_ret = collect_all("PyQt6")
 datas += tmp_ret[0]
@@ -297,6 +322,11 @@ datas += tmp_ret[0]
 binaries += tmp_ret[1]
 hiddenimports += tmp_ret[2]
 
+tmp_ret = collect_all("onnxruntime")
+datas += tmp_ret[0]
+binaries += tmp_ret[1]
+hiddenimports += tmp_ret[2]
+
 # Keep the onedir bundle free of optional ML/science stacks that may be
 # installed in the build Python env but are unused by Tiny PDF Editor.
 excludes = [
@@ -307,7 +337,6 @@ excludes = [
     "functorch",
     "scipy",
     "onnx",
-    "onnxruntime",
     "pandas",
     "pyhwpx",
     "sklearn",
@@ -409,7 +438,6 @@ function assertNoBloatPackages(appDir) {
     "torchvision",
     "torchaudio",
     "scipy",
-    "onnxruntime",
     "pandas",
     "pyhwpx",
   ];
@@ -530,6 +558,7 @@ export function buildPortableApp() {
 
   ensureBrandingAssets();
   ensureHwpHelper();
+  ensureOcrModels();
   invalidatePyInstallerIfVersionChanged();
   invalidatePyInstallerExeIfIconChanged();
 
@@ -537,6 +566,7 @@ export function buildPortableApp() {
     [APP_LOGO, "pdf_editor/branding"],
     [APP_ICON, "pdf_editor/branding"],
     [PDF_FILE_ICON, "pdf_editor/branding"],
+    ...ocrModelDatas(),
   ];
   if (fs.existsSync(APP_ICON_PNG)) {
     datas.push([APP_ICON_PNG, "pdf_editor/branding"]);

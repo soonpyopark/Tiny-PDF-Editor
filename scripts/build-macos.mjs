@@ -30,6 +30,31 @@ function log(msg) {
   console.log(`[build-macos] ${msg}`);
 }
 
+function ocrModelFiles() {
+  const dir = path.join(ROOT, "ocr", "models");
+  return [
+    path.join(dir, "det.onnx"),
+    path.join(dir, "rec_korean.onnx"),
+    path.join(dir, "rec_korean.yml"),
+  ];
+}
+
+function ensureOcrModels() {
+  run(
+    `"${PYTHON}" -c "from pdf_editor.ocr_models import download_ocr_models; download_ocr_models()"`,
+  );
+  for (const file of ocrModelFiles()) {
+    if (!fs.existsSync(file)) {
+      throw new Error(`OCR model missing after download: ${file}`);
+    }
+  }
+  log("verified OCR models");
+}
+
+function ocrModelDatas() {
+  return ocrModelFiles().map((file) => [file, "ocr/models"]);
+}
+
 function resolvePython() {
   const candidates = [
     process.env.PYTHON,
@@ -195,7 +220,7 @@ binaries = []
 datas = [
 ${dataEntries}
 ]
-hiddenimports = ["fitz", "socket"]
+hiddenimports = ["fitz", "socket", "onnxruntime"]
 
 tmp_ret = collect_all("PyQt6")
 datas += tmp_ret[0]
@@ -203,6 +228,11 @@ binaries += tmp_ret[1]
 hiddenimports += tmp_ret[2]
 
 tmp_ret = collect_all("pymupdf")
+datas += tmp_ret[0]
+binaries += tmp_ret[1]
+hiddenimports += tmp_ret[2]
+
+tmp_ret = collect_all("onnxruntime")
 datas += tmp_ret[0]
 binaries += tmp_ret[1]
 hiddenimports += tmp_ret[2]
@@ -215,7 +245,6 @@ excludes = [
     "functorch",
     "scipy",
     "onnx",
-    "onnxruntime",
     "pandas",
     "pyhwpx",
     "sklearn",
@@ -315,7 +344,6 @@ function assertNoBloatPackages(appDir) {
     "torchvision",
     "torchaudio",
     "scipy",
-    "onnxruntime",
     "pandas",
     "pyhwpx",
   ];
@@ -343,11 +371,13 @@ function buildMacApp() {
   fs.mkdirSync(PYI_WORK, { recursive: true });
 
   ensureBrandingAssets();
+  ensureOcrModels();
 
   const datas = [
     [APP_LOGO, "pdf_editor/branding"],
     [APP_ICON_PNG, "pdf_editor/branding"],
     [APP_ICON_ICNS, "pdf_editor/branding"],
+    ...ocrModelDatas(),
   ];
 
   const specPath = writePyInstallerSpec({
