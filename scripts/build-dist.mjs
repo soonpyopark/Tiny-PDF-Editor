@@ -43,9 +43,7 @@ function ocrModelFiles() {
 }
 
 function ensureOcrModels() {
-  run(
-    'python -c "from pdf_editor.ocr_models import download_ocr_models; download_ocr_models()"',
-  );
+  run(`node "${path.join(ROOT, "scripts", "ensure-ocr-models.mjs")}"`);
   for (const file of ocrModelFiles()) {
     if (!fs.existsSync(file)) {
       throw new Error(`OCR model missing after download: ${file}`);

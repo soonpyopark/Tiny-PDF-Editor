@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import sys
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,7 +18,6 @@ from pdf_editor.version import APP_BUILD_STAMP, APP_NAME, __version__, version_l
 
 GITHUB_REPO = "soonpyopark/Tiny-PDF-Editor"
 RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
-RELEASES_LATEST_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 _USER_AGENT = f"{APP_NAME}/{__version__}"
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?")
@@ -182,25 +180,21 @@ def fetch_latest_release(
 ) -> UpdateCheckResult:
     current = __version__
     current_build_stamp = (APP_BUILD_STAMP or "").strip() or None
-    request = urllib.request.Request(
-        RELEASES_LATEST_API,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": _USER_AGENT,
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-        method="GET",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=timeout_sec) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        return UpdateCheckResult(
-            ok=False,
-            current=current,
-            current_build_stamp=current_build_stamp,
-            error=f"GitHub 응답 오류 (HTTP {exc.code})",
+        conn = http.client.HTTPSConnection("api.github.com", timeout=timeout_sec)
+        conn.request(
+            "GET",
+            "/repos/soonpyopark/Tiny-PDF-Editor/releases/latest",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": _USER_AGENT,
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
         )
+        response = conn.getresponse()
+        status = response.status
+        body = response.read().decode("utf-8")
+        conn.close()
     except Exception as exc:  # noqa: BLE001 — surface any network/parse failure
         return UpdateCheckResult(
             ok=False,
@@ -208,6 +202,14 @@ def fetch_latest_release(
             current_build_stamp=current_build_stamp,
             error=str(exc) or "네트워크 오류",
         )
+    if status >= 400:
+        return UpdateCheckResult(
+            ok=False,
+            current=current,
+            current_build_stamp=current_build_stamp,
+            error=f"GitHub 응답 오류 (HTTP {status})",
+        )
+    payload = json.loads(body)
 
     tag_name = str(payload.get("tag_name") or "")
     latest = parse_release_tag(tag_name)
