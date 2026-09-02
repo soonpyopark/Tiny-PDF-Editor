@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import http.client
 import json
 import re
 import sys
@@ -10,8 +9,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from PyQt6.QtCore import QObject, Qt, QThread, QUrl, pyqtSignal
+from PyQt6.QtCore import QEventLoop, QObject, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWidgets import QMessageBox, QWidget
 
 from pdf_editor.version import APP_BUILD_STAMP, APP_NAME, __version__, version_label
@@ -173,6 +173,37 @@ def _current_label(result: UpdateCheckResult) -> str:
     return base
 
 
+def _fetch_latest_release_body(timeout_sec: float) -> tuple[int, str]:
+    manager = QNetworkAccessManager()
+    request = QNetworkRequest(
+        QUrl("https://api.github.com/repos/soonpyopark/Tiny-PDF-Editor/releases/latest")
+    )
+    request.setRawHeader(b"Accept", b"application/vnd.github+json")
+    request.setRawHeader(b"User-Agent", _USER_AGENT.encode("ascii", "replace"))
+    request.setRawHeader(b"X-GitHub-Api-Version", b"2022-11-28")
+    timeout_ms = max(1, int(timeout_sec * 1000))
+    request.setTransferTimeout(timeout_ms)
+    reply = manager.get(request)
+    loop = QEventLoop()
+    reply.finished.connect(loop.quit)
+    timer = QTimer()
+    timer.setSingleShot(True)
+    timer.timeout.connect(loop.quit)
+    timer.start(timeout_ms)
+    loop.exec()
+    if reply.isRunning():
+        reply.abort()
+        raise TimeoutError("업데이트 확인 시간이 초과되었습니다.")
+    status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+    body = bytes(reply.readAll()).decode("utf-8", errors="replace")
+    error = reply.error()
+    message = reply.errorString()
+    reply.deleteLater()
+    if error != QNetworkReply.NetworkError.NoError and not status:
+        raise RuntimeError(message or "네트워크 오류")
+    return int(status or 0), body
+
+
 def fetch_latest_release(
     *,
     timeout_sec: float = 12.0,
@@ -181,20 +212,7 @@ def fetch_latest_release(
     current = __version__
     current_build_stamp = (APP_BUILD_STAMP or "").strip() or None
     try:
-        conn = http.client.HTTPSConnection("api.github.com", timeout=timeout_sec)
-        conn.request(
-            "GET",
-            "/repos/soonpyopark/Tiny-PDF-Editor/releases/latest",
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": _USER_AGENT,
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-        )
-        response = conn.getresponse()
-        status = response.status
-        body = response.read().decode("utf-8")
-        conn.close()
+        status, body = _fetch_latest_release_body(timeout_sec)
     except Exception as exc:  # noqa: BLE001 — surface any network/parse failure
         return UpdateCheckResult(
             ok=False,
