@@ -7,6 +7,12 @@
 - GitHub (미러): [https://github.com/soonpyopark/Tiny-PDF-Editor](https://github.com/soonpyopark/Tiny-PDF-Editor)
 - 릴리스(설치·포터블 파일): [Releases](https://github.com/soonpyopark/Tiny-PDF-Editor/releases)
 
+## 실행 화면
+
+| Windows | macOS |
+| --- | --- |
+| ![Windows 실행 화면](assets/screenshot-windows.png) | ![macOS 실행 화면](assets/screenshot-macos.png) |
+
 ## 다운로드 및 실행
 
 ### Windows — 포터블 zip
