@@ -238,9 +238,33 @@ function toSpecPath(filePath) {
   return path.resolve(filePath).replace(/\\/g, "/");
 }
 
-function writePyInstallerSpec({ root, mainPy, appIcon, socketPyd, datas, versionInfo }) {
+function windowsIcuDlls() {
+  const sys32 = path.join(process.env.SystemRoot || "C:\\Windows", "System32");
+  const names = ["icu.dll", "icuuc.dll", "icuin.dll"];
+  const found = [];
+  for (const name of names) {
+    const candidate = path.join(sys32, name);
+    if (fs.existsSync(candidate)) {
+      found.push(candidate);
+    }
+  }
+  if (!found.some((filePath) => path.basename(filePath).toLowerCase() === "icuuc.dll")) {
+    throw new Error(
+      "Windows ICU icuuc.dll not found in System32. Qt6Core.dll cannot start on PCs without system ICU.",
+    );
+  }
+  return found;
+}
+
+function writePyInstallerSpec({ root, mainPy, appIcon, socketPyd, datas, versionInfo, extraBinaries = [] }) {
   const specPath = path.join(BUILD_DIR, "PDFEditor.spec");
   const dataEntries = datas
+    .map(
+      ([source, dest]) =>
+        `    (${JSON.stringify(toSpecPath(source))}, ${JSON.stringify(dest)}),`,
+    )
+    .join("\n");
+  const binaryEntries = [[socketPyd, "."], ...extraBinaries]
     .map(
       ([source, dest]) =>
         `    (${JSON.stringify(toSpecPath(source))}, ${JSON.stringify(dest)}),`,
@@ -250,7 +274,9 @@ function writePyInstallerSpec({ root, mainPy, appIcon, socketPyd, datas, version
   const spec = `# -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-binaries = [(${JSON.stringify(toSpecPath(socketPyd))}, ".")]
+binaries = [
+${binaryEntries}
+]
 datas = [
 ${dataEntries}
 ]
@@ -328,7 +354,7 @@ exe = EXE(
     name="PDFEditor",
     debug=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -344,7 +370,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name="PDFEditor",
 )
@@ -407,41 +433,87 @@ const QT_RUNTIME_DLLS = [
   "Qt6Network.dll",
 ];
 
+const REQUIRED_RUNTIME_DLLS = [
+  "Qt6Core.dll",
+  "vcruntime140.dll",
+  "vcruntime140_1.dll",
+  "msvcp140.dll",
+  "icuuc.dll",
+  "icu.dll",
+];
+
+function findFileIgnoreCase(dir, name) {
+  if (!fs.existsSync(dir)) {
+    return null;
+  }
+  const target = name.toLowerCase();
+  const direct = path.join(dir, name);
+  if (fs.existsSync(direct)) {
+    return direct;
+  }
+  for (const entry of fs.readdirSync(dir)) {
+    if (entry.toLowerCase() === target) {
+      return path.join(dir, entry);
+    }
+  }
+  return null;
+}
+
+function isVcRuntimeDll(name) {
+  const lower = name.toLowerCase();
+  return (
+    lower.startsWith("msvcp140") ||
+    lower.startsWith("vcruntime140") ||
+    lower === "concrt140.dll" ||
+    lower === "vccorlib140.dll"
+  );
+}
+
+function copyFileToDirs(source, destDirs) {
+  const name = path.basename(source);
+  for (const dir of destDirs) {
+    fs.mkdirSync(dir, { recursive: true });
+    const dest = path.join(dir, name);
+    if (!fs.existsSync(dest) || fileHash(dest) !== fileHash(source)) {
+      fs.copyFileSync(source, dest);
+    }
+  }
+}
+
 function ensureQtRuntimeInBundle(appDir) {
   const internalDir = path.join(appDir, "_internal");
-  const qtBin = path.join(internalDir, "PyQt6", "Qt6", "bin");
+  const pyqtDir = path.join(internalDir, "PyQt6");
+  const qtBin = path.join(pyqtDir, "Qt6", "bin");
   if (!fs.existsSync(qtBin)) {
     throw new Error(`PyInstaller bundle missing Qt6 bin: ${qtBin}`);
   }
+  const destDirs = [appDir, internalDir, pyqtDir];
+
   for (const name of QT_RUNTIME_DLLS) {
     const source = path.join(qtBin, name);
     if (!fs.existsSync(source)) {
       throw new Error(`PyInstaller bundle missing ${name} in ${qtBin}`);
     }
-    const dest = path.join(internalDir, name);
-    if (!fs.existsSync(dest) || fileHash(dest) !== fileHash(source)) {
-      fs.copyFileSync(source, dest);
-    }
+    copyFileToDirs(source, destDirs);
   }
   for (const name of fs.readdirSync(qtBin)) {
-    const lower = name.toLowerCase();
-    if (
-      !lower.startsWith("msvcp140") &&
-      !lower.startsWith("vcruntime140") &&
-      lower !== "concrt140.dll"
-    ) {
+    if (!isVcRuntimeDll(name)) {
       continue;
     }
-    const source = path.join(qtBin, name);
-    const dest = path.join(internalDir, name);
-    if (!fs.existsSync(dest) || fileHash(dest) !== fileHash(source)) {
-      fs.copyFileSync(source, dest);
+    copyFileToDirs(path.join(qtBin, name), destDirs);
+  }
+  for (const source of windowsIcuDlls()) {
+    copyFileToDirs(source, destDirs);
+  }
+
+  for (const dir of destDirs) {
+    for (const name of REQUIRED_RUNTIME_DLLS) {
+      if (!findFileIgnoreCase(dir, name)) {
+        throw new Error(`PyInstaller bundle missing ${name} in ${dir}`);
+      }
     }
   }
-  if (!fs.existsSync(path.join(internalDir, "Qt6Core.dll"))) {
-    throw new Error("PyInstaller bundle missing Qt6Core.dll at _internal root");
-  }
-  log("ensured Qt6 runtime DLLs in bundle");
+  log("ensured Qt6 / VC / ICU runtime DLLs next to exe, _internal, and PyQt6");
 }
 
 export function finalizePortableAppBundle(appDir) {
@@ -481,6 +553,11 @@ export function buildPortableApp() {
   const appDir = path.join(PYI_DIST, "PDFEditor");
   const socketPyd = pythonStdlibExtension("_socket.pyd");
   const versionInfo = writeWindowsVersionInfo(readAppVersion());
+  const extraBinaries = [];
+  for (const icuDll of windowsIcuDlls()) {
+    extraBinaries.push([icuDll, "."]);
+    extraBinaries.push([icuDll, "PyQt6"]);
+  }
   const specPath = writePyInstallerSpec({
     root: ROOT,
     mainPy: path.join(ROOT, "main.py"),
@@ -488,6 +565,7 @@ export function buildPortableApp() {
     socketPyd,
     datas,
     versionInfo,
+    extraBinaries,
   });
 
   run(
