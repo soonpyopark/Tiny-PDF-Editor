@@ -204,9 +204,7 @@ function ensureHwpHelper() {
 }
 
 function ensureBrandingAssets() {
-  if (fs.existsSync(SOURCE_LOGO)) {
-    run("python scripts/prepare-branding.py");
-  }
+  run("python scripts/prepare-branding.py");
   if (!fs.existsSync(APP_ICON) || !fs.existsSync(APP_LOGO) || !fs.existsSync(PDF_FILE_ICON)) {
     throw new Error(
       "Branding assets missing. Run: python scripts/prepare-branding.py",

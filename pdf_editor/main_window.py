@@ -134,7 +134,7 @@ from pdf_editor.update_check import (
   show_update_check_result,
   start_update_check,
 )
-from pdf_editor.print_watch import PrintSpoolWatcher, launch_watch_if_needed
+from pdf_editor.print_watch import PrintSpoolWatcher
 from pdf_editor.single_instance import (
   bind_instance_server,
   offer_to_running_instance,
@@ -2429,17 +2429,25 @@ class MainWindow(QMainWindow):
     enabled = self._app_settings.virtual_printer_enabled
     if enabled is False:
       return
+    if enabled is True:
+      if is_windows_platform():
+        from pdf_editor.virtual_printer import set_watch_at_logon
+
+        set_watch_at_logon(False)
+        self._start_print_watcher()
+      return
     try:
-      if enabled is None or not printer_is_installed():
-        install_virtual_printer()
-        self._app_settings.virtual_printer_enabled = True
-        self._app_settings.save()
+      install_virtual_printer()
+      self._app_settings.virtual_printer_enabled = True
+      self._app_settings.save()
     except OSError:
-      if enabled is None:
-        self._app_settings.virtual_printer_enabled = False
-        self._app_settings.save()
+      self._app_settings.virtual_printer_enabled = False
+      self._app_settings.save()
       return
     if is_windows_platform():
+      from pdf_editor.virtual_printer import set_watch_at_logon
+
+      set_watch_at_logon(False)
       self._start_print_watcher()
 
   def _start_print_watcher(self) -> None:
@@ -2447,7 +2455,6 @@ class MainWindow(QMainWindow):
       return
     watcher = PrintSpoolWatcher(self)
     if not watcher.start():
-      launch_watch_if_needed()
       return
     watcher.pdf_ready.connect(self._on_virtual_print_pdf)
     self._print_watcher = watcher
@@ -3166,11 +3173,6 @@ class MainWindow(QMainWindow):
     if self._print_watcher is not None:
       self._print_watcher.stop()
       self._print_watcher = None
-    if (
-      is_windows_platform()
-      and self._app_settings.virtual_printer_enabled
-    ):
-      launch_watch_if_needed()
     self._app_settings.save()
     event.accept()
 

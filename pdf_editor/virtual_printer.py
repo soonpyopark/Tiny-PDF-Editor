@@ -81,12 +81,15 @@ def printer_is_installed() -> bool:
         return mac_installed()
     if not is_windows():
         return False
-    script = (
-        f"$p = Get-Printer -Name '{PRINTER_NAME}' -ErrorAction SilentlyContinue;"
-        "if ($p) { 'YES' } else { 'NO' }"
-    )
-    code, output = _run_powershell(script)
-    return code == 0 and "YES" in output
+    import ctypes
+    from ctypes import wintypes
+
+    winspool = ctypes.WinDLL("winspool.drv")
+    handle = wintypes.HANDLE()
+    if not winspool.OpenPrinterW(PRINTER_NAME, ctypes.byref(handle), None):
+        return False
+    winspool.ClosePrinter(handle)
+    return True
 
 
 def exe_path() -> Path:
@@ -159,13 +162,7 @@ Add-Printer -Name $name -DriverName $driver -PortName $port
             "이 PC에 「Microsoft Print to PDF」 드라이버가 있어야 합니다.\n\n"
             + (output or "PowerShell 오류")
         )
-    set_watch_at_logon(True)
-    try:
-        from pdf_editor.print_watch import launch_watch_if_needed
-
-        launch_watch_if_needed()
-    except Exception:
-        pass
+    set_watch_at_logon(False)
 
 
 def uninstall_virtual_printer() -> None:

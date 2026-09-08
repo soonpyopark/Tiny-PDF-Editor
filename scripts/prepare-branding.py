@@ -492,52 +492,9 @@ def save_multi_size_ico(path: Path, images: list[Image.Image]) -> None:
 
 
 def main() -> None:
-    source = find_source()
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    from render_brand_icons import render_branding_assets
 
-    synced = sync_modified_icon_check_overrides()
-    if synced:
-        print("synced icon overrides from .cache/icon_check: " + ", ".join(synced))
-
-    logo = prepare_logo(source)
-    logo_path = OUT_DIR / "app_logo.png"
-    logo.save(logo_path)
-
-    icon_png_path = OUT_DIR / "app_icon.png"
-    app_overrides = load_size_overrides("app_icon")
-    if 256 in app_overrides:
-        app_overrides[256].save(icon_png_path)
-    else:
-        fit_icon_png(logo, 256).save(icon_png_path)
-
-    # Transparent rounded icon for app + PDF shell association.
-    app_images = build_size_images(logo)
-    app_images, app_applied = apply_size_overrides(app_images, app_overrides)
-    ico_path = OUT_DIR / "app_icon.ico"
-    save_multi_size_ico(ico_path, app_images)
-
-    pdf_images = build_size_images(logo)
-    pdf_overrides = load_size_overrides("pdf_file_icon")
-    pdf_images, pdf_applied = apply_size_overrides(pdf_images, pdf_overrides)
-    pdf_file_icon_path = OUT_DIR / "pdf_file_icon.ico"
-    save_multi_size_ico(pdf_file_icon_path, pdf_images)
-
-    icns_path = OUT_DIR / "app_icon.icns"
-    save_icns(icns_path, logo)
-
-    print(f"saved {logo_path} ({logo.size[0]}x{logo.size[1]})")
-    print(f"saved {icon_png_path}")
-    print(f"saved {ico_path} ({len(app_images)} sizes)")
-    print(f"saved {pdf_file_icon_path} ({len(pdf_images)} sizes)")
-    if icns_path.is_file():
-        print(f"saved {icns_path}")
-    if app_applied:
-        print("app_icon overrides: " + ", ".join(str(size) for size in app_applied))
-    if pdf_applied:
-        print(
-            "pdf_file_icon overrides: "
-            + ", ".join(str(size) for size in pdf_applied)
-        )
+    render_branding_assets()
 
 
 if __name__ == "__main__":

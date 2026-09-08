@@ -18,8 +18,11 @@ const PYI_WORK = path.join(BUILD_DIR, "pyinstaller-work-macos");
 const BRANDING_DIR = path.join(ROOT, "pdf_editor", "branding");
 const SOURCE_LOGO = path.join(ROOT, "assets", "source_logo.png");
 const APP_ICON_ICNS = path.join(BRANDING_DIR, "app_icon.icns");
+const PDF_FILE_ICON_ICNS = path.join(BRANDING_DIR, "pdf_file_icon.icns");
 const APP_ICON_PNG = path.join(BRANDING_DIR, "app_icon.png");
+const APP_ICON_MACOS_PNG = path.join(BRANDING_DIR, "app_icon_macos.png");
 const APP_LOGO = path.join(BRANDING_DIR, "app_logo.png");
+const APP_LOGO_MACOS = path.join(BRANDING_DIR, "app_logo_macos.png");
 const MAX_RELEASES = 3;
 
 const isMain =
@@ -182,9 +185,7 @@ function ensurePythonDeps() {
 }
 
 function ensureBrandingAssets() {
-  if (fs.existsSync(SOURCE_LOGO)) {
-    run(`"${PYTHON}" scripts/prepare-branding.py`);
-  }
+  run(`"${PYTHON}" scripts/prepare-branding.py`);
   if (!fs.existsSync(APP_LOGO) || !fs.existsSync(APP_ICON_PNG)) {
     throw new Error(
       "Branding assets missing. Run: python scripts/prepare-branding.py",
@@ -192,7 +193,7 @@ function ensureBrandingAssets() {
   }
   if (!fs.existsSync(APP_ICON_ICNS)) {
     throw new Error(
-      "app_icon.icns missing. Ensure iconutil is available and re-run prepare-branding.py",
+      "app_icon.icns missing. Re-run python scripts/prepare-branding.py",
     );
   }
 }
@@ -329,6 +330,7 @@ app = BUNDLE(
                 "CFBundleTypeExtensions": ["pdf"],
                 "LSHandlerRank": "Alternate",
                 "LSItemContentTypes": ["com.adobe.pdf"],
+                "CFBundleTypeIconFile": "pdf_file_icon.icns",
             }
         ],
     },
@@ -382,10 +384,13 @@ function buildMacApp() {
 
   const datas = [
     [APP_LOGO, "pdf_editor/branding"],
+    [APP_LOGO_MACOS, "pdf_editor/branding"],
     [APP_ICON_PNG, "pdf_editor/branding"],
+    [APP_ICON_MACOS_PNG, "pdf_editor/branding"],
     [APP_ICON_ICNS, "pdf_editor/branding"],
+    [PDF_FILE_ICON_ICNS, "pdf_editor/branding"],
     ...ocrModelDatas(),
-  ];
+  ].filter(([file]) => fs.existsSync(file));
 
   const specPath = writePyInstallerSpec({
     root: ROOT,
@@ -401,6 +406,12 @@ function buildMacApp() {
   const appDir = path.join(PYI_DIST, "Tiny PDF Editor.app");
   if (!fs.existsSync(appDir)) {
     throw new Error(`PyInstaller output not found: ${appDir}`);
+  }
+  if (fs.existsSync(PDF_FILE_ICON_ICNS)) {
+    const dest = path.join(appDir, "Contents", "Resources", "pdf_file_icon.icns");
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(PDF_FILE_ICON_ICNS, dest);
+    log("copied pdf_file_icon.icns to Contents/Resources");
   }
   assertNoBloatPackages(appDir);
   return appDir;

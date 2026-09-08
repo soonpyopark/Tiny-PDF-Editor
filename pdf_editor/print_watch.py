@@ -6,8 +6,7 @@ import sys
 from pathlib import Path
 
 from PyQt6.QtCore import QFileSystemWatcher, QLockFile, QObject, QProcess, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QIcon
-from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
+from PyQt6.QtWidgets import QApplication, QWidget
 
 from pdf_editor.resources import load_app_icon
 from pdf_editor.virtual_printer import (
@@ -17,7 +16,6 @@ from pdf_editor.virtual_printer import (
     printer_is_installed,
     spool_dir,
     spool_file,
-    uninstall_virtual_printer,
     watch_lock_file,
 )
 from pdf_editor.version import APP_NAME
@@ -117,37 +115,12 @@ class PrintWatchController(QObject):
         super().__init__(parent)
         self.watcher = PrintSpoolWatcher(self)
         self.watcher.pdf_ready.connect(self._on_pdf)
-        self._tray: QSystemTrayIcon | None = None
 
     def start(self) -> bool:
         return self.watcher.start()
 
-    def attach_tray(self, icon: QIcon) -> None:
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            return
-        tray = QSystemTrayIcon(icon, self)
-        menu = QMenu()
-        open_act = QAction("Tiny PDF Editor 열기", menu)
-        open_act.triggered.connect(lambda: launch_editor_with_pdf(""))
-        menu.addAction(open_act)
-        remove_act = QAction("가상 프린터 제거", menu)
-        remove_act.triggered.connect(self._remove_printer)
-        menu.addAction(remove_act)
-        menu.addSeparator()
-        quit_act = QAction("종료", menu)
-        quit_act.triggered.connect(QApplication.instance().quit)
-        menu.addAction(quit_act)
-        tray.setContextMenu(menu)
-        tray.setToolTip(f"{APP_NAME} 가상 프린터")
-        tray.show()
-        self._tray = tray
-
     def _on_pdf(self, path: str) -> None:
         launch_editor_with_pdf(path)
-
-    def _remove_printer(self) -> None:
-        uninstall_virtual_printer()
-        QApplication.instance().quit()
 
     def stop(self) -> None:
         self.watcher.stop()
@@ -162,9 +135,7 @@ def run_print_watch_app(app: QApplication) -> int:
     controller = PrintWatchController(app)
     if not controller.start():
         return 0
-    controller.attach_tray(icon)
     app.aboutToQuit.connect(controller.stop)
-    # Keep a hidden widget so the process is not treated as already finished.
     holder = QWidget()
     holder.setWindowTitle(APP_NAME)
     holder.resize(1, 1)

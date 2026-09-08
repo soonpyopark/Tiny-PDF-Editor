@@ -259,7 +259,7 @@ npm run build:dist:macos
 
 DMG 파일명과 동일한 `APP_BUILD_STAMP`를 앱에 심으며, 업데이트 확인은 `.dmg` 자산만 비교합니다.
 
-빌드 시 `assets/source_logo.png`가 있으면 `scripts/prepare-branding.py`가 아이콘·로고·`.icns`를 자동 생성합니다.
+빌드 시 `scripts/prepare-branding.py`가 앱/파일 아이콘(`.ico`·`.icns`·PNG)을 생성합니다. Windows와 macOS는 같은 파란 아이콘을 씁니다.
 
 **포터블 빌드 결과** (`dist/`, Windows):
 

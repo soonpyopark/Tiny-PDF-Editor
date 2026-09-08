@@ -97,12 +97,19 @@ def apply_macos_app_style(app) -> None:
 
 
 def load_app_icon() -> QIcon:
-    candidates = (
-        "app_icon.icns",
-        "app_icon.png",
-        "app_icon.ico",
-        "app_logo.png",
-    )
+    if sys.platform == "darwin":
+        candidates = (
+            "app_icon.icns",
+            "app_icon.png",
+            "app_icon.ico",
+            "app_logo.png",
+        )
+    else:
+        candidates = (
+            "app_icon.ico",
+            "app_icon.png",
+            "app_logo.png",
+        )
     for name in candidates:
         icon_path = branding_path(name)
         if not icon_path.is_file():
