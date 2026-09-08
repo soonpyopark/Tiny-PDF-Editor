@@ -26,6 +26,7 @@ from PyQt6.QtGui import (
   QColor,
   QCursor,
   QDesktopServices,
+  QFileOpenEvent,
   QIcon,
   QKeySequence,
   QShortcut,
@@ -132,6 +133,22 @@ from pdf_editor.update_check import (
   UpdateCheckResult,
   show_update_check_result,
   start_update_check,
+)
+from pdf_editor.print_watch import PrintSpoolWatcher, launch_watch_if_needed
+from pdf_editor.single_instance import (
+  bind_instance_server,
+  offer_to_running_instance,
+  start_instance_server,
+)
+from pdf_editor.virtual_printer import (
+  INSTALL_FLAG,
+  UNINSTALL_FLAG,
+  WATCH_FLAG,
+  install_virtual_printer,
+  is_macos as is_macos_platform,
+  printer_is_installed,
+  supports_virtual_printer,
+  uninstall_virtual_printer,
 )
 from pdf_editor.windows_file_assoc import (
   is_pdf_association_registered,
@@ -302,6 +319,54 @@ def parse_launch_paths(argv: list[str]) -> list[str]:
         seen.add(key)
         paths.append(path)
     return paths
+
+
+def _merge_open_paths(*groups: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for path in group:
+            if not path:
+                continue
+            key = os.path.normcase(os.path.abspath(path))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(path)
+    return merged
+
+
+class TinyApplication(QApplication):
+    """Collect macOS FileOpen events (PDF Services / open -a) before the window exists."""
+
+    def __init__(self, argv: list[str]) -> None:
+        super().__init__(argv)
+        self.pending_file_open_paths: list[str] = []
+        self.main_window: MainWindow | None = None
+
+    def take_pending_file_open_paths(self) -> list[str]:
+        paths = self.pending_file_open_paths
+        self.pending_file_open_paths = []
+        return paths
+
+    def event(self, event: QEvent) -> bool:
+        if isinstance(event, QFileOpenEvent):
+            path = event.file()
+            if path:
+                self._handle_file_open(path)
+            return True
+        return super().event(event)
+
+    def _handle_file_open(self, path: str) -> None:
+        if not path or not os.path.isfile(path):
+            return
+        if not PdfDocument.is_supported_file(path):
+            return
+        window = self.main_window
+        if window is not None:
+            window._open_printed_or_dropped(path)
+            return
+        self.pending_file_open_paths.append(path)
 
 
 class CloseSaveChoice(str, Enum):
@@ -1453,6 +1518,9 @@ class MainWindow(QMainWindow):
     self._optimize_running = False
     self._update_check_thread = None
     self._update_check_worker = None
+    self._print_watcher: PrintSpoolWatcher | None = None
+    if supports_virtual_printer():
+      QTimer.singleShot(0, self._ensure_virtual_printer)
     if self._pending_launch_paths:
       QTimer.singleShot(0, self._open_pending_launch_paths)
     else:
@@ -1667,11 +1735,15 @@ class MainWindow(QMainWindow):
     act_print.triggered.connect(self._print)
     menu.addAction(act_print)
 
-    if is_windows_platform():
+    if is_windows_platform() or is_macos_platform():
       menu.addSeparator()
-      act_assoc = QAction("PDF 파일 연결...", self)
-      act_assoc.triggered.connect(self._manage_pdf_file_association)
-      menu.addAction(act_assoc)
+      if is_windows_platform():
+        act_assoc = QAction("PDF 파일 연결...", self)
+        act_assoc.triggered.connect(self._manage_pdf_file_association)
+        menu.addAction(act_assoc)
+      act_printer = QAction("가상 프린터...", self)
+      act_printer.triggered.connect(self._manage_virtual_printer)
+      menu.addAction(act_printer)
 
     menu.addSeparator()
 
@@ -2179,9 +2251,23 @@ class MainWindow(QMainWindow):
       if self._open_paths([path]):
         opened += 1
 
+  def _discard_lone_empty_tab(self) -> None:
+    if self.tabs.count() != 1:
+      return
+    widget = self.tabs.widget(0)
+    if not isinstance(widget, DocumentTab):
+      return
+    if widget.document.modified or widget.document.source_path:
+      return
+    if widget.document.page_count > 0:
+      return
+    self.tabs.removeTab(0)
+
   def _open_pending_launch_paths(self) -> None:
-    paths = self._pending_launch_paths
+    paths = [self._claim_print_pdf_if_needed(path) for path in self._pending_launch_paths]
     self._pending_launch_paths = []
+    if paths:
+      self._discard_lone_empty_tab()
     if not self._open_paths(paths) and self.tabs.count() == 0:
       self._new_tab()
 
@@ -2336,6 +2422,128 @@ class MainWindow(QMainWindow):
       source = widget.document.source_path
       if source and Path(source).suffix.lower() == ".pdf":
         self._recent_files.set_page(source, widget.viewer.current_index())
+
+  def _ensure_virtual_printer(self) -> None:
+    if not supports_virtual_printer():
+      return
+    enabled = self._app_settings.virtual_printer_enabled
+    if enabled is False:
+      return
+    try:
+      if enabled is None or not printer_is_installed():
+        install_virtual_printer()
+        self._app_settings.virtual_printer_enabled = True
+        self._app_settings.save()
+    except OSError:
+      if enabled is None:
+        self._app_settings.virtual_printer_enabled = False
+        self._app_settings.save()
+      return
+    if is_windows_platform():
+      self._start_print_watcher()
+
+  def _start_print_watcher(self) -> None:
+    if self._print_watcher is not None:
+      return
+    watcher = PrintSpoolWatcher(self)
+    if not watcher.start():
+      launch_watch_if_needed()
+      return
+    watcher.pdf_ready.connect(self._on_virtual_print_pdf)
+    self._print_watcher = watcher
+
+  def _claim_print_pdf_if_needed(self, path: str) -> str:
+    if not is_macos_platform():
+      return path
+    from pdf_editor.macos_virtual_printer import claim_incoming_pdf
+
+    return str(claim_incoming_pdf(path))
+
+  def _open_printed_or_dropped(self, path: str) -> None:
+    self._discard_lone_empty_tab()
+    self._open_paths([self._claim_print_pdf_if_needed(path)])
+    self.showNormal()
+    self.raise_()
+    self.activateWindow()
+    self.statusBar().showMessage(f"인쇄 PDF: {path}")
+
+  def _on_virtual_print_pdf(self, path: str) -> None:
+    self._open_printed_or_dropped(path)
+
+  def _manage_virtual_printer(self) -> None:
+    if not supports_virtual_printer():
+      return
+    installed = printer_is_installed()
+    status = "설치됨" if installed else "설치 안 됨"
+    box = QMessageBox(self)
+    box.setWindowTitle("가상 프린터")
+    if is_macos_platform():
+      box.setText(
+        f"현재 상태: {status}\n\n"
+        "다른 프로그램의 인쇄 대화상자에서 PDF 메뉴 → 「Tiny PDF Editor」를 고르면\n"
+        "PDF가 다운로드 폴더에 저장된 뒤 이 프로그램에서 열립니다.\n"
+        "PDF 메뉴는 암호 없이 등록됩니다. 프린터 목록 등록은 관리자 암호가 필요할 수 있습니다."
+      )
+    else:
+      box.setText(
+        f"현재 상태: {status}\n\n"
+        "다른 프로그램의 인쇄 대화상자에서 「Tiny PDF Editor」를 고르면\n"
+        "PDF가 다운로드 폴더에 저장된 뒤 이 프로그램에서 열립니다.\n"
+        "Windows 기본 「Microsoft Print to PDF」 드라이버를 사용합니다."
+      )
+    btn_install = box.addButton("프린터 설치", QMessageBox.ButtonRole.AcceptRole)
+    btn_remove = box.addButton("프린터 제거", QMessageBox.ButtonRole.DestructiveRole)
+    box.addButton(QMessageBox.StandardButton.Close)
+    box.setDefaultButton(btn_install)
+    box.exec()
+    clicked = box.clickedButton()
+    if clicked is None or clicked == box.button(QMessageBox.StandardButton.Close):
+      return
+    if clicked == btn_remove:
+      uninstall_virtual_printer()
+      self._app_settings.virtual_printer_enabled = False
+      self._app_settings.save()
+      if self._print_watcher is not None:
+        self._print_watcher.stop()
+        self._print_watcher = None
+      QMessageBox.information(self, "가상 프린터", "가상 프린터를 제거했습니다.")
+      return
+    try:
+      install_virtual_printer(with_cups=is_macos_platform())
+    except OSError as exc:
+      QMessageBox.critical(self, "가상 프린터", str(exc))
+      return
+    self._app_settings.virtual_printer_enabled = True
+    self._app_settings.save()
+    if is_windows_platform():
+      self._start_print_watcher()
+    QMessageBox.information(
+      self,
+      "가상 프린터",
+      self._virtual_printer_installed_message(),
+    )
+
+  def _virtual_printer_installed_message(self) -> str:
+    if not is_macos_platform():
+      return (
+        "프린터 목록에 「Tiny PDF Editor」가 추가되었습니다.\n"
+        "인쇄하면 PDF가 다운로드 폴더에 저장되고 이 프로그램에서 열립니다."
+      )
+    from pdf_editor.macos_virtual_printer import (
+      cups_printer_installed,
+      pdf_service_installed,
+    )
+
+    parts: list[str] = []
+    if pdf_service_installed():
+      parts.append("PDF 메뉴")
+    if cups_printer_installed():
+      parts.append("프린터 목록")
+    where = "와 ".join(parts) if parts else "시스템"
+    return (
+      f"{where}에 「Tiny PDF Editor」가 추가되었습니다.\n"
+      "인쇄하면 PDF가 다운로드 폴더에 저장되고 이 프로그램에서 열립니다."
+    )
 
   def _manage_pdf_file_association(self) -> None:
     if not is_windows_platform():
@@ -2955,6 +3163,14 @@ class MainWindow(QMainWindow):
           event.ignore()
           return
     self._persist_open_document_pages()
+    if self._print_watcher is not None:
+      self._print_watcher.stop()
+      self._print_watcher = None
+    if (
+      is_windows_platform()
+      and self._app_settings.virtual_printer_enabled
+    ):
+      launch_watch_if_needed()
     self._app_settings.save()
     event.accept()
 
@@ -2962,7 +3178,19 @@ class MainWindow(QMainWindow):
 def run(argv: list[str] | None = None) -> None:
   init_platform()
   configure_mupdf_messages()
-  app = QApplication(sys.argv)
+  args = argv if argv is not None else sys.argv
+  flags = {str(arg).lower() for arg in args[1:]}
+  if supports_virtual_printer() and INSTALL_FLAG in flags:
+    try:
+      install_virtual_printer(with_cups=is_macos_platform())
+    except OSError:
+      sys.exit(1)
+    sys.exit(0)
+  if supports_virtual_printer() and UNINSTALL_FLAG in flags:
+    uninstall_virtual_printer()
+    sys.exit(0)
+
+  app = TinyApplication(sys.argv)
   apply_macos_app_style(app)
   app.setApplicationName(APP_NAME)
   app.setApplicationDisplayName(titled_name())
@@ -2974,11 +3202,35 @@ def run(argv: list[str] | None = None) -> None:
   if not app_icon.isNull():
     app.setWindowIcon(app_icon)
 
-  launch_paths = parse_launch_paths(argv if argv is not None else sys.argv)
+  if is_windows_platform() and WATCH_FLAG in flags:
+    from pdf_editor.print_watch import run_print_watch_app
+
+    sys.exit(run_print_watch_app(app))
+
+  app.processEvents()
+  launch_paths = _merge_open_paths(
+    parse_launch_paths(args),
+    app.take_pending_file_open_paths(),
+  )
+  if offer_to_running_instance(launch_paths):
+    sys.exit(0)
+  instance_server = start_instance_server()
 
   splash = show_loading_splash(app_icon)
   started = time.monotonic()
   window = MainWindow(launch_paths=launch_paths)
+  app.main_window = window
+  late_opens = app.take_pending_file_open_paths()
+  if late_opens:
+    window._pending_launch_paths = _merge_open_paths(
+      window._pending_launch_paths,
+      late_opens,
+    )
+    if not launch_paths:
+      QTimer.singleShot(0, window._open_pending_launch_paths)
+  if instance_server is not None:
+    window._instance_server = instance_server
+    bind_instance_server(instance_server, window)
   elapsed_ms = int((time.monotonic() - started) * 1000)
 
   finish_loading_splash(splash, elapsed_ms, window.show)

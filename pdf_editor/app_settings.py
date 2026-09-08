@@ -36,6 +36,7 @@ class AppSettings:
         self.merge_save_folder: str = default_downloads_folder()
         self.hwp_save_folder: str = default_downloads_folder()
         self.hwp_save_beside_source: bool = True
+        self.virtual_printer_enabled: bool | None = None
         self.load()
 
     def load(self) -> None:
@@ -63,12 +64,16 @@ class AppSettings:
         beside = data.get("hwp_save_beside_source")
         if isinstance(beside, bool):
             self.hwp_save_beside_source = beside
+        printer = data.get("virtual_printer_enabled")
+        if isinstance(printer, bool):
+            self.virtual_printer_enabled = printer
 
     def save(self) -> None:
         payload = {
             "merge_save_folder": self.merge_save_folder,
             "hwp_save_folder": self.hwp_save_folder,
             "hwp_save_beside_source": self.hwp_save_beside_source,
+            "virtual_printer_enabled": self.virtual_printer_enabled,
         }
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)

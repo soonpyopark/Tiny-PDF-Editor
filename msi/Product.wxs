@@ -56,6 +56,23 @@
 
     <StandardDirectory Id="DesktopFolder" />
 
+    <CustomAction Id="CA_InstallPrinter"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[INSTALLFOLDER]Tiny PDF Editor.exe&quot; --install-printer"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="ignore" />
+    <CustomAction Id="CA_UninstallPrinter"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[INSTALLFOLDER]Tiny PDF Editor.exe&quot; --uninstall-printer"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="CA_InstallPrinter" After="InstallFinalize" Condition="NOT REMOVE" />
+      <Custom Action="CA_UninstallPrinter" Before="RemoveFiles" Condition="REMOVE" />
+    </InstallExecuteSequence>
+
     <Component Id="PdfFileAssociation" Directory="INSTALLFOLDER" Guid="F2A8C4D6-1E3B-4F5A-9C7D-8E0B2A4C6D8E">
       <RegistryKey Root="HKCU" Key="Software\Classes\Applications\Tiny PDF Editor.exe">
         <RegistryValue Type="string" Value="Tiny PDF Editor" />

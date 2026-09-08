@@ -218,7 +218,7 @@ binaries = []
 datas = [
 ${dataEntries}
 ]
-hiddenimports = ["fitz", "socket", "onnxruntime"]
+hiddenimports = ["fitz", "socket", "onnxruntime", "pdf_editor.macos_virtual_printer"]
 
 tmp_ret = collect_all("PyQt6")
 datas += tmp_ret[0]
@@ -322,6 +322,15 @@ app = BUNDLE(
         "CFBundleVersion": ${JSON.stringify(readAppBuildStamp() || readAppVersion())},
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "12.0",
+        "CFBundleDocumentTypes": [
+            {
+                "CFBundleTypeName": "PDF Document",
+                "CFBundleTypeRole": "Editor",
+                "CFBundleTypeExtensions": ["pdf"],
+                "LSHandlerRank": "Alternate",
+                "LSItemContentTypes": ["com.adobe.pdf"],
+            }
+        ],
     },
 )
 `;

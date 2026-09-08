@@ -41,6 +41,7 @@ wix eula accept wix7
    DMG 파일명의 `YYMMDD_HHMMSS`가 앱의 `APP_BUILD_STAMP`와 같아 업데이트 확인에 사용됩니다.
 2. DMG를 연 뒤 `Tiny PDF Editor.app`을 **응용 프로그램**으로 드래그합니다.
 3. 최초 실행 시 Gatekeeper 경고가 나오면 앱을 Control-클릭 → **열기**, 또는 **시스템 설정 → 개인정보 보호 및 보안**에서 허용합니다.
+4. 최초 실행 시 인쇄 대화상자 **PDF** 메뉴에 `Tiny PDF Editor`가 등록됩니다. (`파일` → `가상 프린터...`)
 
 macOS에서는 다음 기능이 Windows 전용입니다.
 
