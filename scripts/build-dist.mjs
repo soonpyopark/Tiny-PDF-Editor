@@ -238,9 +238,10 @@ function invalidatePyInstallerExeIfIconChanged() {
   log("app icon changed; forcing PyInstaller EXE rebuild");
 }
 
-function copyPdfFileIconToAppRoot(appDir) {
+function copyShellIconsToAppRoot(appDir) {
+  fs.copyFileSync(APP_ICON, path.join(appDir, "app_icon.ico"));
   fs.copyFileSync(PDF_FILE_ICON, path.join(appDir, "pdf_file_icon.ico"));
-  log("copied pdf_file_icon.ico to app root");
+  log("copied app_icon.ico and pdf_file_icon.ico to app root");
 }
 
 function pythonStdlibExtension(name) {
@@ -545,6 +546,7 @@ export function finalizePortableAppBundle(appDir) {
   ensureSocketInBundle(appDir, socketPyd);
   ensureBundledStdlibExtensions(appDir);
   ensureQtRuntimeInBundle(appDir);
+  copyShellIconsToAppRoot(appDir);
   assertNoBloatPackages(appDir);
 }
 
@@ -598,7 +600,6 @@ export function buildPortableApp() {
     `python -m PyInstaller --noconfirm "${specPath}" --distpath "${PYI_DIST}" --workpath "${PYI_WORK}"`,
   );
   finalizePortableAppBundle(appDir);
-  copyPdfFileIconToAppRoot(appDir);
 }
 
 function fileHash(filePath) {

@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from pdf_editor.resources import installed_pdf_file_icon_path
+from pdf_editor.resources import installed_app_icon_path, installed_pdf_file_icon_path
 from pdf_editor.version import APP_NAME
 
 _CAPABILITIES_KEY = r"Software\TinyPDFEditor\Capabilities"
@@ -49,6 +49,13 @@ def _open_command() -> str:
 
 def _default_icon_value() -> str:
     icon_path = installed_pdf_file_icon_path()
+    if icon_path is not None:
+        return f"{icon_path},0"
+    return f"{exe_path()},0"
+
+
+def _app_icon_value() -> str:
+    icon_path = installed_app_icon_path()
     if icon_path is not None:
         return f"{icon_path},0"
     return f"{exe_path()},0"
@@ -146,7 +153,8 @@ def register_pdf_association() -> None:
     winreg = _winreg()
     command = _open_command()
     app_key = _applications_key()
-    icon = _default_icon_value()
+    file_icon = _default_icon_value()
+    app_icon = _app_icon_value()
     root = winreg.HKEY_CURRENT_USER
 
     _set_value(root, app_key, "", APP_NAME)
@@ -154,11 +162,11 @@ def register_pdf_association() -> None:
     _set_value(root, app_key, "AppUserModelID", "TinyPDFEditor.TinyPDFEditor.1")
     _set_value(root, rf"{app_key}\shell\open\command", "", command)
     _set_value(root, rf"{app_key}\SupportedTypes\.pdf", "", "")
-    _set_value(root, rf"{app_key}\DefaultIcon", "", icon)
+    _set_value(root, rf"{app_key}\DefaultIcon", "", app_icon)
 
     _set_value(root, _CAPABILITIES_KEY, "ApplicationName", APP_NAME)
     _set_value(root, _CAPABILITIES_KEY, "ApplicationDescription", f"{APP_NAME} PDF editor")
-    _set_value(root, _CAPABILITIES_KEY, "ApplicationIcon", icon)
+    _set_value(root, _CAPABILITIES_KEY, "ApplicationIcon", app_icon)
     _set_value(
         root,
         rf"{_CAPABILITIES_KEY}\FileAssociations",
@@ -168,12 +176,12 @@ def register_pdf_association() -> None:
     _set_value(root, _REGISTERED_APPS_KEY, _REGISTERED_APPS_VALUE, _CAPABILITIES_KEY)
 
     _set_value(root, rf"Software\Classes\{_PROGID}", "", APP_NAME)
-    _set_value(root, rf"Software\Classes\{_PROGID}\DefaultIcon", "", icon)
+    _set_value(root, rf"Software\Classes\{_PROGID}\DefaultIcon", "", file_icon)
     _set_value(root, rf"Software\Classes\{_PROGID}\shell\open\command", "", command)
 
     # Claim .pdf and point its icon at our branding (used when we are the ProgID).
     _set_value(root, rf"Software\Classes\{_PDF_EXTENSION}", "", _PROGID)
-    _set_value(root, rf"Software\Classes\{_PDF_EXTENSION}\DefaultIcon", "", icon)
+    _set_value(root, rf"Software\Classes\{_PDF_EXTENSION}\DefaultIcon", "", file_icon)
     _set_value(
         root,
         rf"Software\Classes\{_PDF_EXTENSION}\OpenWithProgids",
@@ -183,6 +191,13 @@ def register_pdf_association() -> None:
 
     _disable_pdf_thumbnails(root)
     _notify_assoc_changed()
+
+
+def refresh_pdf_association_if_registered() -> None:
+    """Rewrite shell icons to the current install so old branding does not linger."""
+    if not is_windows() or not is_pdf_association_registered():
+        return
+    register_pdf_association()
 
 
 def unregister_pdf_association() -> None:

@@ -323,6 +323,7 @@ app = BUNDLE(
         "CFBundleVersion": ${JSON.stringify(readAppBuildStamp() || readAppVersion())},
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "12.0",
+        "CFBundleIconFile": "app_icon",
         "CFBundleDocumentTypes": [
             {
                 "CFBundleTypeName": "PDF Document",
@@ -407,12 +408,22 @@ function buildMacApp() {
   if (!fs.existsSync(appDir)) {
     throw new Error(`PyInstaller output not found: ${appDir}`);
   }
+  const resources = path.join(appDir, "Contents", "Resources");
+  fs.mkdirSync(resources, { recursive: true });
+  if (fs.existsSync(APP_ICON_ICNS)) {
+    for (const name of ["app_icon.icns", "icon.icns"]) {
+      fs.copyFileSync(APP_ICON_ICNS, path.join(resources, name));
+    }
+    log("stamped app_icon.icns into Contents/Resources");
+  }
   if (fs.existsSync(PDF_FILE_ICON_ICNS)) {
-    const dest = path.join(appDir, "Contents", "Resources", "pdf_file_icon.icns");
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.copyFileSync(PDF_FILE_ICON_ICNS, dest);
+    fs.copyFileSync(
+      PDF_FILE_ICON_ICNS,
+      path.join(resources, "pdf_file_icon.icns"),
+    );
     log("copied pdf_file_icon.icns to Contents/Resources");
   }
+  fs.utimesSync(appDir, new Date(), new Date());
   assertNoBloatPackages(appDir);
   return appDir;
 }

@@ -91,7 +91,7 @@
       <RegistryKey Root="HKCU" Key="Software\TinyPDFEditor\Capabilities">
         <RegistryValue Name="ApplicationName" Type="string" Value="Tiny PDF Editor" />
         <RegistryValue Name="ApplicationDescription" Type="string" Value="Tiny PDF Editor PDF editor" />
-        <RegistryValue Name="ApplicationIcon" Type="string" Value="[INSTALLFOLDER]pdf_file_icon.ico,0" />
+        <RegistryValue Name="ApplicationIcon" Type="string" Value="[INSTALLFOLDER]app_icon.ico,0" />
       </RegistryKey>
 
       <RegistryKey Root="HKCU" Key="Software\TinyPDFEditor\Capabilities\FileAssociations">
@@ -111,7 +111,7 @@
       </RegistryKey>
 
       <RegistryKey Root="HKCU" Key="Software\Classes\Applications\Tiny PDF Editor.exe\DefaultIcon">
-        <RegistryValue Type="string" Value="[INSTALLFOLDER]pdf_file_icon.ico,0" />
+        <RegistryValue Type="string" Value="[INSTALLFOLDER]app_icon.ico,0" />
       </RegistryKey>
 
       <RegistryKey Root="HKCU" Key="Software\Classes\TinyPDFEditor.pdf\shell\open\command">
@@ -145,7 +145,8 @@
                 Name="Tiny PDF Editor"
                 Description="Tiny PDF Editor"
                 Target="[INSTALLFOLDER]Tiny PDF Editor.exe"
-                WorkingDirectory="INSTALLFOLDER" />
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="AppIcon.ico" />
       <RegistryValue Root="HKCU"
                      Key="Software\Tiny PDF Editor\Tiny PDF Editor"
                      Name="installed"
@@ -160,7 +161,8 @@
                 Name="Tiny PDF Editor"
                 Description="Tiny PDF Editor"
                 Target="[INSTALLFOLDER]Tiny PDF Editor.exe"
-                WorkingDirectory="INSTALLFOLDER" />
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="AppIcon.ico" />
       <RegistryValue Root="HKCU"
                      Key="Software\Tiny PDF Editor\Tiny PDF Editor"
                      Name="desktop_shortcut"

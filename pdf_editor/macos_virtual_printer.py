@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -31,8 +32,9 @@ def frozen_app_bundle() -> Path | None:
     if not getattr(sys, "frozen", False):
         return None
     exe = Path(sys.executable).resolve()
+    # …/Tiny PDF Editor.app/Contents/MacOS/<exe>
     if exe.parent.name == "MacOS":
-        return exe.parents[1]
+        return exe.parents[2]
     return None
 
 
@@ -69,21 +71,25 @@ def _sh_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
+def _remove_pdf_service_entries() -> None:
+    dest_dir = pdf_services_dir()
+    for name in (PDF_SERVICE_NAME, f"{PDF_SERVICE_NAME}.app"):
+        path = dest_dir / name
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            subprocess.run(["rm", "-rf", str(path)], check=False)
+
+
 def _install_pdf_service() -> None:
     dest_dir = pdf_services_dir()
     dest_dir.mkdir(parents=True, exist_ok=True)
+    _remove_pdf_service_entries()
     bundle = frozen_app_bundle()
-    link = dest_dir / PDF_SERVICE_NAME
-    applet = dest_dir / f"{PDF_SERVICE_NAME}.app"
-    for old in (link, applet):
-        if old.is_symlink() or old.is_file():
-            old.unlink()
-        elif old.is_dir() and old.suffix == ".app":
-            subprocess.run(["rm", "-rf", str(old)], check=False)
     if bundle is not None:
-        link.symlink_to(bundle)
+        (dest_dir / PDF_SERVICE_NAME).symlink_to(bundle)
         return
-    _install_dev_pdf_applet(applet)
+    _install_dev_pdf_applet(dest_dir / f"{PDF_SERVICE_NAME}.app")
 
 
 def _install_dev_pdf_applet(dest: Path) -> None:
@@ -111,16 +117,14 @@ def _install_dev_pdf_applet(dest: Path) -> None:
     )
     if completed.returncode != 0:
         raise OSError(completed.stderr.strip() or "PDF 서비스 애플릿을 만들지 못했습니다.")
+    icns = Path(__file__).resolve().parent / "branding" / "app_icon.icns"
+    applet_icns = dest / "Contents" / "Resources" / "applet.icns"
+    if icns.is_file() and applet_icns.parent.is_dir():
+        shutil.copy2(icns, applet_icns)
 
 
 def _remove_pdf_service() -> None:
-    dest_dir = pdf_services_dir()
-    for name in (PDF_SERVICE_NAME, f"{PDF_SERVICE_NAME}.app"):
-        path = dest_dir / name
-        if path.is_symlink() or path.is_file():
-            path.unlink()
-        elif path.is_dir():
-            subprocess.run(["rm", "-rf", str(path)], check=False)
+    _remove_pdf_service_entries()
 
 
 def pdf_service_installed() -> bool:
@@ -248,6 +252,14 @@ def _remove_cups_with_admin() -> None:
         capture_output=True,
         text=True,
     )
+
+
+def repair_pdf_service() -> None:
+    """Keep PDF Services pointing at the current .app, not an old Contents path."""
+    if not is_macos():
+        return
+    _write_open_helper()
+    _install_pdf_service()
 
 
 def install_virtual_printer(*, with_cups: bool = False) -> None:

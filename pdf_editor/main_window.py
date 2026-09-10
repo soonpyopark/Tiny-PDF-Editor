@@ -154,6 +154,7 @@ from pdf_editor.windows_file_assoc import (
   is_pdf_association_registered,
   is_windows as is_windows_platform,
   open_pdf_default_apps_settings,
+  refresh_pdf_association_if_registered,
   register_pdf_association,
   unregister_pdf_association,
 )
@@ -1519,6 +1520,8 @@ class MainWindow(QMainWindow):
     self._update_check_thread = None
     self._update_check_worker = None
     self._print_watcher: PrintSpoolWatcher | None = None
+    if is_windows_platform():
+      QTimer.singleShot(0, refresh_pdf_association_if_registered)
     if supports_virtual_printer():
       QTimer.singleShot(0, self._ensure_virtual_printer)
     if self._pending_launch_paths:
@@ -2448,6 +2451,13 @@ class MainWindow(QMainWindow):
 
         set_watch_at_logon(False)
         self._start_print_watcher()
+      elif sys.platform == "darwin":
+        from pdf_editor.macos_virtual_printer import repair_pdf_service
+
+        try:
+          repair_pdf_service()
+        except OSError:
+          pass
       return
     try:
       install_virtual_printer()
