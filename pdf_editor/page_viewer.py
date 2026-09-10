@@ -10,6 +10,7 @@ from PyQt6.QtCore import (
     QEvent,
     QEventLoop,
     QPoint,
+    QPointF,
     QPropertyAnimation,
     QRect,
     QSize,
@@ -17,7 +18,17 @@ from PyQt6.QtCore import (
     QTimer,
     pyqtSignal,
 )
-from PyQt6.QtGui import QColor, QFont, QIcon, QKeyEvent, QPainter, QPen, QPixmap, QWheelEvent
+from PyQt6.QtGui import (
+    QColor,
+    QFont,
+    QIcon,
+    QKeyEvent,
+    QPainter,
+    QPen,
+    QPixmap,
+    QPolygonF,
+    QWheelEvent,
+)
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
@@ -67,6 +78,26 @@ SMOOTH_SCROLL_DURATION_MS = 260
 PREVIEW_BACKGROUND = "#efefef"
 SPREAD_GAP_PX = 12
 PAGE_STACK_GAP_PX = 16
+_PAGE_NAV_BTN_W = 36
+_PAGE_NAV_BTN_H = 36
+_PAGE_NAV_GAP = 10
+_PAGE_NAV_MARGIN = 10
+_PAGE_NAV_BTN_STYLE = """
+QPushButton#pageNavBtn {
+    background-color: rgba(255, 255, 255, 220);
+    border: 1px solid #c8c8c8;
+    border-radius: 18px;
+    padding: 0px;
+}
+QPushButton#pageNavBtn:hover {
+    background-color: #ffffff;
+    border-color: #1a73e8;
+}
+QPushButton#pageNavBtn:disabled {
+    background-color: rgba(245, 245, 245, 160);
+    border-color: #dddddd;
+}
+"""
 PREVIEW_SCROLLBAR_STYLE = """
 QScrollBar:vertical {
     background: #f3f3f3;
@@ -220,6 +251,68 @@ def _arrow_nav_icon(to_left: bool) -> QIcon:
         painter.drawLine(2, 2, width - 3, mid_y)
         painter.drawLine(width - 3, mid_y, 2, height - 2)
 
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _vertical_nav_icon(to_up: bool) -> QIcon:
+    """Filled up/down triangles for circular overlay buttons."""
+    width, height = 16, 16
+    pixmap = QPixmap(width, height)
+    pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#333333"))
+    if to_up:
+        triangle = QPolygonF(
+            [
+                QPointF(width / 2, 2.5),
+                QPointF(width - 2.5, height - 3.5),
+                QPointF(2.5, height - 3.5),
+            ]
+        )
+    else:
+        triangle = QPolygonF(
+            [
+                QPointF(2.5, 3.5),
+                QPointF(width - 2.5, 3.5),
+                QPointF(width / 2, height - 2.5),
+            ]
+        )
+    painter.drawPolygon(triangle)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _page_nav_side_icon(side: str) -> QIcon:
+    """Viewer frame with overlay on the left, right, or hidden."""
+    width, height = 16, 14
+    pixmap = QPixmap(width, height)
+    pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(Qt.GlobalColor.black)
+    pen.setWidthF(1.3)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawRoundedRect(1, 1, width - 2, height - 2, 2, 2)
+    if side == "hidden":
+        slash = QPen(Qt.GlobalColor.black)
+        slash.setWidthF(1.4)
+        slash.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(slash)
+        painter.drawLine(3, height - 3, width - 3, 3)
+    else:
+        painter.setBrush(Qt.GlobalColor.black)
+        painter.setPen(Qt.PenStyle.NoPen)
+        strip_w = 4
+        if side == "left":
+            painter.drawRoundedRect(2, 2, strip_w, height - 4, 1, 1)
+        else:
+            painter.drawRoundedRect(width - 2 - strip_w, 2, strip_w, height - 4, 1, 1)
     painter.end()
     return QIcon(pixmap)
 
@@ -994,6 +1087,7 @@ class PageViewer(QWidget):
     text_edited = pyqtSignal()
     markup_clicked = pyqtSignal(object)
     text_selection_changed = pyqtSignal()
+    page_nav_side_changed = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1011,6 +1105,7 @@ class PageViewer(QWidget):
         self._awaiting_continuation = False
         self._doc_scroll = None
         self._doc_scroll_syncing = False
+        self._page_nav_side = "hidden"
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -1150,6 +1245,17 @@ class PageViewer(QWidget):
         self._busy_base_message = ""
         self._busy_progress = 0
 
+        self._page_nav_up = self._make_page_nav_button(
+            _vertical_nav_icon(True),
+            "페이지 위로 이동",
+            lambda: self.scroll_by_key(up=True, page=True),
+        )
+        self._page_nav_down = self._make_page_nav_button(
+            _vertical_nav_icon(False),
+            "페이지 아래로 이동",
+            lambda: self.scroll_by_key(up=False, page=True),
+        )
+
         self._doc_scroll = QScrollBar(Qt.Orientation.Vertical)
         self._doc_scroll.setObjectName("docScroll")
         self._doc_scroll.setVisible(False)
@@ -1253,6 +1359,7 @@ class PageViewer(QWidget):
         if layout is not None:
             layout.activate()
         self._position_busy_overlay()
+        self._position_page_nav_buttons()
         QApplication.processEvents(
             QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents
         )
@@ -1265,6 +1372,9 @@ class PageViewer(QWidget):
         if not self._busy_overlay.isHidden():
             self._busy_overlay.raise_()
             self._busy_overlay.repaint()
+        elif self._page_nav_buttons_visible():
+            self._page_nav_up.raise_()
+            self._page_nav_down.raise_()
         self.repaint()
 
     def _toggle_log_panel(self) -> None:
@@ -1300,6 +1410,102 @@ class PageViewer(QWidget):
             return
         self._busy_overlay.setGeometry(self.preview_stack.geometry())
         self._busy_overlay.raise_()
+
+    def _make_page_nav_button(
+        self, icon: QIcon, tooltip: str, on_click
+    ) -> QPushButton:
+        btn = QPushButton(self._preview_row)
+        btn.setObjectName("pageNavBtn")
+        btn.setIcon(icon)
+        btn.setIconSize(QSize(16, 16))
+        btn.setFixedSize(_PAGE_NAV_BTN_W, _PAGE_NAV_BTN_H)
+        btn.setToolTip(tooltip)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        btn.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        if sys.platform == "darwin":
+            btn.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+            btn.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        btn.setStyleSheet(_PAGE_NAV_BTN_STYLE)
+        btn.clicked.connect(on_click)
+        btn.hide()
+        return btn
+
+    def _page_nav_buttons_visible(self) -> bool:
+        return (
+            hasattr(self, "_page_nav_up")
+            and self._page_nav_side != "hidden"
+            and bool(self._document and self._document.page_count > 0)
+            and self._busy_overlay.isHidden()
+        )
+
+    def _hide_page_nav_buttons(self) -> None:
+        if not hasattr(self, "_page_nav_up"):
+            return
+        self._page_nav_up.hide()
+        self._page_nav_down.hide()
+
+    def set_page_nav_side(self, side: str) -> None:
+        if side in ("left", "right", "hidden"):
+            self._page_nav_side = side
+        else:
+            self._page_nav_side = "hidden"
+        self._sync_page_nav_side_button()
+        self._position_page_nav_buttons()
+
+    def page_nav_side(self) -> str:
+        return self._page_nav_side
+
+    def _toggle_page_nav_side(self) -> None:
+        order = ("hidden", "right", "left")
+        try:
+            index = order.index(self._page_nav_side)
+        except ValueError:
+            index = 0
+        self.set_page_nav_side(order[(index + 1) % len(order)])
+        self.page_nav_side_changed.emit(self._page_nav_side)
+
+    def _sync_page_nav_side_button(self) -> None:
+        if not hasattr(self, "btn_page_nav_side"):
+            return
+        side = self._page_nav_side
+        self.btn_page_nav_side.setIcon(_page_nav_side_icon(side))
+        if side == "hidden":
+            self.btn_page_nav_side.setToolTip("페이지 이동 버튼을 오른쪽에 표시")
+        elif side == "right":
+            self.btn_page_nav_side.setToolTip("페이지 이동 버튼을 왼쪽에 배치")
+        else:
+            self.btn_page_nav_side.setToolTip("페이지 이동 버튼을 숨김")
+
+    def _position_page_nav_buttons(self) -> None:
+        if not self._page_nav_buttons_visible():
+            self._hide_page_nav_buttons()
+            return
+        viewport = self.scroll_area.viewport()
+        origin = viewport.mapTo(self._preview_row, QPoint(0, 0))
+        extra_left = 16
+        if self._page_nav_side == "left":
+            x = origin.x() + _PAGE_NAV_MARGIN + extra_left
+        else:
+            x = origin.x() + viewport.width() - _PAGE_NAV_MARGIN - _PAGE_NAV_BTN_W
+        pair_h = _PAGE_NAV_BTN_H * 2 + _PAGE_NAV_GAP
+        vp_h = viewport.height()
+        # Center the pair at 40% from the bottom of the preview.
+        y = origin.y() + int(round(vp_h * 0.6 - pair_h / 2))
+        y_min = origin.y() + _PAGE_NAV_MARGIN
+        y_max = origin.y() + vp_h - pair_h - _PAGE_NAV_MARGIN
+        y = max(y_min, min(y, y_max))
+        self._page_nav_up.setGeometry(x, y, _PAGE_NAV_BTN_W, _PAGE_NAV_BTN_H)
+        self._page_nav_down.setGeometry(
+            x,
+            y + _PAGE_NAV_BTN_H + _PAGE_NAV_GAP,
+            _PAGE_NAV_BTN_W,
+            _PAGE_NAV_BTN_H,
+        )
+        self._page_nav_up.show()
+        self._page_nav_down.show()
+        self._page_nav_up.raise_()
+        self._page_nav_down.raise_()
 
     def _refresh_busy_overlay(self) -> None:
         self._busy_overlay.setText(self._busy_base_message)
@@ -1990,12 +2196,14 @@ class PageViewer(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self._position_page_nav_buttons()
         if self._document and self._document.page_count > 0 and self._fit_mode:
             self._render_current_page()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._position_busy_overlay()
+        self._position_page_nav_buttons()
         if self._fit_mode and not self._rendering:
             # Defer so scrollbar show/hide from spread size does not re-enter render.
             QTimer.singleShot(0, self._render_current_page_if_fitting)
@@ -2311,6 +2519,7 @@ class PageViewer(QWidget):
         self.page_changed.emit(best)
 
     def _on_preview_viewport_resized(self) -> None:
+        self._position_page_nav_buttons()
         if self._fit_mode:
             self._sync_document_scrollbar()
             return
@@ -2545,6 +2754,14 @@ class PageViewer(QWidget):
         self.zoom_combo.currentTextChanged.connect(self._on_zoom_combo_changed)
         layout.addWidget(self.zoom_combo)
 
+        layout.addSpacing(6)
+        self.btn_page_nav_side = QPushButton()
+        self.btn_page_nav_side.setFixedSize(compact_btn, btn_height)
+        self.btn_page_nav_side.setIconSize(QSize(16, 14))
+        self.btn_page_nav_side.clicked.connect(self._toggle_page_nav_side)
+        layout.addWidget(self.btn_page_nav_side)
+        self._sync_page_nav_side_button()
+
         self._status_trail_stretch_index = layout.count()
         layout.addStretch(0)
 
@@ -2667,6 +2884,7 @@ class PageViewer(QWidget):
             btn.setEnabled(has_pages)
 
         self._update_size_label()
+        self._position_page_nav_buttons()
 
     def _update_preview_stack(self) -> None:
         has_pages = bool(self._document and self._document.page_count > 0)

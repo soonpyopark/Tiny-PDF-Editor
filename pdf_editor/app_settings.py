@@ -37,6 +37,8 @@ class AppSettings:
         self.hwp_save_folder: str = default_downloads_folder()
         self.hwp_save_beside_source: bool = True
         self.virtual_printer_enabled: bool | None = None
+        self.page_nav_side: str = "hidden"
+        self.page_nav_chosen: bool = False
         self.load()
 
     def load(self) -> None:
@@ -67,6 +69,13 @@ class AppSettings:
         printer = data.get("virtual_printer_enabled")
         if isinstance(printer, bool):
             self.virtual_printer_enabled = printer
+        # Only restore overlay placement after the user has toggled it.
+        # Older builds wrote the previous default ("right") on every quit.
+        if data.get("page_nav_chosen") is True:
+            nav_side = data.get("page_nav_side")
+            if nav_side in ("left", "right", "hidden"):
+                self.page_nav_side = nav_side
+                self.page_nav_chosen = True
 
     def save(self) -> None:
         payload = {
@@ -74,6 +83,10 @@ class AppSettings:
             "hwp_save_folder": self.hwp_save_folder,
             "hwp_save_beside_source": self.hwp_save_beside_source,
             "virtual_printer_enabled": self.virtual_printer_enabled,
+            "page_nav_side": (
+                self.page_nav_side if self.page_nav_chosen else "hidden"
+            ),
+            "page_nav_chosen": self.page_nav_chosen,
         }
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)

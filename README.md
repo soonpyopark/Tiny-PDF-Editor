@@ -79,6 +79,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
   - 검출: [ko-pii](https://github.com/Marker-Inc-Korea/ko-pii) (MIT)
   - 표시: 검정 박스 또는 한글 라벨
   - 자동 탐지는 완전하지 않으며, 텍스트 레이어가 없는 스캔 PDF는 탐지가 어려울 수 있습니다. **저장 전 결과를 반드시 확인**하세요.
+  - 진행 상태는 미리보기 오버레이와 하단 **터미널**에 표시됩니다.
 
 ### 썸네일 (왼쪽)
 
@@ -110,8 +111,10 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 - **전체 화면** (`F11`): 메뉴·상태 표시줄·왼쪽 패널을 숨기고 미리보기와 하단 페이지 탐색 바만 표시합니다.
   - `Esc` 키 또는 화면 맨 위에 마우스를 올려 나타나는 닫기 버튼으로 해제합니다.
 - **확대/축소**: 슬라이더(최대 **600%**), `Ctrl` + 마우스 휠
-- **페이지 이동**: 맨 앞 / 이전 / 다음 / 마지막 버튼, 방향키·PageUp/PageDown
-- **연속 스크롤** (`너비 맞추기` 모드): 스크롤·방향키로 다음 페이지로 넘어간 뒤 이전 페이지로 돌아가면, 해당 페이지 **맨 아래**부터 표시되어 위로 스크롤하며 읽을 수 있습니다.
+- **페이지 이동**: 하단 맨 앞 / 이전 / 다음 / 마지막 버튼, 방향키·PageUp/PageDown
+- **페이지 위·아래 이동 버튼**: 미리보기 위 원형 삼각형 버튼으로 화면 단위 스크롤합니다. 하단 툴바 아이콘을 누르면 **숨김(기본) → 오른쪽 → 왼쪽** 순으로 바뀝니다. 위치를 고른 뒤에는 다음에 앱을 열어도 유지됩니다.
+- **연속 스크롤**: 스크롤·방향키로 다음 페이지로 넘어간 뒤 이전 페이지로 돌아가면, 해당 페이지 **맨 아래**부터 표시되어 위로 스크롤하며 읽을 수 있습니다.
+- **터미널 패널**: OCR·개인정보 제거·용량 줄이기 진행 로그가 미리보기 하단에 표시됩니다.
 - **페이지 크기 표시**: 하단에 `가로 x 세로 cm`와, 페이지에 임베드된 래스터 이미지가 있을 때 **생성 시 유효 DPI**를 함께 표시합니다.
 - **텍스트 드래그 선택**: 미리보기에서 텍스트를 드래그해 선택하고 `Ctrl+C`로 복사
 - **텍스트 덮어쓰기**: 텍스트가 있는 PDF에서 **한 줄을 더블클릭**하면 인라인 편집기가 열립니다. 수정 후 `Enter` 또는 다른 곳 클릭으로 반영, `Esc`로 취소합니다. (`Ctrl+Z` 되돌리기 지원)
@@ -126,7 +129,8 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 - **용량 줄이기** (`편집` 메뉴): PDF 파일 크기를 줄이는 도구 (아래 참고)
 - **OCR** (`OCR` 메뉴): 스캔 PDF를 한 줄씩 인식해 **숨은 텍스트 레이어**를 넣습니다. 다시 실행하면 이전 OCR 레이어만 교체합니다.
   - 현재 / 선택 / 전체 페이지, 또는 썸네일 우클릭
-  - 배포본에 Paddle 공식 PP-OCRv5 mobile det + 한국어 rec ONNX가 포함되어 있으며, 인터넷 없이 동작합니다.
+  - 배포본에 Paddle 공식 PP-OCRv5 mobile det + 한국어 rec ONNX가 포함되어 있으며, **onnxruntime**으로 인터넷 없이 동작합니다. (PaddlePaddle·OpenCV 런타임은 쓰지 않습니다.)
+  - 진행 상태는 미리보기 오버레이와 하단 **터미널**에 표시됩니다.
 - **쪽 번호 매기기** (`편집` 메뉴): 위·아래 × 왼쪽/가운데/오른쪽에 쪽 번호를 넣거나, **쪽 번호 없음**으로 이 프로그램이 넣은 번호만 제거합니다.
   - 숫자 스타일(`1, 2, 3` / `i, ii, iii` / `I, II, III`), 줄표, 접두사·접미사
   - 시작 위치·시작 번호, 글자 크기, 쪽 번호 색상, 배경 색상(또는 투명)
@@ -198,12 +202,19 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
 ## 개발자용: 소스에서 실행
 
+Python 3.10+ 와 가상환경(권장: 3.12)이 필요합니다.
+
 ```bash
+python3.12 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 python main.py
 ```
 
-의존성: PyMuPDF, PyQt6, openpyxl, ko-pii (`requirements.txt` 참고).
+또는 Node.js가 있으면 `npm run dev`가 `python main.py`와 같습니다.
+
+의존성 (`requirements.txt`): PyMuPDF, PyQt6, openpyxl, ko-pii, numpy, Pillow, onnxruntime.
+OCR 모델 가중치는 배포 빌드 시 `scripts/ensure-ocr-models.mjs`로 받습니다.
 
 ### Windows 배포판 빌드
 
@@ -259,6 +270,8 @@ npm run build:dist:macos
 
 DMG 파일명과 동일한 `APP_BUILD_STAMP`를 앱에 심으며, 업데이트 확인은 `.dmg` 자산만 비교합니다.
 
+릴리스 의존성을 먼저 맞추려면 `npm run upgrade:release-deps`를 쓸 수 있습니다. (`--skip-npm`으로 npm 쪽은 생략 가능)
+
 빌드 시 `scripts/prepare-branding.py`가 앱/파일 아이콘(`.ico`·`.icns`·PNG)을 생성합니다. Windows와 macOS는 같은 파란 아이콘을 씁니다.
 
 **포터블 빌드 결과** (`dist/`, Windows):
@@ -305,7 +318,10 @@ msi/
 - PyMuPDF (fitz) — 렌더링·편집·압축·레닥션·암호
 - openpyxl — 형광펜·밑줄 Excel로 보내기
 - ko-pii — 한국어 개인정보 검출 (`보안` → 개인정보 제거)
+- numpy / Pillow — OCR 전처리·이미지 처리
+- onnxruntime — PP-OCRv5 ONNX 추론 (배포판 `ocr/models`)
 - Windows HWP 변환: 로컬 `hwp_to_pdf_helper` + 한컴 한글 COM (별도 한컴 설치 필요)
+- 가상 프린터: Windows(`Microsoft Print to PDF`) · macOS(인쇄 대화상자 PDF 메뉴 / CUPS)
 
 ---
 

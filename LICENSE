@@ -32,7 +32,8 @@ macOS `.app` 번들)에는 아래 오픈소스 라이브러리가 함께 포함�
 재배포**할 때는 각 라이브러리 라이선스도 준수해야 합니다.
 
 프로젝트 홈페이지: https://note4all.tistory.com
-소스 저장소: https://github.com/soonpyopark/Tiny-PDF-Editor
+소스 저장소 (메인): https://gitlab.aigov.go.kr/soonpyo/tiny-pdf-editor
+소스 저장소 (미러) / 릴리스: https://github.com/soonpyopark/Tiny-PDF-Editor
 
 1. PyMuPDF (pymupdf)
    - License: GNU Affero General Public License v3.0 (AGPL-3.0)
@@ -70,23 +71,24 @@ macOS `.app` 번들)에는 아래 오픈소스 라이브러리가 함께 포함�
    - PyInstaller로 묶인 기타 의존성: 각 프로젝트의 라이선스(PSF, LGPL, BSD 등)를
      따릅니다.
 
-6. NumPy / Pillow (번들에 포함될 수 있음)
-   - NumPy: BSD 3-Clause License — PyMuPDF·빌드 과정에서 포함될 수 있습니다.
-   - Pillow (PIL): HPND License — 이미지 처리·브랜딩 아이콘 생성 경로에서
-     포함될 수 있습니다.
+6. NumPy / Pillow
+   - NumPy: BSD 3-Clause License — OCR 전처리 및 빌드 과정에서 사용됩니다.
+   - Pillow (PIL): HPND License — 이미지 처리·브랜딩 아이콘 생성·OCR 전처리에
+     사용됩니다.
    - Website: https://numpy.org/ , https://python-pillow.org/
 
 7. onnxruntime
    - License: MIT License
    - Website: https://onnxruntime.ai/
-   - 스캔 PDF OCR 추론에 사용됩니다.
+   - 스캔 PDF OCR 추론에 사용됩니다. 배포판에 함께 포함됩니다.
 
 8. Paddle PP-OCRv5 ONNX 모델 (배포판 `ocr/models`)
    - License: Apache License 2.0
    - det: https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx
    - rec: https://huggingface.co/PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx
    - 공식 Hugging Face ONNX 가중치(`det.onnx`, `rec_korean.onnx`,
-     `rec_korean.yml`)를 배포판에 포함합니다.
+     `rec_korean.yml`)를 배포판에 포함합니다. PaddlePaddle 런타임은 포함하지
+     않습니다.
 
 9. Windows HWP 변환 헬퍼 (배포판 `pdf_editor/vendor/` 또는 `_internal`에 포함될 수 있음)
    - `hwp_to_pdf_helper.exe`: Tiny PDF Editor용 로컬 헬퍼 (소스: `tools/hwp_to_pdf_helper/`).
@@ -125,8 +127,8 @@ macOS `.app` 번들)에는 아래 오픈소스 라이브러리가 함께 포함�
 - 포터블 배포 패키지에 본 LICENSE 파일, README.md, DISTRIBUTE.md를 함께
   포함하세요. (`npm run build:dist:exe` / `build:dist:portable` /
   `build:dist:macos` 빌드 시 자동 복사됩니다.)
-- MSI·포터블 zip·GitHub Releases로 배포할 때도 본 LICENSE의 서드파티 고지를
-  명시하는 것을 권장합니다.
+- MSI·포터블 zip·GitHub Releases·GitLab로 배포할 때도 본 LICENSE의
+  서드파티 고지를 명시하는 것을 권장합니다.
 - MSI 설치 과정의 사용권 계약(`msi/License.rtf`)에는
   https://note4all.tistory.com 이 표시됩니다. 상세 서드파티 고지는
   본 LICENSE 파일을 따릅니다.

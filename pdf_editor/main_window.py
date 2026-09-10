@@ -2194,11 +2194,24 @@ class MainWindow(QMainWindow):
 
   def _add_tab(self, document: PdfDocument, title: str | None = None) -> DocumentTab:
     tab = DocumentTab(document)
+    tab.viewer.set_page_nav_side(self._app_settings.page_nav_side)
+    tab.viewer.page_nav_side_changed.connect(self._on_page_nav_side_changed)
     name = title or document.display_name
     index = self.tabs.addTab(tab, name)
     self.tabs.setCurrentIndex(index)
     self._sync_facing_pages_action()
     return tab
+
+  def _on_page_nav_side_changed(self, side: str) -> None:
+    self._app_settings.page_nav_side = (
+      side if side in ("left", "right", "hidden") else "hidden"
+    )
+    self._app_settings.page_nav_chosen = True
+    self._app_settings.save()
+    for index in range(self.tabs.count()):
+      widget = self.tabs.widget(index)
+      if isinstance(widget, DocumentTab):
+        widget.viewer.set_page_nav_side(self._app_settings.page_nav_side)
 
   def _new_tab(self) -> None:
     self._add_tab(PdfDocument(), "새 문서")
