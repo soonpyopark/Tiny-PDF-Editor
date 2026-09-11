@@ -1902,7 +1902,7 @@ class MainWindow(QMainWindow):
     act_update = QAction("업데이트 확인", self)
     act_update.triggered.connect(self._check_for_updates)
     help_menu.addAction(act_update)
-    act_about = QAction("About", self)
+    act_about = QAction("정보(About)", self)
     act_about.triggered.connect(toggle_about_splash)
     help_menu.addAction(act_about)
 
