@@ -272,7 +272,7 @@ DMG 파일명과 동일한 `APP_BUILD_STAMP`를 앱에 심으며, 업데이트 �
 
 릴리스 의존성을 먼저 맞추려면 `npm run upgrade:release-deps`를 쓸 수 있습니다. (`--skip-npm`으로 npm 쪽은 생략 가능)
 
-빌드 시 `scripts/prepare-branding.py`가 앱/파일 아이콘(`.ico`·`.icns`·PNG)을 생성합니다. Windows와 macOS는 같은 파란 아이콘을 씁니다.
+빌드 시 `scripts/prepare-branding.py`가 앱/파일 아이콘(`.ico`·`.icns`·PNG)을 생성합니다. Windows와 macOS는 같은 붉은 아이콘을 씁니다.
 
 **포터블 빌드 결과** (`dist/`, Windows):
 

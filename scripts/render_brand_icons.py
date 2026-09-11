@@ -19,11 +19,11 @@ MASTER_SIZE = 1024
 _ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
 _ICNS_PIXELS = (16, 32, 64, 128, 256, 512, 1024)
 
-WIN_TOP = (108, 194, 241)
-WIN_BOT = (68, 121, 223)
-WIN_FILE = (37, 99, 214)
-WIN_FILE_FOLD = (147, 197, 253)
-WIN_FILE_EDGE = (23, 64, 160)
+WIN_TOP = (243, 109, 123)
+WIN_BOT = (196, 48, 58)
+WIN_FILE = (214, 70, 78)
+WIN_FILE_FOLD = (252, 186, 190)
+WIN_FILE_EDGE = (160, 32, 40)
 
 
 def _font(size: int, *, heavy: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -296,7 +296,7 @@ def render_windows_app(size: int, *, compact: bool | None = None) -> Image.Image
         size,
         compact=compact,
         doc_fill=(255, 255, 255),
-        doc_fold=(214, 236, 252),
+        doc_fold=(252, 214, 218),
         mark_fill=WIN_BOT,
         text_fill=(255, 255, 255),
         subtitle="PDF EDITOR",
