@@ -2523,11 +2523,12 @@ class MainWindow(QMainWindow):
       )
     btn_install = box.addButton("프린터 설치", QMessageBox.ButtonRole.AcceptRole)
     btn_remove = box.addButton("프린터 제거", QMessageBox.ButtonRole.DestructiveRole)
-    box.addButton(QMessageBox.StandardButton.Close)
+    close_btn = box.addButton(QMessageBox.StandardButton.Close)
+    close_btn.setText("닫기")
     box.setDefaultButton(btn_install)
     box.exec()
     clicked = box.clickedButton()
-    if clicked is None or clicked == box.button(QMessageBox.StandardButton.Close):
+    if clicked is None or clicked == close_btn:
       return
     if clicked == btn_remove:
       uninstall_virtual_printer()
@@ -2593,11 +2594,12 @@ class MainWindow(QMainWindow):
     btn_register = box.addButton("연결 등록", QMessageBox.ButtonRole.AcceptRole)
     btn_unregister = box.addButton("연결 해제", QMessageBox.ButtonRole.DestructiveRole)
     btn_settings = box.addButton("Windows 설정", QMessageBox.ButtonRole.ActionRole)
-    box.addButton(QMessageBox.StandardButton.Close)
+    close_btn = box.addButton(QMessageBox.StandardButton.Close)
+    close_btn.setText("닫기")
     box.setDefaultButton(btn_register)
     box.exec()
     clicked = box.clickedButton()
-    if clicked is None or clicked == box.button(QMessageBox.StandardButton.Close):
+    if clicked is None or clicked == close_btn:
       return
 
     if clicked == btn_settings:

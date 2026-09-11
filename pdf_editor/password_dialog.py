@@ -135,6 +135,7 @@ class SetPasswordDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("설정")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
         buttons.accepted.connect(self._accept_if_valid)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
@@ -205,6 +206,7 @@ class OpenPdfPasswordDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("확인")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
         buttons.accepted.connect(self._accept_if_valid)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
