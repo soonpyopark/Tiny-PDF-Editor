@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-import fitz
+import pymupdf as fitz
 
 PAGE_NUMBER_ANNOT_TITLE = "tpe:pagenum"
 

@@ -6,18 +6,28 @@ import functools
 import hashlib
 import io
 import os
+import re
 import sys
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 
 from pdf_editor.cross_page_selection import PageSelectionSegment
 from pdf_editor.hwp_convert import (
     HWP_EXTENSIONS,
     convert_hwp_to_temp_pdf,
+)
+from pdf_editor.signature_stamp import (
+    SIGNATURE_ANNOT_TITLE,
+    SignatureStampHit,
+    is_signature_annot,
+    parse_signature_annot,
+    serialize_signature_annot,
+    signature_embfile_name,
+    signature_image_id,
 )
 from pdf_editor.page_numbers import (
     DEFAULT_PAGE_NUMBER_RGB,
@@ -36,6 +46,12 @@ from pdf_editor.page_numbers import (
     serialize_page_number_options,
 )
 
+_IMAGE_DRAW_RE = re.compile(
+    rb"q\s+"
+    rb"([0-9.+-eE]+)\s+([0-9.+-eE]+)\s+([0-9.+-eE]+)\s+"
+    rb"([0-9.+-eE]+)\s+([0-9.+-eE]+)\s+([0-9.+-eE]+)\s+"
+    rb"cm\s+/([^\s/]+)\s+Do\s+Q"
+)
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".tif", ".webp"}
 PDF_EXTENSIONS = {".pdf"}
 SUPPORTED_FILE_FILTER = (
@@ -446,8 +462,18 @@ class PdfDocument:
         return buffer.getvalue()
 
     def _snapshot_bytes(self) -> bytes:
-        """Serialize document for undo/redo; empty documents use a sentinel payload."""
-        return self.save_to_bytes()
+        """Serialize document for undo/redo without garbage-collecting live xrefs."""
+        if len(self._doc) == 0:
+            return _EMPTY_SNAPSHOT
+        buffer = io.BytesIO()
+        self._doc.save(
+            buffer,
+            garbage=0,
+            deflate=True,
+            use_objstms=False,
+            encryption=fitz.mupdf.PDF_ENCRYPT_NONE,
+        )
+        return buffer.getvalue()
 
     @staticmethod
     def _raw_doc_bytes(doc: fitz.Document) -> bytes:
@@ -2924,6 +2950,9 @@ class PdfDocument:
         try:
             fitz.TOOLS.mupdf_warnings(reset=True)
             pix = page.get_pixmap(matrix=matrix, alpha=False, annots=annots)
+            if pix is not None and pix.width > 1 and pix.height > 1:
+                fitz.TOOLS.mupdf_warnings(reset=True)
+                return pix
             if self._render_failed_after_mupdf():
                 return self._blank_page_pixmap(page.rect.width, page.rect.height, zoom)
             return pix
@@ -3125,6 +3154,410 @@ class PdfDocument:
                 if len(pdf_paths) == 1:
                     self._source_path = pdf_paths[0]
         return added
+
+    def stamp_image(
+        self,
+        page_index: int,
+        image_bytes: bytes,
+        rect: fitz.Rect,
+    ) -> None:
+        """Overlay a signature image and keep a hidden marker for later edits."""
+        dest = self._signature_dest_rect(page_index, rect)
+        if dest is None:
+            raise ValueError("서명 위치가 페이지 밖입니다.")
+        if not image_bytes:
+            raise ValueError("넣을 이미지가 없습니다.")
+        self._record_undo_checkpoint()
+        image_id = signature_image_id(image_bytes)
+        self._ensure_signature_embfile(image_id, image_bytes)
+        page = self._doc[page_index]
+        if self._has_signature_annot_near(page, dest):
+            self._wipe_signature_cluster(page, dest)
+        image_xref = page.insert_image(dest, stream=image_bytes, keep_proportion=False)
+        self._add_signature_marker(
+            page,
+            dest,
+            image_id,
+            image_width=0,
+            image_height=0,
+            image_xref=image_xref,
+            png_bytes=image_bytes,
+        )
+        self._touch()
+
+    def find_signature_stamp_at(
+        self,
+        page_index: int,
+        point: fitz.Point,
+    ) -> SignatureStampHit | None:
+        if not (0 <= page_index < len(self._doc)):
+            return None
+        page = self._doc[page_index]
+        hits: list[SignatureStampHit] = []
+        for annot in PdfDocument._iter_page_annots(page):
+            if not is_signature_annot(annot):
+                continue
+            rect = fitz.Rect(annot.rect)
+            if rect.is_empty or point not in rect:
+                continue
+            hit = self._signature_hit_from_annot(page_index, annot)
+            if hit is not None:
+                hits.append(hit)
+        return hits[-1] if hits else self._orphan_signature_hit_at(page_index, point)
+
+    def _orphan_signature_hit_at(
+        self,
+        page_index: int,
+        point: fitz.Point,
+    ) -> SignatureStampHit | None:
+        page = self._doc[page_index]
+        for xref, bbox in self._stamp_image_bboxes(page):
+            if point not in bbox:
+                continue
+            png_bytes = b""
+            try:
+                extracted = self._doc.extract_image(xref)
+            except (RuntimeError, ValueError):
+                extracted = None
+            if extracted and extracted.get("image"):
+                png_bytes = extracted["image"]
+            width, height = 1, 1
+            if png_bytes:
+                try:
+                    pix = fitz.Pixmap(png_bytes)
+                    width = max(1, pix.width)
+                    height = max(1, pix.height)
+                except (RuntimeError, ValueError):
+                    pass
+            return SignatureStampHit(
+                page_index=page_index,
+                annot_xref=0,
+                image_id="",
+                rect=bbox,
+                width=width,
+                height=height,
+                png_bytes=png_bytes,
+                image_xref=xref,
+            )
+        return None
+
+    def remove_signature_visual(
+        self,
+        hit: SignatureStampHit,
+        *,
+        record_undo: bool = True,
+    ) -> None:
+        if not (0 <= hit.page_index < len(self._doc)):
+            return
+        if record_undo:
+            self._record_undo_checkpoint()
+        page = self._doc[hit.page_index]
+        self._wipe_signature_cluster(page, hit.rect, extra_xref=hit.image_xref)
+        self._touch()
+
+    def delete_signature_stamp(
+        self,
+        hit: SignatureStampHit,
+        *,
+        record_undo: bool = True,
+    ) -> None:
+        if not (0 <= hit.page_index < len(self._doc)):
+            return
+        if record_undo:
+            self._record_undo_checkpoint()
+        page = self._doc[hit.page_index]
+        self._wipe_signature_cluster(page, hit.rect, extra_xref=hit.image_xref)
+        self._touch()
+
+    def replace_signature_stamp(
+        self,
+        hit: SignatureStampHit,
+        rect: fitz.Rect,
+        image_bytes: bytes,
+        *,
+        record_undo: bool = False,
+    ) -> None:
+        dest = self._signature_dest_rect(hit.page_index, rect)
+        if dest is None or not image_bytes:
+            raise ValueError("서명 위치가 페이지 밖입니다.")
+        if self._rects_match(dest, hit.rect, tol=8):
+            return
+        if record_undo:
+            self._record_undo_checkpoint()
+        page = self._doc[hit.page_index]
+        image_id = hit.image_id or signature_image_id(image_bytes)
+        self._ensure_signature_embfile(image_id, image_bytes)
+        image_xref = page.insert_image(dest, stream=image_bytes, keep_proportion=False)
+        self._wipe_signature_cluster(
+            page,
+            hit.rect,
+            extra_xref=hit.image_xref,
+            keep_rect=dest,
+        )
+        self._add_signature_marker(
+            page,
+            dest,
+            image_id,
+            hit.width,
+            hit.height,
+            image_xref,
+            png_bytes=image_bytes,
+        )
+        self._touch()
+
+    def _signature_dest_rect(self, page_index: int, rect: fitz.Rect) -> fitz.Rect | None:
+        if not (0 <= page_index < len(self._doc)):
+            return None
+        dest = fitz.Rect(rect) & self._doc[page_index].rect
+        if dest.is_empty or dest.width < 1 or dest.height < 1:
+            return None
+        return dest
+
+    def _ensure_signature_embfile(self, image_id: str, image_bytes: bytes) -> None:
+        name = signature_embfile_name(image_id)
+        names = list(self._doc.embfile_names() or [])
+        if name not in names:
+            self._doc.embfile_add(name, image_bytes, filename=name)
+
+    def _signature_png_bytes(self, image_id: str, image_xref: int | None) -> bytes:
+        name = signature_embfile_name(image_id)
+        names = list(self._doc.embfile_names() or [])
+        if name in names:
+            payload = self._doc.embfile_get(name)
+            if payload:
+                return payload
+        if image_xref:
+            try:
+                extracted = self._doc.extract_image(image_xref)
+            except (RuntimeError, ValueError):
+                extracted = None
+            if extracted and extracted.get("image"):
+                return extracted["image"]
+        return b""
+
+    def _signature_hit_from_annot(self, page_index: int, annot) -> SignatureStampHit | None:
+        parsed = parse_signature_annot((annot.info or {}).get("content") or "")
+        if parsed is None:
+            return None
+        image_id, width, height, image_xref = parsed
+        png_bytes = self._signature_png_bytes(image_id, image_xref)
+        if not png_bytes:
+            return None
+        if width <= 1 or height <= 1:
+            pix = fitz.Pixmap(png_bytes)
+            width = max(1, pix.width)
+            height = max(1, pix.height)
+        return SignatureStampHit(
+            page_index=page_index,
+            annot_xref=annot.xref,
+            image_id=image_id,
+            rect=fitz.Rect(annot.rect),
+            width=width,
+            height=height,
+            png_bytes=png_bytes,
+            image_xref=image_xref,
+        )
+
+    def _has_signature_annot_near(self, page, rect: fitz.Rect) -> bool:
+        seed = fitz.Rect(rect)
+        if seed.is_empty:
+            return False
+        seed += (-12, -12, 12, 12)
+        seed &= page.rect
+        for annot in PdfDocument._iter_page_annots(page):
+            if not is_signature_annot(annot):
+                continue
+            annot_rect = fitz.Rect(annot.rect)
+            if not annot_rect.is_empty and not (annot_rect & seed).is_empty:
+                return True
+        return False
+
+    def _is_page_background_bbox(self, page, bbox: fitz.Rect) -> bool:
+        return (
+            bbox.width >= page.rect.width * 0.45
+            and bbox.height >= page.rect.height * 0.45
+        )
+
+    def _stamp_image_bboxes(self, page) -> list[tuple[int, fitz.Rect]]:
+        found: list[tuple[int, fitz.Rect]] = []
+        for item in page.get_images(full=True) or []:
+            try:
+                bbox = fitz.Rect(page.get_image_bbox(item))
+            except (RuntimeError, ValueError):
+                continue
+            if bbox.is_empty or bbox.width < 4 or bbox.height < 4:
+                continue
+            if self._is_page_background_bbox(page, bbox):
+                continue
+            found.append((item[0], bbox))
+        return found
+
+    def _bbox_is_stamp_copy(self, bbox: fitz.Rect, seed: fitz.Rect) -> bool:
+        inter = bbox & seed
+        if inter.is_empty:
+            return False
+        smaller = min(bbox.width * bbox.height, seed.width * seed.height)
+        if smaller <= 1:
+            return False
+        return (inter.width * inter.height) / smaller >= 0.3
+
+    def _content_image_page_rect(
+        self,
+        page,
+        a: float,
+        b: float,
+        c: float,
+        d: float,
+        e: float,
+        f: float,
+    ) -> fitz.Rect:
+        drawn = fitz.Rect(0, 0, 1, 1) * fitz.Matrix(a, b, c, d, e, f)
+        return drawn * page.transformation_matrix
+
+    def _remove_overlapping_image_draws(
+        self,
+        page,
+        seed: fitz.Rect,
+        keep_rect: fitz.Rect | None = None,
+    ) -> None:
+        """Remove signature image draws. delete_image leaves a stretched 1x1 leftover."""
+        doc = page.parent
+        if doc is None:
+            return
+        for xref in list(page.get_contents() or []):
+            try:
+                data = doc.xref_stream(xref)
+            except (RuntimeError, ValueError):
+                continue
+            matches = list(_IMAGE_DRAW_RE.finditer(data))
+            if not matches:
+                continue
+            out = data
+            changed = False
+            for match in reversed(matches):
+                a, b, c, d, e, f = (float(group) for group in match.groups()[:6])
+                rect = self._content_image_page_rect(page, a, b, c, d, e, f)
+                if rect.is_empty or self._is_page_background_bbox(page, rect):
+                    continue
+                if keep_rect is not None and self._bbox_is_stamp_copy(rect, keep_rect):
+                    continue
+                if not self._bbox_is_stamp_copy(rect, seed):
+                    continue
+                out = out[: match.start()] + out[match.end() :]
+                changed = True
+            if changed:
+                try:
+                    doc.update_stream(xref, out)
+                except (RuntimeError, ValueError):
+                    pass
+
+    def _wipe_signature_cluster(
+        self,
+        page,
+        rect: fitz.Rect,
+        *,
+        extra_xref: int | None = None,
+        keep_rect: fitz.Rect | None = None,
+    ) -> None:
+        seed = fitz.Rect(rect)
+        if seed.is_empty:
+            return
+        seed += (-12, -12, 12, 12)
+        seed &= page.rect
+        self._remove_overlapping_image_draws(page, seed, keep_rect=keep_rect)
+        pending_annots = []
+        for annot in PdfDocument._iter_page_annots(page):
+            if not is_signature_annot(annot):
+                continue
+            annot_rect = fitz.Rect(annot.rect)
+            if annot_rect.is_empty or (annot_rect & seed).is_empty:
+                continue
+            if keep_rect is not None and self._rects_match(annot_rect, keep_rect, tol=8):
+                continue
+            pending_annots.append(annot)
+        for annot in pending_annots:
+            try:
+                page.delete_annot(annot)
+            except (RuntimeError, ValueError):
+                pass
+
+    def _signature_image_xref(self, page, hit: SignatureStampHit) -> int | None:
+        images = list(page.get_images(full=True) or [])
+        if hit.image_xref:
+            for item in images:
+                if item[0] == hit.image_xref and item[2] > 2 and item[3] > 2:
+                    return hit.image_xref
+        for item in images:
+            if item[2] <= 2 and item[3] <= 2:
+                continue
+            try:
+                bbox = page.get_image_bbox(item)
+            except (RuntimeError, ValueError):
+                continue
+            if (
+                abs(bbox.x0 - hit.rect.x0) < 2
+                and abs(bbox.y0 - hit.rect.y0) < 2
+                and abs(bbox.x1 - hit.rect.x1) < 2
+                and abs(bbox.y1 - hit.rect.y1) < 2
+            ):
+                return item[0]
+        return None
+
+    @staticmethod
+    def _annot_by_xref(page, xref: int):
+        for annot in PdfDocument._iter_page_annots(page):
+            if annot.xref == xref:
+                return annot
+        return None
+
+    @staticmethod
+    def _rects_match(left: fitz.Rect, right: fitz.Rect, *, tol: float = 2.0) -> bool:
+        return (
+            abs(left.x0 - right.x0) <= tol
+            and abs(left.y0 - right.y0) <= tol
+            and abs(left.x1 - right.x1) <= tol
+            and abs(left.y1 - right.y1) <= tol
+        )
+
+    def _find_signature_annot(self, page, *, annot_xref: int | None, rect: fitz.Rect):
+        found = None
+        if annot_xref is not None:
+            found = self._annot_by_xref(page, annot_xref)
+            if found is not None and is_signature_annot(found):
+                return found
+        for annot in PdfDocument._iter_page_annots(page):
+            if not is_signature_annot(annot):
+                continue
+            if self._rects_match(fitz.Rect(annot.rect), rect):
+                return annot
+        return None
+
+    def _add_signature_marker(
+        self,
+        page,
+        rect: fitz.Rect,
+        image_id: str,
+        image_width: int,
+        image_height: int,
+        image_xref: int | None,
+        png_bytes: bytes | None = None,
+    ) -> None:
+        width = image_width
+        height = image_height
+        if (width <= 1 or height <= 1) and png_bytes:
+            pix = fitz.Pixmap(png_bytes)
+            width = max(1, pix.width)
+            height = max(1, pix.height)
+        annot = page.add_rect_annot(rect)
+        annot.set_colors(stroke=None, fill=None)
+        annot.set_border(width=0)
+        annot.set_opacity(0)
+        annot.set_info(
+            title=SIGNATURE_ANNOT_TITLE,
+            content=serialize_signature_annot(image_id, width, height, image_xref),
+        )
+        annot.set_flags(2 | 32)
+        annot.update()
 
     def insert_blank_page_at(self, index: int) -> None:
         """Insert a blank page at *index* (same size as a nearby page, or A4 if empty)."""

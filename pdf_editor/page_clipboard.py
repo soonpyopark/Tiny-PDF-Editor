@@ -57,7 +57,7 @@ class PageClipboard:
         if not pdf_bytes:
             return None
         try:
-            import fitz
+            import pymupdf as fitz
 
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             try:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-import fitz
+import pymupdf as fitz
 from PyQt6.QtCore import (
     QEasingCurve,
     QEvent,
@@ -20,13 +20,16 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QColor,
+    QCursor,
     QFont,
     QIcon,
     QKeyEvent,
+    QKeySequence,
     QPainter,
     QPen,
     QPixmap,
     QPolygonF,
+    QShortcut,
     QWheelEvent,
 )
 from PyQt6.QtWidgets import (
@@ -37,6 +40,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -66,6 +70,17 @@ from pdf_editor.highlight_colors import (
     set_preferred_underline_rgb,
 )
 from pdf_editor.pixmap_utils import pixmap_from_fitz
+from pdf_editor.signature_overlay import SignatureStampOverlay
+from pdf_editor.signature_stamp import (
+    SignatureStampHit,
+    StampPlacementMemory,
+    copy_signature_png_to_clipboard,
+    default_stamp_rect,
+    pixmap_from_png_bytes,
+    remember_stamp_placement,
+    stamp_rect_from_drag,
+    stamp_rect_from_memory,
+)
 from pdf_editor.text_highlight_menu import build_text_selection_context_menu
 
 ZOOM_PRESETS = [25, 50, 75, 100, 125, 150, 200, 250, 300, 350, 400, 500, 600]
@@ -349,6 +364,7 @@ class PageCanvas(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAutoFillBackground(False)
         self._document: PdfDocument | None = None
         self._page_index = 0
         self._zoom = 1.0
@@ -856,6 +872,9 @@ class PageCanvas(QLabel):
         menu.exec(global_pos)
 
     def contextMenuEvent(self, event) -> None:
+        if self._viewer is not None and self._viewer.handle_signature_context(self, event):
+            event.accept()
+            return
         if not self._prepare_context_menu_selection(event.pos()):
             return
         self._show_text_selection_menu(event.globalPos())
@@ -916,6 +935,13 @@ class PageCanvas(QLabel):
         self._selected_words = selected_words
 
     def mousePressEvent(self, event) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._viewer is not None
+            and self._viewer.handle_signature_press(self, event)
+        ):
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             self.setFocus()
             if self._viewer is not None and self._viewer._awaiting_continuation:
@@ -965,6 +991,9 @@ class PageCanvas(QLabel):
         self._anchor = QPoint(int(x0 * self._zoom), int(y0 * self._zoom))
 
     def mouseMoveEvent(self, event) -> None:
+        if self._viewer is not None and self._viewer.handle_signature_move(self, event):
+            event.accept()
+            return
         if self._anchor is not None and event.buttons() & Qt.MouseButton.LeftButton:
             self._cursor = event.pos()
             self._update_selection()
@@ -972,6 +1001,9 @@ class PageCanvas(QLabel):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if self._viewer is not None and self._viewer.handle_signature_release(self, event):
+            event.accept()
+            return
         if self.mouseGrabber() == self:
             self.releaseMouse()
         if event.button() == Qt.MouseButton.LeftButton and self._anchor is not None:
@@ -991,6 +1023,20 @@ class PageCanvas(QLabel):
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:
+        if self._viewer is not None and self._viewer.is_signature_stamp_active():
+            event.accept()
+            return
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._document is not None
+            and self._document.find_signature_stamp_at(
+                self._page_index,
+                self._page_point_from_viewport(event.pos()),
+            )
+            is not None
+        ):
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._document is not None:
             if self.mouseGrabber() == self:
                 self.releaseMouse()
@@ -1059,6 +1105,9 @@ class PageCanvas(QLabel):
         painter.end()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._viewer is not None and self._viewer.handle_signature_key(event):
+            event.accept()
+            return
         if (
             event.key() == Qt.Key.Key_C
             and event.modifiers() & Qt.KeyboardModifier.ControlModifier
@@ -1088,6 +1137,11 @@ class PageViewer(QWidget):
     markup_clicked = pyqtSignal(object)
     text_selection_changed = pyqtSignal()
     page_nav_side_changed = pyqtSignal(str)
+    signature_stamp_committed = pyqtSignal()
+    signature_stamp_cancelled = pyqtSignal()
+    signature_stamp_deleted = pyqtSignal()
+    signature_stamp_copied = pyqtSignal()
+    signature_stamp_failed = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1211,7 +1265,25 @@ class PageViewer(QWidget):
         self._inline_editor: _InlineTextEditor | None = None
         self._text_edit_ctx: dict | None = None
         self._text_edit_active = False
+        self._stamp_armed = False
+        self._stamp_png: bytes | None = None
+        self._stamp_session_png: bytes | None = None
+        self._stamp_image_size = (0, 0)
+        self._stamp_session_size = (0, 0)
+        self._stamp_overlay: SignatureStampOverlay | None = None
+        self._stamp_page_index: int | None = None
+        self._stamp_press_page: int | None = None
+        self._stamp_press_point: fitz.Point | None = None
+        self._stamp_edit_hit: SignatureStampHit | None = None
+        self._stamp_placement_memory: StampPlacementMemory | None = None
+        self._stamp_ignore_press = False
+        self._stamp_committing = False
+        self._stamp_escape = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self._stamp_escape.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._stamp_escape.activated.connect(self.cancel_signature_stamp)
+        self._stamp_escape.setEnabled(False)
         self.scroll_area.setWidget(self._spread_host)
+        self._spread_host.installEventFilter(self)
         self.preview_stack.addWidget(self.scroll_area)
         self.preview_stack.setStyleSheet(preview_bg)
 
@@ -1422,6 +1494,8 @@ class PageViewer(QWidget):
         btn.setToolTip(tooltip)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        btn.setAutoDefault(False)
+        btn.setDefault(False)
         btn.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         if sys.platform == "darwin":
             btn.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
@@ -1514,6 +1588,7 @@ class PageViewer(QWidget):
         self._flush_ui()
 
     def set_document(self, document: PdfDocument | None) -> None:
+        self.cancel_signature_stamp()
         self._clear_strip()
         self._document = document
         self._current_index = 0
@@ -1617,6 +1692,7 @@ class PageViewer(QWidget):
         return canvas
 
     def _recycle_canvas(self, canvas: PageCanvas) -> None:
+        self._detach_signature_overlay(canvas)
         canvas.setVisible(False)
         canvas.setPixmap(QPixmap())
         canvas.setFixedSize(0, 0)
@@ -1924,6 +2000,435 @@ class PageViewer(QWidget):
         self._update_page_info()
         self._render_current_page()
 
+    def is_signature_stamp_active(self) -> bool:
+        return self._stamp_armed or self._stamp_overlay is not None
+
+    def is_signature_session_active(self) -> bool:
+        return self._stamp_armed
+
+    def begin_signature_stamp(self, png_bytes: bytes, image_width: int, image_height: int) -> None:
+        if self._stamp_committing:
+            return
+        self._cancel_text_edit()
+        if self._stamp_edit_hit is not None:
+            self.cancel_signature_stamp()
+        else:
+            self._teardown_signature_stamp(emit_cancel=False)
+        size = (max(1, image_width), max(1, image_height))
+        self._stamp_armed = True
+        self._stamp_session_png = png_bytes
+        self._stamp_session_size = size
+        self._stamp_png = png_bytes
+        self._stamp_image_size = size
+        self._stamp_edit_hit = None
+        self._stamp_ignore_press = True
+        QTimer.singleShot(400, self._clear_stamp_ignore_press)
+        self._set_stamp_shortcuts(True)
+        self._apply_stamp_cursors()
+        self.setFocus()
+        self._place_initial_signature_overlay()
+
+    def _clear_stamp_ignore_press(self) -> None:
+        self._stamp_ignore_press = False
+
+    def _place_initial_signature_overlay(self, *, retry: bool = True) -> None:
+        if (
+            not self._stamp_armed
+            or self._document is None
+            or self._document.page_count <= 0
+            or self._stamp_png is None
+        ):
+            return
+        if self._stamp_overlay is not None:
+            return
+        self._place_signature_on_page(
+            self._normalize_page_index(self._current_index),
+            retry=retry,
+        )
+
+    def _place_signature_on_page(self, page_index: int, *, retry: bool = True) -> None:
+        if (
+            not self._stamp_armed
+            or self._document is None
+            or self._stamp_png is None
+            or self._stamp_overlay is not None
+        ):
+            return
+        if not (0 <= page_index < self._document.page_count):
+            return
+        page = self._document.get_page_rect(page_index)
+        image_w, image_h = self._stamp_image_size
+        rect = stamp_rect_from_memory(
+            page,
+            image_w,
+            image_h,
+            self._stamp_placement_memory,
+        )
+        self._place_signature_overlay(page_index, rect)
+        if self._stamp_overlay is None:
+            if retry:
+                QTimer.singleShot(
+                    0,
+                    lambda: self._place_signature_on_page(page_index, retry=False),
+                )
+            return
+        self.reveal_page_rect(rect, page_index=page_index)
+        self._stamp_overlay.raise_()
+        self._stamp_overlay.setFocus()
+
+    def commit_signature_stamp(self) -> bool:
+        if self._stamp_committing:
+            return False
+        if (
+            self._document is None
+            or self._stamp_overlay is None
+            or self._stamp_png is None
+            or self._stamp_page_index is None
+        ):
+            return False
+        page_index = self._stamp_page_index
+        png_bytes = self._stamp_png
+        rect = self._stamp_overlay.page_rect()
+        edit_hit = self._stamp_edit_hit
+        self._stamp_committing = True
+        try:
+            page = self._document.get_page_rect(page_index)
+            self._stamp_placement_memory = remember_stamp_placement(page, rect)
+            if edit_hit is not None:
+                self._document.replace_signature_stamp(
+                    edit_hit,
+                    rect,
+                    png_bytes,
+                    record_undo=True,
+                )
+            else:
+                self._document.stamp_image(page_index, png_bytes, rect)
+            self._stamp_edit_hit = None
+            self._teardown_signature_stamp(emit_cancel=False)
+            self.refresh()
+            self.signature_stamp_committed.emit()
+            return True
+        except Exception as exc:
+            if self._stamp_overlay is not None:
+                self._stamp_overlay.show()
+                self._stamp_overlay.raise_()
+                self._stamp_overlay.setFocus()
+            self.signature_stamp_failed.emit(str(exc) or "서명을 페이지에 넣지 못했습니다.")
+            return False
+        finally:
+            self._stamp_committing = False
+
+    def cancel_signature_stamp(self) -> None:
+        if self._stamp_overlay is not None or self._stamp_armed:
+            self._teardown_signature_stamp(emit_cancel=True)
+
+    def handle_signature_press(self, canvas: PageCanvas, event) -> bool:
+        if event.button() != Qt.MouseButton.LeftButton or self._document is None:
+            return False
+        if self._stamp_ignore_press:
+            return True
+        page_index = canvas._page_index
+        point = canvas._page_point_from_viewport(event.pos())
+        hit = self._document.find_signature_stamp_at(page_index, point)
+        if (
+            hit is not None
+            and self._stamp_edit_hit is not None
+            and hit.annot_xref == self._stamp_edit_hit.annot_xref
+        ):
+            return True
+        if hit is not None:
+            if self._stamp_overlay is not None:
+                if self._stamp_edit_hit is not None:
+                    self.cancel_signature_stamp()
+                else:
+                    self._teardown_signature_stamp(emit_cancel=False)
+            self._begin_edit_signature(hit)
+            return True
+        if self._stamp_overlay is not None:
+            self.commit_signature_stamp()
+            return True
+        return False
+
+    def handle_signature_move(self, canvas: PageCanvas, event) -> bool:
+        if self._stamp_press_point is None:
+            return False
+        if self._document is None or self._stamp_png is None:
+            return True
+        page = self._document.get_page_rect(canvas._page_index)
+        image_w, image_h = self._stamp_image_size
+        current = canvas._page_point_from_viewport(event.pos())
+        rect = stamp_rect_from_drag(
+            page,
+            self._stamp_press_point,
+            current,
+            image_w,
+            image_h,
+        )
+        if rect is None:
+            return True
+        if self._stamp_overlay is None:
+            self._place_signature_overlay(canvas._page_index, rect)
+        else:
+            self._stamp_page_index = canvas._page_index
+            self._stamp_overlay.set_page_rect(rect)
+        return True
+
+    def handle_signature_release(self, canvas: PageCanvas, event) -> bool:
+        if self._stamp_press_point is None:
+            return False
+        if canvas.mouseGrabber() == canvas:
+            canvas.releaseMouse()
+        if self._document is None or self._stamp_png is None:
+            self._stamp_press_page = None
+            self._stamp_press_point = None
+            return True
+        image_w, image_h = self._stamp_image_size
+        page_index = canvas._page_index
+        page = self._document.get_page_rect(page_index)
+        end = canvas._page_point_from_viewport(event.pos())
+        dragged = stamp_rect_from_drag(
+            page,
+            self._stamp_press_point,
+            end,
+            image_w,
+            image_h,
+        )
+        if self._stamp_overlay is None:
+            rect = dragged or default_stamp_rect(
+                page,
+                image_w,
+                image_h,
+                self._stamp_press_point,
+            )
+            self._place_signature_overlay(page_index, rect)
+        elif dragged is not None:
+            self._stamp_page_index = page_index
+            self._stamp_overlay.set_page_rect(dragged)
+        if self._stamp_overlay is not None:
+            self._stamp_overlay.raise_()
+            self._stamp_overlay.setFocus()
+        self._stamp_press_page = None
+        self._stamp_press_point = None
+        return True
+
+    def handle_signature_key(self, event: QKeyEvent) -> bool:
+        if not self.is_signature_stamp_active():
+            return False
+        if event.isAutoRepeat():
+            return True
+        key = event.key()
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.commit_signature_stamp()
+            return True
+        if key == Qt.Key.Key_Escape:
+            self.cancel_signature_stamp()
+            return True
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            return self.try_delete_signature_stamp()
+        return False
+
+    def handle_signature_context(self, canvas: PageCanvas, event) -> bool:
+        if self._document is None:
+            return False
+        hit = self._document.find_signature_stamp_at(
+            canvas._page_index,
+            canvas._page_point_from_viewport(event.pos()),
+        )
+        if hit is not None:
+            self._show_signature_context_menu(event.globalPos(), hit)
+            return True
+        return self.is_signature_stamp_active()
+
+    def try_delete_signature_stamp(self) -> bool:
+        if self._stamp_overlay is None:
+            return False
+        return self.delete_current_signature_stamp()
+
+    def delete_current_signature_stamp(self) -> bool:
+        if self._document is None or self._stamp_overlay is None:
+            return False
+        edit_hit = self._stamp_edit_hit
+        self._clear_signature_overlay()
+        self._stamp_edit_hit = None
+        if edit_hit is not None:
+            self._document.delete_signature_stamp(edit_hit, record_undo=True)
+            self._teardown_signature_stamp(emit_cancel=False)
+            self.refresh()
+            self.signature_stamp_deleted.emit()
+            return True
+        self._teardown_signature_stamp(emit_cancel=False)
+        return True
+
+    def delete_signature_hit(self, hit: SignatureStampHit) -> bool:
+        if self._document is None:
+            return False
+        if (
+            self._stamp_edit_hit is not None
+            and self._stamp_edit_hit.annot_xref == hit.annot_xref
+        ):
+            return self.delete_current_signature_stamp()
+        self._document.delete_signature_stamp(hit, record_undo=True)
+        self.refresh()
+        self.signature_stamp_deleted.emit()
+        return True
+
+    def copy_signature(self, hit: SignatureStampHit | None = None) -> bool:
+        png_bytes = b""
+        if hit is not None and hit.png_bytes:
+            png_bytes = hit.png_bytes
+        elif self._stamp_png:
+            png_bytes = self._stamp_png
+        if not png_bytes or not copy_signature_png_to_clipboard(png_bytes):
+            return False
+        self.signature_stamp_copied.emit()
+        return True
+
+    def _show_signature_context_menu(
+        self,
+        global_pos: QPoint,
+        hit: SignatureStampHit | None = None,
+    ) -> None:
+        menu = QMenu(self)
+        copy_action = menu.addAction("서명 복사")
+        delete_action = menu.addAction("서명 삭제")
+        chosen = menu.exec(global_pos)
+        if chosen == copy_action:
+            self.copy_signature(hit)
+            return
+        if chosen != delete_action:
+            return
+        if hit is not None:
+            self.delete_signature_hit(hit)
+        else:
+            self.delete_current_signature_stamp()
+
+    def _begin_edit_signature(self, hit: SignatureStampHit) -> None:
+        if self._document is None:
+            return
+        self._cancel_text_edit()
+        self._stamp_edit_hit = hit
+        self._stamp_png = hit.png_bytes
+        self._stamp_image_size = (hit.width, hit.height)
+        self._stamp_armed = True
+        self._place_signature_overlay(
+            hit.page_index,
+            hit.rect,
+            commit_on_double_click=False,
+        )
+        self._set_stamp_shortcuts(True)
+
+    def _place_signature_overlay(
+        self,
+        page_index: int,
+        rect: fitz.Rect,
+        *,
+        commit_on_double_click: bool = True,
+    ) -> None:
+        canvas = self._canvas_for_page(page_index)
+        if canvas is None or self._stamp_png is None:
+            return
+        pixmap = pixmap_from_png_bytes(self._stamp_png)
+        if pixmap.isNull():
+            return
+        self._clear_signature_overlay()
+        image_w, image_h = self._stamp_image_size
+        overlay = SignatureStampOverlay(
+            self._spread_host,
+            canvas,
+            pixmap,
+            rect,
+            image_w,
+            image_h,
+            commit_on_double_click=commit_on_double_click,
+        )
+        overlay.commit_requested.connect(self.commit_signature_stamp)
+        overlay.cancel_requested.connect(self.cancel_signature_stamp)
+        overlay.delete_requested.connect(self.delete_current_signature_stamp)
+        overlay.context_menu_requested.connect(self._show_signature_context_menu)
+        overlay.installEventFilter(self)
+        self._stamp_overlay = overlay
+        self._stamp_page_index = page_index
+        self._apply_stamp_cursors()
+
+    def _sync_signature_overlay(self) -> None:
+        if self._stamp_committing or self._stamp_overlay is None:
+            self._apply_stamp_cursors()
+            return
+        if self._document is None or self._stamp_page_index is None or not (
+            0 <= self._stamp_page_index < self._document.page_count
+        ):
+            self.cancel_signature_stamp()
+            return
+        canvas = self._canvas_for_page(self._stamp_page_index)
+        if canvas is None:
+            self._stamp_overlay.hide()
+            self._apply_stamp_cursors()
+            return
+        self._stamp_overlay.set_canvas(canvas)
+        if self._stamp_overlay.parentWidget() is not self._spread_host:
+            self._stamp_overlay.setParent(self._spread_host)
+        self._stamp_overlay.sync_geometry()
+        self._stamp_overlay.show()
+        self._stamp_overlay.raise_()
+        self._apply_stamp_cursors()
+
+    def _detach_signature_overlay(self, canvas: PageCanvas) -> None:
+        if self._stamp_overlay is None or self._stamp_overlay.canvas() is not canvas:
+            return
+        self._stamp_overlay.hide()
+        self._stamp_overlay.set_canvas(None)
+
+    def _apply_stamp_cursors(self) -> None:
+        waiting = self._stamp_armed and self._stamp_overlay is None
+        for canvas in list(self._mounted.values()):
+            if waiting:
+                canvas.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+            else:
+                canvas.unsetCursor()
+
+    def _set_stamp_shortcuts(self, enabled: bool) -> None:
+        self._stamp_escape.setEnabled(enabled)
+
+    def _clear_signature_overlay(self) -> None:
+        overlay = self._stamp_overlay
+        if overlay is None:
+            return
+        canvas = overlay.canvas()
+        for signal in (
+            overlay.commit_requested,
+            overlay.cancel_requested,
+            overlay.delete_requested,
+            overlay.context_menu_requested,
+        ):
+            try:
+                signal.disconnect()
+            except TypeError:
+                pass
+        overlay.hide()
+        overlay.setParent(None)
+        overlay.deleteLater()
+        self._stamp_overlay = None
+        self._stamp_page_index = None
+        if canvas is not None:
+            canvas.update()
+
+    def _teardown_signature_stamp(self, *, emit_cancel: bool) -> None:
+        was_armed = self._stamp_armed
+        self._clear_signature_overlay()
+        self._stamp_armed = False
+        self._stamp_png = None
+        self._stamp_session_png = None
+        self._stamp_image_size = (0, 0)
+        self._stamp_session_size = (0, 0)
+        self._stamp_page_index = None
+        self._stamp_press_page = None
+        self._stamp_press_point = None
+        self._stamp_edit_hit = None
+        self._set_stamp_shortcuts(False)
+        self._apply_stamp_cursors()
+        if emit_cancel and was_armed:
+            self.signature_stamp_cancelled.emit()
+
     def _ensure_inline_editor(self, canvas: PageCanvas) -> _InlineTextEditor:
         editor = self._inline_editor
         if editor is None:
@@ -1952,6 +2457,8 @@ class PageViewer(QWidget):
         *,
         page_index: int | None = None,
     ) -> bool:
+        if self._stamp_armed:
+            return False
         if not self._document or self._document.page_count == 0:
             return False
         zoom = self._effective_zoom()
@@ -2209,6 +2716,8 @@ class PageViewer(QWidget):
             QTimer.singleShot(0, self._render_current_page_if_fitting)
 
     def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Type.KeyPress and self.handle_signature_key(event):
+            return True
         if obj is self._doc_scroll and event.type() == QEvent.Type.Wheel:
             wheel = event
             if self._handle_preview_wheel(
@@ -2234,6 +2743,9 @@ class PageViewer(QWidget):
         return super().eventFilter(obj, event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self.handle_signature_key(event):
+            event.accept()
+            return
         if not self._document or self._document.page_count == 0:
             super().keyPressEvent(event)
             return
@@ -2553,6 +3065,7 @@ class PageViewer(QWidget):
         if self._rebuilding_strip:
             return
         if not self._document or self._document.page_count == 0:
+            self.cancel_signature_stamp()
             self._clear_strip()
             self._spread_host.setFixedSize(0, 0)
             return
@@ -2614,6 +3127,7 @@ class PageViewer(QWidget):
             self._apply_search_highlights()
             self._apply_review_rects()
             self._apply_text_highlights_overlay()
+            self._sync_signature_overlay()
             self._sync_document_scrollbar()
         finally:
             self._rebuilding_strip = False

@@ -1,4 +1,4 @@
-# Tiny PDF Editor v1.1.8
+# Tiny PDF Editor v1.1.9
 
 **포터블 PDF 편집기**입니다. Windows(exe·MSI·포터블 zip)와 macOS(`.app`·DMG) 배포판을 제공하며, 페이지 병합·편집·검색·용량 줄이기·쪽 번호 매기기·개인정보 제거 등 일상적인 PDF 작업을 한 프로그램에서 처리할 수 있습니다.
 
@@ -19,15 +19,15 @@
 
 ### Windows — 포터블 zip
 
-1. 릴리스 또는 배포 페이지에서 `Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS_portable.zip`을 받습니다.
-2. 압축을 푼 뒤, 폴더 안의 `Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.exe`를 실행합니다.
+1. 릴리스 또는 배포 페이지에서 `Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS_portable.zip`을 받습니다.
+2. 압축을 푼 뒤, 폴더 안의 `Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS.exe`를 실행합니다.
 3. `_internal` 폴더와 exe는 **같은 위치**에 있어야 합니다. exe만 따로 복사하면 실행되지 않습니다.
 
 USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
 ### Windows — MSI 설치판
 
-1. `Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.msi`를 더블 클릭해 설치합니다.
+1. `Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS.msi`를 더블 클릭해 설치합니다.
 2. 관리자 권한 없이 **현재 사용자** 계정에 설치됩니다 (`%LocalAppData%`).
 3. 설치 시 PDF 파일 연결(HKCU)과 시작 메뉴·바탕화면 바로가기가 등록됩니다.
 4. 설치 과정의 사용권 계약에는 [https://note4all.tistory.com](https://note4all.tistory.com)이 표시됩니다.
@@ -35,7 +35,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
 ### macOS — DMG / .app
 
-1. `Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.dmg`를 열어 `Tiny PDF Editor.app`을 **응용 프로그램** 폴더로 복사합니다.
+1. `Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS.dmg`를 열어 `Tiny PDF Editor.app`을 **응용 프로그램** 폴더로 복사합니다.
 2. 앱을 실행합니다. (서명·공증되지 않은 빌드이므로 최초 실행 시 Gatekeeper 경고가 날 수 있습니다.)
 3. 경고가 뜨면 앱을 **Control-클릭 → 열기**, 또는 **시스템 설정 → 개인정보 보호 및 보안**에서 허용하세요.
 
@@ -124,7 +124,8 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
 ### 편집
 
-- **되돌리기 / 재실행** (`Ctrl+Z`, `Ctrl+Y`): 페이지 삽입·삭제·회전·붙여넣기·텍스트 덮어쓰기·쪽 번호 매기기·개인정보 제거 등
+- **되돌리기 / 재실행** (`Ctrl+Z`, `Ctrl+Y`): 페이지 삽입·삭제·회전·붙여넣기·클립보드 이미지 서명 붙여넣기·텍스트 덮어쓰기·쪽 번호 매기기·개인정보 제거 등
+- **클립보드 이미지 서명 붙여넣기** (`Ctrl+V` / macOS `Cmd+V`): 미리보기에서 클립보드에 이미지가 있으면 흰 배경을 투명하게 한 뒤, 현재 페이지 **오른쪽 아래**에 바로 놓습니다. 드래그로 위치를, 모서리로 크기를 조절한 다음 `Enter`로 넣으면 핸들이 사라집니다. 썸네일에서 `Ctrl+V`는 기존처럼 **페이지 붙여넣기**입니다. 다른 페이지에도 넣으려면 서명을 우클릭해 **서명 복사**한 뒤 그 페이지에서 다시 `Ctrl+V`를 누르세요. 넣은 서명을 다시 클릭하면 위치·크기를 조절합니다. 서명에서 **우클릭**하면 **서명 복사** 또는 **서명 삭제**를 고를 수 있고, `Delete`로도 지울 수 있습니다. `Esc`로 취소합니다.
 - **텍스트 검색** (`Ctrl+F`, `F3` / `Shift+F3`): 본문 텍스트 검색, 하이라이트, `[ 현재 / 전체 ]` 결과 표시
 - **선택 페이지 삭제** (`Delete`)
 - **모든 페이지 시계방향 회전** / **모든 페이지 반시계방향 회전**
@@ -188,7 +189,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 | 다른 이름으로 저장 | `Ctrl+Shift+S` |
 | 인쇄 | `Ctrl+P` |
 | 되돌리기 / 재실행 | `Ctrl+Z` / `Ctrl+Y` |
-| 복사 / 잘라내기 / 붙여넣기 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` |
+| 복사 / 잘라내기 / 붙여넣기 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` (미리보기에서 이미지가 있으면 서명 붙여넣기) |
 | 텍스트 검색 | `Ctrl+F` |
 | 다음 / 이전 검색 결과 | `F3` / `Shift+F3` |
 | 선택 페이지 삭제 | `Delete` |
@@ -256,8 +257,8 @@ npm run build:dist:portable
 npm run build:release
 ```
 
-산출물 예: `msi/Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.msi`,
-`msi/Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS_portable.zip`.
+산출물 예: `msi/Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS.msi`,
+`msi/Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS_portable.zip`.
 앱에 심어진 `APP_BUILD_STAMP`도 이 시각과 같아, 같은 태그로 재배포해도 업데이트 확인이 새 빌드를 구분합니다.
 
 ### macOS 배포판 빌드 (Apple Silicon)
@@ -280,8 +281,8 @@ DMG 파일명과 동일한 `APP_BUILD_STAMP`를 앱에 심으며, 업데이트 �
 
 ```
 dist/
-  Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS/
-    Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.exe
+  Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS/
+    Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS.exe
     _internal/          (실행에 필요한 라이브러리)
     LICENSE
     README.md
@@ -293,20 +294,20 @@ dist/
 ```
 dist/
   Tiny PDF Editor.app
-  Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS/
+  Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS/
     Tiny PDF Editor.app
     LICENSE
     README.md
     DISTRIBUTE.md
-  Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.dmg
+  Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS.dmg
 ```
 
 **MSI / 포터블 zip 빌드 결과** (`msi/`):
 
 ```
 msi/
-  Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS.msi
-  Tiny PDF Editor v1.1.8_YYMMDD_HHMMSS_portable.zip
+  Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS.msi
+  Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS_portable.zip
 ```
 
 포터블 빌드 폴더는 최근 **3개**만 유지됩니다.  
@@ -317,7 +318,7 @@ msi/
 ## 기술 스택
 
 - Python 3, PyQt6 (Qt Print Support 포함)
-- PyMuPDF (fitz) — 렌더링·편집·압축·레닥션·암호
+- PyMuPDF — 렌더링·편집·압축·레닥션·암호
 - openpyxl — 형광펜·밑줄 Excel로 보내기
 - ko-pii — 한국어 개인정보 검출 (`보안` → 개인정보 제거)
 - numpy / Pillow — OCR 전처리·이미지 처리

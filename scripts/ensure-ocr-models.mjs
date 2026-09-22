@@ -38,7 +38,7 @@ function sha256File(filePath) {
 
 async function download(spec, dest) {
   const response = await fetch(spec.url, {
-    headers: { "User-Agent": "TinyPDFEditor/1.1.8" },
+    headers: { "User-Agent": "TinyPDFEditor/1.1.9" },
   });
   if (!response.ok) {
     throw new Error(`${spec.name} 다운로드 실패 (HTTP ${response.status})`);

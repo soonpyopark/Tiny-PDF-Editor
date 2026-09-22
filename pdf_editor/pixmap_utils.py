@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import fitz
+import pymupdf as fitz
 from PyQt6.QtGui import QImage, QPixmap
 
 

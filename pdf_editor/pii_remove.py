@@ -15,7 +15,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 
-import fitz
+import pymupdf as fitz
 
 try:
     from ko_pii import detect_all

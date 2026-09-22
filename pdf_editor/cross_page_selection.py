@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import fitz
+import pymupdf as fitz
 
 
 @dataclass

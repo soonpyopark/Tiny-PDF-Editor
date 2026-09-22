@@ -42,6 +42,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QProgressDialog,
     QPushButton,
     QSizePolicy,
@@ -70,6 +71,10 @@ from pdf_editor.hwp_convert import (
   HancomNotInstalledError,
 )
 from pdf_editor.page_clipboard import PageClipboard
+from pdf_editor.signature_stamp import (
+    clipboard_has_image,
+    prepare_signature_from_clipboard,
+)
 from pdf_editor.password_dialog import SetPasswordDialog, prompt_pdf_password
 from pdf_editor.recent_files import RecentFilesStore
 from pdf_editor.print_dialog import DocumentPrintDialog
@@ -760,6 +765,11 @@ class DocumentTab(QWidget):
     self.highlight_panel.entry_selected.connect(self._on_highlight_panel_entry_selected)
     self.highlight_panel.markup_changed.connect(self._on_text_highlight_added)
     self.viewer.markup_clicked.connect(self._on_markup_clicked)
+    self.viewer.signature_stamp_committed.connect(self._on_signature_stamp_committed)
+    self.viewer.signature_stamp_cancelled.connect(self._on_signature_stamp_cancelled)
+    self.viewer.signature_stamp_deleted.connect(self._on_signature_stamp_deleted)
+    self.viewer.signature_stamp_copied.connect(self._on_signature_stamp_copied)
+    self.viewer.signature_stamp_failed.connect(self._on_signature_stamp_failed)
     self.thumbnails.insert_requested.connect(self._on_insert)
     self.thumbnails.pages_move_requested.connect(self._on_move_pages)
     self.thumbnails.delete_requested.connect(self._on_delete)
@@ -1065,6 +1075,54 @@ class DocumentTab(QWidget):
     self.thumbnails.refresh(index)
     self.viewer.refresh()
     self._notify_history_changed()
+
+  def _on_signature_stamp_committed(self) -> None:
+    index = self.viewer.current_index()
+    self.thumbnails.refresh(index)
+    self._notify_history_changed()
+    window = self.window()
+    if isinstance(window, MainWindow):
+      window.statusBar().showMessage("서명을 페이지에 넣었습니다.")
+
+  def _on_signature_stamp_failed(self, message: str) -> None:
+    window = self.window()
+    if isinstance(window, MainWindow):
+      window.statusBar().showMessage(message)
+    QMessageBox.warning(self, "클립보드 이미지 서명 붙여넣기", message)
+
+  def _on_signature_stamp_cancelled(self) -> None:
+    window = self.window()
+    if isinstance(window, MainWindow):
+      window.statusBar().showMessage("클립보드 이미지 서명 붙여넣기를 취소했습니다.")
+
+  def _on_signature_stamp_deleted(self) -> None:
+    index = self.viewer.current_index()
+    self.thumbnails.refresh(index)
+    self._notify_history_changed()
+    window = self.window()
+    if isinstance(window, MainWindow):
+      window.statusBar().showMessage("서명을 지웠습니다.")
+
+  def _on_signature_stamp_copied(self) -> None:
+    window = self.window()
+    if isinstance(window, MainWindow):
+      window.statusBar().showMessage(
+        "서명을 복사했습니다. Ctrl+V 또는 편집 → 클립보드 이미지 서명 붙여넣기로 다시 넣을 수 있습니다."
+      )
+      window._update_edit_actions()
+
+  def begin_paste_signature(self) -> tuple[bool, str]:
+    if self.document.page_count <= 0:
+      return False, "먼저 PDF를 여세요."
+    prepared = prepare_signature_from_clipboard()
+    if prepared is None:
+      return False, "클립보드에 서명으로 쓸 이미지가 없습니다."
+    self.viewer.begin_signature_stamp(
+      prepared.png_bytes,
+      prepared.width,
+      prepared.height,
+    )
+    return True, "페이지에 서명이 나타났습니다. 드래그로 위치를, 모서리로 크기를 조절한 뒤 Enter로 넣으세요. 우클릭 또는 Delete로 지울 수 있습니다. Esc는 취소입니다."
 
   def _on_text_highlight_added(self) -> None:
     before_count = self._markup_entry_count
@@ -1504,6 +1562,9 @@ class MainWindow(QMainWindow):
     self._app_settings = AppSettings()
 
     self._build_menu()
+    clipboard = QApplication.clipboard()
+    if clipboard is not None:
+      clipboard.dataChanged.connect(self._update_edit_actions)
     self._apply_window_styles()
     self.setStatusBar(QStatusBar())
     self._setup_status_credit()
@@ -1572,7 +1633,9 @@ class MainWindow(QMainWindow):
     can_copy_pages = bool(tab and tab._page_indices_for_clipboard()) if tab else False
     can_copy_text = bool(tab and tab._has_viewer_text_selection()) if tab else False
     can_copy = can_copy_pages or can_copy_text
-    can_paste = PageClipboard.has_pages()
+    can_paste_pages = PageClipboard.has_pages()
+    can_paste_image = bool(tab and tab.document.page_count > 0 and clipboard_has_image())
+    can_paste = can_paste_pages or can_paste_image
     if hasattr(self, "_act_undo"):
       self._act_undo.setEnabled(can_undo)
     if hasattr(self, "_act_redo"):
@@ -1583,6 +1646,12 @@ class MainWindow(QMainWindow):
       self._act_cut.setEnabled(can_copy_pages)
     if hasattr(self, "_act_paste"):
       self._act_paste.setEnabled(can_paste)
+    can_stamp = bool(tab and tab.document.page_count > 0 and clipboard_has_image())
+    if hasattr(self, "_act_paste_signature"):
+      self._act_paste_signature.setEnabled(can_stamp)
+      stamp_widget = self._act_paste_signature.defaultWidget()
+      if stamp_widget is not None:
+        stamp_widget.setEnabled(can_stamp)
     can_password = bool(tab and tab.document.page_count > 0)
     if hasattr(self, "_act_set_password"):
       self._act_set_password.setEnabled(can_password)
@@ -1614,10 +1683,60 @@ class MainWindow(QMainWindow):
     if tab is not None:
       tab._on_cut_pages_shortcut()
 
+  def _widget_is_under(self, root: QWidget | None) -> bool:
+    if root is None:
+      return False
+    widget = QApplication.focusWidget()
+    while widget is not None:
+      if widget is root:
+        return True
+      widget = widget.parentWidget()
+    return False
+
+  def _paste_into_focused_editor(self) -> bool:
+    widget = QApplication.focusWidget()
+    if isinstance(widget, (QLineEdit, QPlainTextEdit)):
+      widget.paste()
+      return True
+    return False
+
   def _paste_current_tab(self) -> None:
+    if self._paste_into_focused_editor():
+      return
     tab = self._current_tab()
-    if tab is not None:
+    if tab is None:
+      return
+    has_image = clipboard_has_image() and tab.document.page_count > 0
+    on_thumbnails = self._widget_is_under(tab.thumbnails)
+    if has_image and not on_thumbnails:
+      self._apply_clipboard_signature(tab)
+      return
+    if PageClipboard.has_pages():
       tab._on_paste_pages_shortcut()
+      return
+    if has_image:
+      self._apply_clipboard_signature(tab)
+
+  def _apply_clipboard_signature(self, tab: DocumentTab) -> None:
+    ok, message = tab.begin_paste_signature()
+    if not ok:
+      QMessageBox.information(self, "클립보드 이미지 서명 붙여넣기", message)
+      return
+    self.statusBar().showMessage(message)
+
+  def _paste_signature_current_tab(self) -> None:
+    sender = self.sender()
+    if isinstance(sender, QWidget):
+      parent = sender.parent()
+      while parent is not None and not isinstance(parent, QMenu):
+        parent = parent.parent()
+      if isinstance(parent, QMenu):
+        parent.close()
+    tab = self._current_tab()
+    if tab is None:
+      QMessageBox.information(self, "클립보드 이미지 서명 붙여넣기", "먼저 PDF를 여세요.")
+      return
+    self._apply_clipboard_signature(tab)
 
   def _undo_current_tab(self) -> None:
     tab = self._current_tab()
@@ -1757,6 +1876,7 @@ class MainWindow(QMainWindow):
 
     edit_menu = self.menuBar().addMenu("편집(&E)")
     edit_menu.setObjectName("editMenu")
+    edit_menu.aboutToShow.connect(self._update_edit_actions)
     edit_menu.setStyleSheet(
         """
         QMenu#editMenu::item {
@@ -1800,8 +1920,10 @@ class MainWindow(QMainWindow):
 
     self._act_paste = QAction("붙여넣기(&P)", self)
     self._act_paste.setShortcut(QKeySequence.StandardKey.Paste)
+    self._act_paste.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
     self._act_paste.triggered.connect(self._paste_current_tab)
     edit_menu.addAction(self._act_paste)
+    self.addAction(self._act_paste)
 
     edit_menu.addSeparator()
     act_find = QAction("텍스트 검색...", self)
@@ -1840,6 +1962,18 @@ class MainWindow(QMainWindow):
     page_number_btn.clicked.connect(self._open_page_number_dialog)
     self._act_page_number.setDefaultWidget(page_number_btn)
     edit_menu.addAction(self._act_page_number)
+
+    self._act_paste_signature = QWidgetAction(self)
+    signature_btn = QPushButton("클립보드 이미지 서명 붙여넣기")
+    signature_btn.setFlat(True)
+    signature_btn.setAutoDefault(False)
+    signature_btn.setDefault(False)
+    signature_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    signature_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    signature_btn.setStyleSheet(_REDUCE_MENU_BTN_STYLE)
+    signature_btn.clicked.connect(self._paste_signature_current_tab)
+    self._act_paste_signature.setDefaultWidget(signature_btn)
+    edit_menu.addAction(self._act_paste_signature)
 
     ocr_menu = self.menuBar().addMenu("OCR(&O)")
     ocr_menu.aboutToShow.connect(self._update_ocr_actions)
@@ -3139,6 +3273,8 @@ class MainWindow(QMainWindow):
   def _delete_selected(self) -> None:
     tab = self._current_tab()
     if not tab:
+      return
+    if tab.viewer.try_delete_signature_stamp():
       return
     if (
       tab.side_nav.current_tab() == SideNavTab.HIGHLIGHTS

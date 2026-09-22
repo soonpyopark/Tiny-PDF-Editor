@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-import fitz
+import pymupdf as fitz
 import numpy as np
 
 from pdf_editor.document import PdfDocument
