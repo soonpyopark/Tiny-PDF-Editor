@@ -1088,12 +1088,12 @@ class DocumentTab(QWidget):
     window = self.window()
     if isinstance(window, MainWindow):
       window.statusBar().showMessage(message)
-    QMessageBox.warning(self, "클립보드 이미지 서명 붙여넣기", message)
+    QMessageBox.warning(self, "클립보드 서명 이미지 붙여넣기", message)
 
   def _on_signature_stamp_cancelled(self) -> None:
     window = self.window()
     if isinstance(window, MainWindow):
-      window.statusBar().showMessage("클립보드 이미지 서명 붙여넣기를 취소했습니다.")
+      window.statusBar().showMessage("클립보드 서명 이미지 붙여넣기를 취소했습니다.")
 
   def _on_signature_stamp_deleted(self) -> None:
     index = self.viewer.current_index()
@@ -1107,7 +1107,7 @@ class DocumentTab(QWidget):
     window = self.window()
     if isinstance(window, MainWindow):
       window.statusBar().showMessage(
-        "서명을 복사했습니다. Ctrl+V 또는 편집 → 클립보드 이미지 서명 붙여넣기로 다시 넣을 수 있습니다."
+        "서명을 복사했습니다. Ctrl+V 또는 편집 → 클립보드 서명 이미지 붙여넣기로 다시 넣을 수 있습니다."
       )
       window._update_edit_actions()
 
@@ -1720,7 +1720,7 @@ class MainWindow(QMainWindow):
   def _apply_clipboard_signature(self, tab: DocumentTab) -> None:
     ok, message = tab.begin_paste_signature()
     if not ok:
-      QMessageBox.information(self, "클립보드 이미지 서명 붙여넣기", message)
+      QMessageBox.information(self, "클립보드 서명 이미지 붙여넣기", message)
       return
     self.statusBar().showMessage(message)
 
@@ -1734,7 +1734,7 @@ class MainWindow(QMainWindow):
         parent.close()
     tab = self._current_tab()
     if tab is None:
-      QMessageBox.information(self, "클립보드 이미지 서명 붙여넣기", "먼저 PDF를 여세요.")
+      QMessageBox.information(self, "클립보드 서명 이미지 붙여넣기", "먼저 PDF를 여세요.")
       return
     self._apply_clipboard_signature(tab)
 
@@ -1964,7 +1964,7 @@ class MainWindow(QMainWindow):
     edit_menu.addAction(self._act_page_number)
 
     self._act_paste_signature = QWidgetAction(self)
-    signature_btn = QPushButton("클립보드 이미지 서명 붙여넣기")
+    signature_btn = QPushButton("클립보드 서명 이미지 붙여넣기")
     signature_btn.setFlat(True)
     signature_btn.setAutoDefault(False)
     signature_btn.setDefault(False)
