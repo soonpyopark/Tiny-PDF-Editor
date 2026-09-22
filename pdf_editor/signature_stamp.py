@@ -50,7 +50,7 @@ class SignatureStampHit:
 
 
 def signature_image_id(png_bytes: bytes) -> str:
-    return hashlib.sha1(png_bytes).hexdigest()[:16]
+    return hashlib.sha256(png_bytes).hexdigest()[:16]
 
 
 def signature_embfile_name(image_id: str) -> str:
