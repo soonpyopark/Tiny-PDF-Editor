@@ -25,7 +25,7 @@ HANDLE_ORDER = ("nw", "n", "ne", "e", "se", "s", "sw", "w")
 
 
 class SignatureStampOverlay(QWidget):
-    """Transparent PNG preview over a page. Enter commits, Esc cancels."""
+    """Transparent PNG preview over a page. Enter or a click elsewhere commits, Esc cancels."""
 
     commit_requested = pyqtSignal()
     cancel_requested = pyqtSignal()

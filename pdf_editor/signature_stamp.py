@@ -144,6 +144,24 @@ def prepare_signature_from_clipboard() -> PreparedSignature | None:
     return prepare_signature_from_qimage(image)
 
 
+def prepare_signature_from_path(path: str) -> PreparedSignature | None:
+    image = QImage(path)
+    if image.isNull():
+        try:
+            with Image.open(path) as pil:
+                rgba = pil.convert("RGBA")
+                buf = io.BytesIO()
+                rgba.save(buf, format="PNG")
+            image = QImage()
+            if not image.loadFromData(buf.getvalue(), "PNG"):
+                return None
+        except (OSError, ValueError):
+            return None
+    if image.isNull():
+        return None
+    return prepare_signature_from_qimage(image)
+
+
 def copy_signature_png_to_clipboard(png_bytes: bytes) -> bool:
     if not png_bytes:
         return False

@@ -1278,6 +1278,7 @@ class PageViewer(QWidget):
         self._stamp_placement_memory: StampPlacementMemory | None = None
         self._stamp_ignore_press = False
         self._stamp_committing = False
+        self._stamp_commit_queued = False
         self._stamp_escape = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._stamp_escape.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._stamp_escape.activated.connect(self.cancel_signature_stamp)
@@ -2130,24 +2131,27 @@ class PageViewer(QWidget):
         page_index = canvas._page_index
         point = canvas._page_point_from_viewport(event.pos())
         hit = self._document.find_signature_stamp_at(page_index, point)
-        if (
-            hit is not None
-            and self._stamp_edit_hit is not None
-            and hit.annot_xref == self._stamp_edit_hit.annot_xref
-        ):
+        if self._stamp_overlay is not None:
+            self._queue_signature_commit()
             return True
         if hit is not None:
-            if self._stamp_overlay is not None:
-                if self._stamp_edit_hit is not None:
-                    self.cancel_signature_stamp()
-                else:
-                    self._teardown_signature_stamp(emit_cancel=False)
             self._begin_edit_signature(hit)
             return True
-        if self._stamp_overlay is not None:
-            self.commit_signature_stamp()
-            return True
         return False
+
+    def _queue_signature_commit(self) -> None:
+        if self._stamp_commit_queued or self._stamp_committing or self._stamp_overlay is None:
+            return
+        self._stamp_commit_queued = True
+        overlay = self._stamp_overlay
+
+        def run() -> None:
+            self._stamp_commit_queued = False
+            if self._stamp_overlay is not overlay:
+                return
+            self.commit_signature_stamp()
+
+        QTimer.singleShot(0, run)
 
     def handle_signature_move(self, canvas: PageCanvas, event) -> bool:
         if self._stamp_press_point is None:
@@ -2414,6 +2418,7 @@ class PageViewer(QWidget):
 
     def _teardown_signature_stamp(self, *, emit_cancel: bool) -> None:
         was_armed = self._stamp_armed
+        self._stamp_commit_queued = False
         self._clear_signature_overlay()
         self._stamp_armed = False
         self._stamp_png = None

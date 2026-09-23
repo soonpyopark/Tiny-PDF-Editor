@@ -72,8 +72,10 @@ from pdf_editor.hwp_convert import (
 )
 from pdf_editor.page_clipboard import PageClipboard
 from pdf_editor.signature_stamp import (
+    PreparedSignature,
     clipboard_has_image,
     prepare_signature_from_clipboard,
+    prepare_signature_from_path,
 )
 from pdf_editor.password_dialog import SetPasswordDialog, prompt_pdf_password
 from pdf_editor.recent_files import RecentFilesStore
@@ -249,6 +251,59 @@ _REDUCE_MENU_BTN_STYLE = """
         background-color: #cfe0fb;
     }
 """
+
+
+class _SignatureMenuButton(QPushButton):
+    """Red menu row that opens the signature submenu beside itself."""
+
+    def __init__(self, menu: QMenu) -> None:
+        super().__init__("서명 이미지 붙여넣기")
+        self._menu = menu
+        self.setFlat(True)
+        self.setAutoDefault(False)
+        self.setDefault(False)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet(_REDUCE_MENU_BTN_STYLE)
+        self._arrow = QLabel("▶", self)
+        self._arrow.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._arrow.setStyleSheet(
+            "color: #e57373; background: transparent; font-size: 9px;"
+        )
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._arrow.adjustSize()
+        self._arrow.move(
+            self.width() - self._arrow.width() - 10,
+            max(0, (self.height() - self._arrow.height()) // 2),
+        )
+
+    def enterEvent(self, event) -> None:
+        self._show_menu()
+        super().enterEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        self._show_menu()
+        event.accept()
+
+    def leaveEvent(self, event) -> None:
+        QTimer.singleShot(250, self._hide_menu_if_left)
+        super().leaveEvent(event)
+
+    def _show_menu(self) -> None:
+        if not self.isEnabled() or self._menu.isVisible():
+            return
+        self._menu.popup(self.mapToGlobal(QPoint(self.width() - 2, 0)))
+
+    def _hide_menu_if_left(self) -> None:
+        if not self._menu.isVisible():
+            return
+        pos = QCursor.pos()
+        on_button = self.rect().contains(self.mapFromGlobal(pos))
+        on_menu = self._menu.geometry().contains(pos)
+        if not on_button and not on_menu:
+            self._menu.close()
 
 _PANEL_TOGGLE_TAB_STYLE = """
     QPushButton#panelToggleTab {
@@ -1088,12 +1143,12 @@ class DocumentTab(QWidget):
     window = self.window()
     if isinstance(window, MainWindow):
       window.statusBar().showMessage(message)
-    QMessageBox.warning(self, "클립보드 서명 이미지 붙여넣기", message)
+    QMessageBox.warning(self, "서명 이미지 붙여넣기", message)
 
   def _on_signature_stamp_cancelled(self) -> None:
     window = self.window()
     if isinstance(window, MainWindow):
-      window.statusBar().showMessage("클립보드 서명 이미지 붙여넣기를 취소했습니다.")
+      window.statusBar().showMessage("서명 이미지 붙여넣기를 취소했습니다.")
 
   def _on_signature_stamp_deleted(self) -> None:
     index = self.viewer.current_index()
@@ -1107,22 +1162,34 @@ class DocumentTab(QWidget):
     window = self.window()
     if isinstance(window, MainWindow):
       window.statusBar().showMessage(
-        "서명을 복사했습니다. Ctrl+V 또는 편집 → 클립보드 서명 이미지 붙여넣기로 다시 넣을 수 있습니다."
+        "서명을 복사했습니다. Ctrl+V 또는 편집 → 서명 이미지 붙여넣기 → 클립보드로 다시 넣을 수 있습니다."
       )
       window._update_edit_actions()
 
-  def begin_paste_signature(self) -> tuple[bool, str]:
+  def begin_signature_from_prepared(
+    self,
+    prepared: PreparedSignature | None,
+    empty_message: str,
+  ) -> tuple[bool, str]:
     if self.document.page_count <= 0:
       return False, "먼저 PDF를 여세요."
-    prepared = prepare_signature_from_clipboard()
     if prepared is None:
-      return False, "클립보드에 서명으로 쓸 이미지가 없습니다."
+      return False, empty_message
     self.viewer.begin_signature_stamp(
       prepared.png_bytes,
       prepared.width,
       prepared.height,
     )
-    return True, "페이지에 서명이 나타났습니다. 드래그로 위치를, 모서리로 크기를 조절한 뒤 Enter로 넣으세요. 우클릭 또는 Delete로 지울 수 있습니다. Esc는 취소입니다."
+    return True, (
+      "페이지에 서명이 나타났습니다. 드래그로 위치를, 모서리로 크기를 조절한 뒤 Enter 또는 페이지의 다른 곳을 클릭해 넣으세요. "
+      "우클릭 또는 Delete로 지울 수 있습니다. Esc는 취소입니다."
+    )
+
+  def begin_paste_signature(self) -> tuple[bool, str]:
+    return self.begin_signature_from_prepared(
+      prepare_signature_from_clipboard(),
+      "클립보드에 서명으로 쓸 이미지가 없습니다.",
+    )
 
   def _on_text_highlight_added(self) -> None:
     before_count = self._markup_entry_count
@@ -1646,12 +1713,6 @@ class MainWindow(QMainWindow):
       self._act_cut.setEnabled(can_copy_pages)
     if hasattr(self, "_act_paste"):
       self._act_paste.setEnabled(can_paste)
-    can_stamp = bool(tab and tab.document.page_count > 0 and clipboard_has_image())
-    if hasattr(self, "_act_paste_signature"):
-      self._act_paste_signature.setEnabled(can_stamp)
-      stamp_widget = self._act_paste_signature.defaultWidget()
-      if stamp_widget is not None:
-        stamp_widget.setEnabled(can_stamp)
     can_password = bool(tab and tab.document.page_count > 0)
     if hasattr(self, "_act_set_password"):
       self._act_set_password.setEnabled(can_password)
@@ -1670,6 +1731,16 @@ class MainWindow(QMainWindow):
       self._act_rotate_all_ccw.setEnabled(can_add)
     if hasattr(self, "_act_page_number"):
       self._act_page_number.setEnabled(can_add)
+    can_stamp = can_add and clipboard_has_image()
+    if hasattr(self, "_act_signature_menu"):
+      self._act_signature_menu.setEnabled(can_add)
+      signature_button = self._act_signature_menu.defaultWidget()
+      if signature_button is not None:
+        signature_button.setEnabled(can_add)
+    if hasattr(self, "_act_paste_signature"):
+      self._act_paste_signature.setEnabled(can_stamp)
+    if hasattr(self, "_act_signature_from_file"):
+      self._act_signature_from_file.setEnabled(can_add)
     self._update_ocr_actions()
     self._update_window_title()
 
@@ -1717,26 +1788,49 @@ class MainWindow(QMainWindow):
     if has_image:
       self._apply_clipboard_signature(tab)
 
-  def _apply_clipboard_signature(self, tab: DocumentTab) -> None:
-    ok, message = tab.begin_paste_signature()
+  def _show_signature_result(self, ok: bool, message: str) -> None:
     if not ok:
-      QMessageBox.information(self, "클립보드 서명 이미지 붙여넣기", message)
+      QMessageBox.information(self, "서명 이미지 붙여넣기", message)
       return
     self.statusBar().showMessage(message)
 
+  def _apply_clipboard_signature(self, tab: DocumentTab) -> None:
+    ok, message = tab.begin_paste_signature()
+    self._show_signature_result(ok, message)
+
   def _paste_signature_current_tab(self) -> None:
-    sender = self.sender()
-    if isinstance(sender, QWidget):
-      parent = sender.parent()
-      while parent is not None and not isinstance(parent, QMenu):
-        parent = parent.parent()
-      if isinstance(parent, QMenu):
-        parent.close()
+    self._close_signature_menus()
     tab = self._current_tab()
     if tab is None:
-      QMessageBox.information(self, "클립보드 서명 이미지 붙여넣기", "먼저 PDF를 여세요.")
+      QMessageBox.information(self, "서명 이미지 붙여넣기", "먼저 PDF를 여세요.")
       return
     self._apply_clipboard_signature(tab)
+
+  def _paste_signature_from_file(self) -> None:
+    self._close_signature_menus()
+    tab = self._current_tab()
+    if tab is None or tab.document.page_count <= 0:
+      QMessageBox.information(self, "서명 이미지 붙여넣기", "먼저 PDF를 여세요.")
+      return
+    path, _ = QFileDialog.getOpenFileName(
+      self,
+      "서명 이미지 선택",
+      "",
+      "이미지 파일 (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff);;모든 파일 (*.*)",
+    )
+    if not path:
+      return
+    ok, message = tab.begin_signature_from_prepared(
+      prepare_signature_from_path(path),
+      "이 파일은 서명으로 쓸 수 없습니다.",
+    )
+    self._show_signature_result(ok, message)
+
+  def _close_signature_menus(self) -> None:
+    if hasattr(self, "_signature_menu"):
+      self._signature_menu.close()
+    if hasattr(self, "_edit_menu"):
+      self._edit_menu.close()
 
   def _undo_current_tab(self) -> None:
     tab = self._current_tab()
@@ -1963,17 +2057,19 @@ class MainWindow(QMainWindow):
     self._act_page_number.setDefaultWidget(page_number_btn)
     edit_menu.addAction(self._act_page_number)
 
-    self._act_paste_signature = QWidgetAction(self)
-    signature_btn = QPushButton("클립보드 서명 이미지 붙여넣기")
-    signature_btn.setFlat(True)
-    signature_btn.setAutoDefault(False)
-    signature_btn.setDefault(False)
-    signature_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-    signature_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    signature_btn.setStyleSheet(_REDUCE_MENU_BTN_STYLE)
-    signature_btn.clicked.connect(self._paste_signature_current_tab)
-    self._act_paste_signature.setDefaultWidget(signature_btn)
-    edit_menu.addAction(self._act_paste_signature)
+    self._edit_menu = edit_menu
+    self._signature_menu = QMenu(self)
+    self._signature_menu.aboutToShow.connect(self._update_edit_actions)
+    self._act_paste_signature = QAction("클립보드", self)
+    self._act_paste_signature.triggered.connect(self._paste_signature_current_tab)
+    self._signature_menu.addAction(self._act_paste_signature)
+    self._act_signature_from_file = QAction("파일 선택...", self)
+    self._act_signature_from_file.triggered.connect(self._paste_signature_from_file)
+    self._signature_menu.addAction(self._act_signature_from_file)
+    self._act_signature_menu = QWidgetAction(self)
+    self._act_signature_menu.setDefaultWidget(_SignatureMenuButton(self._signature_menu))
+    edit_menu.addAction(self._act_signature_menu)
+    edit_menu.aboutToHide.connect(self._signature_menu.close)
 
     ocr_menu = self.menuBar().addMenu("OCR(&O)")
     ocr_menu.aboutToShow.connect(self._update_ocr_actions)
