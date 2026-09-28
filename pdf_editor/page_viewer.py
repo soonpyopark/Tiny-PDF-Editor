@@ -1632,6 +1632,11 @@ class PageViewer(QWidget):
             index -= index % 2
         return index
 
+    def _sync_current_index(self) -> int:
+        """Keep the viewed page inside the document after pages are removed."""
+        self._current_index = self._normalize_page_index(self._current_index)
+        return self._current_index
+
     def _right_page_index(self) -> int | None:
         if not self._facing_mode or not self._document:
             return None
@@ -1924,7 +1929,9 @@ class PageViewer(QWidget):
         local_scroll: int | None = None,
     ) -> None:
         if not self._document or self._document.page_count == 0:
+            self._current_index = 0
             return
+        self._sync_current_index()
         index = self._normalize_page_index(index)
         viewport_h = max(1, self.scroll_area.viewport().height())
         start = self._document_row_start(index)
@@ -1998,6 +2005,10 @@ class PageViewer(QWidget):
             self.refresh()
 
     def refresh(self) -> None:
+        if not self._document or self._document.page_count == 0:
+            self._current_index = 0
+        else:
+            self._sync_current_index()
         self._update_page_info()
         self._render_current_page()
 
@@ -3318,12 +3329,13 @@ class PageViewer(QWidget):
     def _base_fit_zoom(self) -> float:
         if not self._document or self._document.page_count == 0:
             return 1.0
-        left = self._document.get_page_rect(self._current_index)
+        index = self._sync_current_index()
+        left = self._document.get_page_rect(index)
         content_w = left.width
         content_h = left.height
         gap_px = 0
         if self._facing_mode:
-            right_index = self._current_index + 1
+            right_index = index + 1
             if right_index < self._document.page_count:
                 right = self._document.get_page_rect(right_index)
                 content_w = left.width + right.width
@@ -3362,8 +3374,9 @@ class PageViewer(QWidget):
         if not self._document or self._document.page_count == 0:
             self.size_label.setText("")
             return
-        w, h = self._document.get_page_size_cm(self._current_index)
-        creation_dpi = self._document.get_page_creation_dpi(self._current_index)
+        index = self._sync_current_index()
+        w, h = self._document.get_page_size_cm(index)
+        creation_dpi = self._document.get_page_creation_dpi(index)
         if creation_dpi is None:
             self.size_label.setText(f"{w} x {h} cm")
         else:
