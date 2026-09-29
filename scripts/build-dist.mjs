@@ -260,14 +260,30 @@ function toSpecPath(filePath) {
   return path.resolve(filePath).replace(/\\/g, "/");
 }
 
-function windowsIcuDlls() {
-  const sys32 = path.join(process.env.SystemRoot || "C:\\Windows", "System32");
-  const names = ["icu.dll", "icuuc.dll", "icuin.dll"];
+function windowsSystem32() {
+  return path.join(process.env.SystemRoot || "C:\\Windows", "System32");
+}
+
+function windowsSystemDlls(names) {
+  const sys32 = windowsSystem32();
   const found = [];
   for (const name of names) {
     const candidate = path.join(sys32, name);
     if (fs.existsSync(candidate)) {
       found.push(candidate);
+    }
+  }
+  return found;
+}
+
+function windowsIcuDlls() {
+  const sys32 = windowsSystem32();
+  const found = [];
+  if (fs.existsSync(sys32)) {
+    for (const entry of fs.readdirSync(sys32)) {
+      if (/^icu.*\.dll$/i.test(entry)) {
+        found.push(path.join(sys32, entry));
+      }
     }
   }
   if (!found.some((filePath) => path.basename(filePath).toLowerCase() === "icuuc.dll")) {
@@ -276,6 +292,20 @@ function windowsIcuDlls() {
     );
   }
   return found;
+}
+
+function windowsVcRuntimeDlls() {
+  return windowsSystemDlls([
+    "vcruntime140.dll",
+    "vcruntime140_1.dll",
+    "vcruntime140_threads.dll",
+    "msvcp140.dll",
+    "msvcp140_1.dll",
+    "msvcp140_2.dll",
+    "msvcp140_atomic_wait.dll",
+    "concrt140.dll",
+    "vccorlib140.dll",
+  ]);
 }
 
 function writePyInstallerSpec({ root, mainPy, appIcon, socketPyd, datas, versionInfo, extraBinaries = [] }) {
@@ -527,6 +557,9 @@ function ensureQtRuntimeInBundle(appDir) {
     }
     copyFileToDirs(path.join(qtBin, name), destDirs);
   }
+  for (const source of windowsVcRuntimeDlls()) {
+    copyFileToDirs(source, destDirs);
+  }
   for (const source of windowsIcuDlls()) {
     copyFileToDirs(source, destDirs);
   }
@@ -582,9 +615,9 @@ export function buildPortableApp() {
   const socketPyd = pythonStdlibExtension("_socket.pyd");
   const versionInfo = writeWindowsVersionInfo(readAppVersion());
   const extraBinaries = [];
-  for (const icuDll of windowsIcuDlls()) {
-    extraBinaries.push([icuDll, "."]);
-    extraBinaries.push([icuDll, "PyQt6"]);
+  for (const runtimeDll of [...windowsVcRuntimeDlls(), ...windowsIcuDlls()]) {
+    extraBinaries.push([runtimeDll, "."]);
+    extraBinaries.push([runtimeDll, "PyQt6"]);
   }
   const specPath = writePyInstallerSpec({
     root: ROOT,

@@ -6,6 +6,25 @@ import os
 import sys
 from pathlib import Path
 
+# Python 3.8+ removes a directory from the DLL search path when the object
+# returned by os.add_dll_directory is garbage-collected. Keep handles alive
+# for the whole process so Qt6Core/ICU can still be found after import.
+_DLL_DIRECTORY_HANDLES: list[object] = []
+_PRELOADED_DLLS: list[object] = []
+
+_PRELOAD_DLL_NAMES = (
+    "vcruntime140.dll",
+    "vcruntime140_1.dll",
+    "msvcp140.dll",
+    "msvcp140_1.dll",
+    "msvcp140_2.dll",
+    "concrt140.dll",
+    "icu.dll",
+    "icuuc.dll",
+    "icuin.dll",
+    "Qt6Core.dll",
+)
+
 
 def _add_dir(path: Path) -> None:
     if not path.is_dir():
@@ -15,9 +34,47 @@ def _add_dir(path: Path) -> None:
     if adder is None:
         return
     try:
-        adder(str(path))
+        _DLL_DIRECTORY_HANDLES.append(adder(str(path)))
     except (OSError, FileExistsError, ValueError):
         pass
+
+
+def _file_in_dir(folder: Path, name: str) -> Path | None:
+    direct = folder / name
+    if direct.is_file():
+        return direct
+    target = name.lower()
+    try:
+        for entry in folder.iterdir():
+            if entry.is_file() and entry.name.lower() == target:
+                return entry
+    except OSError:
+        return None
+    return None
+
+
+def _preload_runtime_dlls(folders: list[Path]) -> None:
+    """Load VC / ICU / Qt6Core from known bundle dirs before import QtCore."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    loaded: set[str] = set()
+    for folder in folders:
+        if not folder.is_dir():
+            continue
+        for name in _PRELOAD_DLL_NAMES:
+            key = name.lower()
+            if key in loaded:
+                continue
+            candidate = _file_in_dir(folder, name)
+            if candidate is None:
+                continue
+            try:
+                _PRELOADED_DLLS.append(ctypes.WinDLL(str(candidate)))
+                loaded.add(key)
+            except OSError:
+                continue
 
 
 def prepare_qt_dll_paths() -> None:
@@ -31,16 +88,19 @@ def prepare_qt_dll_paths() -> None:
     pyqt = bundle / "PyQt6"
     qt6 = pyqt / "Qt6"
     plugins = qt6 / "plugins"
-
-    for folder in (
+    folders = [
         exe_dir,
         bundle,
         pyqt,
         qt6 / "bin",
         plugins,
         plugins / "platforms",
-    ):
+    ]
+
+    for folder in folders:
         _add_dir(folder)
 
     if plugins.is_dir():
         os.environ.setdefault("QT_PLUGIN_PATH", str(plugins))
+
+    _preload_runtime_dlls(folders)
