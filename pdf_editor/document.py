@@ -116,6 +116,9 @@ class OptimizeSizeOptions:
 
 
 _MICRO_IMAGE_MAX_PT = 12.0
+# Downsampling a 1–2px edge makes stamps/lines vanish; keep the original instead.
+_MIN_RESAMPLE_EDGE_PX = 3
+_SMASK_GROUP_RE = re.compile(r"/\s*G\s+(\d+)\s+\d+\s+R")
 _MAX_UNDO_LEVELS = 50
 _EMPTY_SNAPSHOT = b""
 _MARKUP_GROUP_TITLE_PREFIX = "tpe:g="
@@ -527,48 +530,179 @@ class PdfDocument:
         return smasks
 
     @staticmethod
+    def _xref_from_pdf_value(value: str) -> int:
+        try:
+            return int(str(value).split()[0])
+        except (TypeError, ValueError, IndexError):
+            return 0
+
+    @staticmethod
+    def _parse_smask_group_xref(value: str) -> int:
+        match = _SMASK_GROUP_RE.search(str(value).replace("\n", " "))
+        return int(match.group(1)) if match else 0
+
+    @staticmethod
+    def _pdf_bool_true(value: str) -> bool:
+        normalized = str(value).strip().lower().lstrip("/")
+        return normalized in {"true", "1"}
+
+    @staticmethod
+    def _read_image_mask_info(
+        doc: fitz.Document, xref: int
+    ) -> tuple[str, int] | None:
+        """Return ('smask'|'mask_image'|'smask_dict'|'mask_colors', mask_xref)."""
+        kind, value = doc.xref_get_key(xref, "SMask")
+        if kind == "xref":
+            mask_xref = PdfDocument._xref_from_pdf_value(value)
+            if mask_xref > 0:
+                return ("smask", mask_xref)
+        elif kind not in {"", "null"}:
+            mask_xref = PdfDocument._parse_smask_group_xref(value)
+            if mask_xref > 0:
+                return ("smask_dict", mask_xref)
+        kind, value = doc.xref_get_key(xref, "Mask")
+        if kind == "xref":
+            mask_xref = PdfDocument._xref_from_pdf_value(value)
+            if mask_xref > 0:
+                return ("mask_image", mask_xref)
+        if kind == "array":
+            return ("mask_colors", 0)
+        return None
+
+    @staticmethod
+    def _collect_mask_image_xrefs(doc: fitz.Document) -> set[int]:
+        """Xrefs used as /SMask or /Mask images — must not be recompressed as photos."""
+        found: set[int] = set()
+        for xref in range(1, doc.xref_length()):
+            try:
+                if not doc.xref_is_image(xref):
+                    continue
+            except Exception:
+                continue
+            info = PdfDocument._read_image_mask_info(doc, xref)
+            if info is None or info[0] == "mask_colors":
+                continue
+            if info[1] > 0:
+                found.add(info[1])
+        for page in doc:
+            try:
+                images = page.get_images(full=True)
+            except Exception:
+                continue
+            for img in images:
+                if len(img) > 1 and int(img[1]) > 0:
+                    found.add(int(img[1]))
+        return found
+
+    @staticmethod
+    def _load_mask_pixmap(doc: fitz.Document, xref: int) -> fitz.Pixmap | None:
+        try:
+            pix = fitz.Pixmap(doc, xref)
+        except Exception:
+            return None
+        try:
+            if pix.colorspace is not None:
+                if pix.alpha or pix.colorspace.n != 1:
+                    return fitz.Pixmap(fitz.csGRAY, pix)
+                return pix
+            # ImageMask stencil: colorspace is None; samples are 8-bit coverage.
+            width, height = pix.width, pix.height
+            raw = bytes(pix.samples)
+            expected = width * height
+            if pix.stride == width and len(raw) >= expected:
+                samples = raw[:expected]
+            elif pix.stride > 0:
+                packed = bytearray()
+                for row in range(height):
+                    start = row * pix.stride
+                    packed.extend(raw[start : start + width])
+                samples = bytes(packed)
+            else:
+                return None
+            return fitz.Pixmap(fitz.csGRAY, width, height, samples, 0)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _soft_mask_needs_rewrite(
+        doc: fitz.Document, mask_xref: int, width: int, height: int
+    ) -> bool:
+        try:
+            if not doc.xref_is_image(mask_xref):
+                return True
+        except Exception:
+            return True
+        _, image_mask = doc.xref_get_key(mask_xref, "ImageMask")
+        if PdfDocument._pdf_bool_true(image_mask):
+            return True
+        _, colorspace = doc.xref_get_key(mask_xref, "ColorSpace")
+        if "DeviceGray" not in str(colorspace) and "Gray" not in str(colorspace):
+            return True
+        try:
+            _, width_value = doc.xref_get_key(mask_xref, "Width")
+            _, height_value = doc.xref_get_key(mask_xref, "Height")
+            return int(width_value) != width or int(height_value) != height
+        except (TypeError, ValueError):
+            return True
+
+    @staticmethod
+    def _device_gray_samples(pix: fitz.Pixmap) -> bytes:
+        gray = pix
+        if gray.colorspace is None or gray.colorspace.n != 1 or gray.alpha:
+            gray = fitz.Pixmap(fitz.csGRAY, pix)
+        if gray.stride == gray.width:
+            return bytes(gray.samples)
+        packed = bytearray()
+        raw = bytes(gray.samples)
+        for row in range(gray.height):
+            start = row * gray.stride
+            packed.extend(raw[start : start + gray.width])
+        return bytes(packed)
+
+    @staticmethod
+    def _write_device_gray_mask(
+        doc: fitz.Document, mask_xref: int, pix: fitz.Pixmap
+    ) -> None:
+        gray = pix
+        if gray.colorspace is None or gray.colorspace.n != 1 or gray.alpha:
+            gray = fitz.Pixmap(fitz.csGRAY, pix)
+        samples = PdfDocument._device_gray_samples(gray)
+        pdf_object = (
+            f"<< /Type /XObject /Subtype /Image"
+            f" /Width {int(gray.width)} /Height {int(gray.height)}"
+            f" /ColorSpace /DeviceGray /BitsPerComponent 8"
+            f" /Length {len(samples)} >>"
+        )
+        doc.update_object(mask_xref, pdf_object)
+        doc.update_stream(mask_xref, samples, new=True, compress=True)
+
+    @staticmethod
+    def _sync_soft_mask_size(
+        doc: fitz.Document, mask_xref: int, width: int, height: int
+    ) -> bool:
+        """Make a mask a DeviceGray image matching the parent Width/Height."""
+        if width <= 0 or height <= 0:
+            return False
+        if not PdfDocument._soft_mask_needs_rewrite(doc, mask_xref, width, height):
+            return True
+        pix = PdfDocument._load_mask_pixmap(doc, mask_xref)
+        if pix is None:
+            return False
+        try:
+            if pix.width != width or pix.height != height:
+                pix = fitz.Pixmap(pix, width, height)
+            PdfDocument._write_device_gray_mask(doc, mask_xref, pix)
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
     def _pixmap_colorspace_name(pix: fitz.Pixmap) -> str:
         if pix.colorspace is None:
             return "DeviceRGB"
         if pix.colorspace.n == 1:
             return "DeviceGray"
         return "DeviceRGB"
-
-    @staticmethod
-    def _replace_image_stream_preserving_mask(
-        doc: fitz.Document,
-        xref: int,
-        *,
-        stream: bytes,
-        width: int,
-        height: int,
-        mask_xref: int,
-        colorspace: str,
-    ) -> None:
-        """Replace an image with JPEG bytes while keeping its PDF soft-mask reference.
-
-        ``Document.update_stream(..., compress=True)`` (the default) rewrites
-        ``/Filter`` to ``/FlateDecode`` only, which leaves DCT JPEG bytes
-        mislabeled and renders as black. Always store with ``/DCTDecode`` and
-        ``compress=False``, then restore ``/Filter`` / ``/SMask``.
-        """
-        pdf_object = (
-            f"<< /Type /XObject /Subtype /Image"
-            f" /Width {width} /Height {height}"
-            f" /ColorSpace /{colorspace} /BitsPerComponent 8"
-            f" /Filter /DCTDecode"
-            f" /SMask {mask_xref} 0 R"
-            f" /Length {len(stream)} >>"
-        )
-        doc.update_object(xref, pdf_object)
-        doc.update_stream(xref, stream, new=True, compress=False)
-        doc.xref_set_key(xref, "Filter", "/DCTDecode")
-        doc.xref_set_key(xref, "Width", str(int(width)))
-        doc.xref_set_key(xref, "Height", str(int(height)))
-        doc.xref_set_key(xref, "ColorSpace", f"/{colorspace}")
-        doc.xref_set_key(xref, "BitsPerComponent", "8")
-        doc.xref_set_key(xref, "SMask", f"{int(mask_xref)} 0 R")
-        doc.xref_set_key(xref, "Length", str(len(stream)))
 
     @staticmethod
     def _replace_image_jpeg_stream(
@@ -580,27 +714,16 @@ class PdfDocument:
         height: int,
         colorspace: str,
         mask_xref: int = 0,
+        mask_key: str | None = None,
     ) -> None:
-        """Replace an embedded image xref with a JPEG stream (optional soft mask)."""
-        if mask_xref > 0:
-            PdfDocument._replace_image_stream_preserving_mask(
-                doc,
-                xref,
-                stream=stream,
-                width=width,
-                height=height,
-                mask_xref=mask_xref,
-                colorspace=colorspace,
-            )
-            return
-        pdf_object = (
-            f"<< /Type /XObject /Subtype /Image"
-            f" /Width {width} /Height {height}"
-            f" /ColorSpace /{colorspace} /BitsPerComponent 8"
-            f" /Filter /DCTDecode"
-            f" /Length {len(stream)} >>"
-        )
-        doc.update_object(xref, pdf_object)
+        """Replace image samples with JPEG without dropping unrelated dict keys.
+
+        ``update_stream(..., compress=True)`` relabels DCT bytes as FlateDecode
+        and renders black. Keep ``compress=False`` and ``/DCTDecode``. Do not
+        rebuild the whole dict: wiping ``/Mask`` colour-key arrays or rewriting
+        a stencil ``/Mask`` as ``/SMask`` makes some images vanish.
+        """
+        _, old_colorspace = doc.xref_get_key(xref, "ColorSpace")
         doc.update_stream(xref, stream, new=True, compress=False)
         doc.xref_set_key(xref, "Filter", "/DCTDecode")
         doc.xref_set_key(xref, "Width", str(int(width)))
@@ -608,6 +731,34 @@ class PdfDocument:
         doc.xref_set_key(xref, "ColorSpace", f"/{colorspace}")
         doc.xref_set_key(xref, "BitsPerComponent", "8")
         doc.xref_set_key(xref, "Length", str(len(stream)))
+        doc.xref_set_key(xref, "DecodeParms", "null")
+        old_cs = str(old_colorspace)
+        color_changed = (
+            "Indexed" in old_cs
+            or "ICCBased" in old_cs
+            or "DeviceCMYK" in old_cs
+            or "Separation" in old_cs
+            or "DeviceN" in old_cs
+            or (
+                colorspace == "DeviceGray"
+                and "DeviceGray" not in old_cs
+                and "Gray" not in old_cs
+            )
+            or (
+                colorspace == "DeviceRGB"
+                and "Indexed" not in old_cs
+                and "DeviceRGB" not in old_cs
+            )
+        )
+        if color_changed:
+            doc.xref_set_key(xref, "Decode", "null")
+        if mask_key == "SMask" and mask_xref > 0:
+            doc.xref_set_key(xref, "SMask", f"{int(mask_xref)} 0 R")
+            mask_kind, _mask_value = doc.xref_get_key(xref, "Mask")
+            if mask_kind == "xref":
+                doc.xref_set_key(xref, "Mask", "null")
+        elif mask_key == "Mask" and mask_xref > 0:
+            doc.xref_set_key(xref, "Mask", f"{int(mask_xref)} 0 R")
 
     @staticmethod
     def _is_micro_image_rect(display_rect: fitz.Rect) -> bool:
@@ -684,7 +835,14 @@ class PdfDocument:
         if size_scale < 1.0:
             target_w = max(1, int(target_w * size_scale))
             target_h = max(1, int(target_h * size_scale))
+        if min(target_w, target_h) < _MIN_RESAMPLE_EDGE_PX:
+            return False
         effective_target_dpi = target_dpi * size_scale
+
+        mask_info = PdfDocument._read_image_mask_info(doc, xref)
+        if mask_info is None and smask_xref > 0:
+            mask_info = ("smask", smask_xref)
+        mask_kind, mask_object = mask_info if mask_info is not None else (None, 0)
 
         pix = PdfDocument._safe_pixmap_from_xref(doc, xref)
         if pix is None:
@@ -718,25 +876,28 @@ class PdfDocument:
                     return False
             else:
                 stream = jpeg_pix.tobytes("jpeg", jpg_quality=jpeg_quality)
-            if smask_xref > 0:
-                PdfDocument._replace_image_jpeg_stream(
-                    doc,
-                    xref,
-                    stream=stream,
-                    width=jpeg_pix.width,
-                    height=jpeg_pix.height,
-                    colorspace=PdfDocument._pixmap_colorspace_name(jpeg_pix),
-                    mask_xref=smask_xref,
-                )
-            else:
-                PdfDocument._replace_image_jpeg_stream(
-                    doc,
-                    xref,
-                    stream=stream,
-                    width=jpeg_pix.width,
-                    height=jpeg_pix.height,
-                    colorspace=PdfDocument._pixmap_colorspace_name(jpeg_pix),
-                )
+
+            parent_w, parent_h = jpeg_pix.width, jpeg_pix.height
+            jpeg_mask_key: str | None = None
+            jpeg_mask_xref = 0
+            if mask_kind in {"smask", "smask_dict", "mask_image"} and mask_object > 0:
+                if not PdfDocument._sync_soft_mask_size(
+                    doc, mask_object, parent_w, parent_h
+                ):
+                    return False
+                if mask_kind == "mask_image":
+                    jpeg_mask_key = "SMask"
+                    jpeg_mask_xref = mask_object
+            PdfDocument._replace_image_jpeg_stream(
+                doc,
+                xref,
+                stream=stream,
+                width=parent_w,
+                height=parent_h,
+                colorspace=PdfDocument._pixmap_colorspace_name(jpeg_pix),
+                mask_xref=jpeg_mask_xref,
+                mask_key=jpeg_mask_key,
+            )
             return True
         except Exception:
             return False
@@ -759,6 +920,7 @@ class PdfDocument:
         """Recompress each embedded image; skip images that cannot be decoded."""
         quality = max(1, min(100, options.jpeg_quality))
         targets = PdfDocument._collect_image_resize_targets(doc)
+        mask_xrefs = PdfDocument._collect_mask_image_xrefs(doc)
         total = len(targets)
         progress_stride = max(1, total // 50) if total else 1
 
@@ -769,6 +931,8 @@ class PdfDocument:
                 index == 1 or index == total or index % progress_stride == 0
             ):
                 image_progress(index, total)
+            if xref in mask_xrefs:
+                continue
             PdfDocument._resample_single_image(
                 doc,
                 xref,
@@ -780,7 +944,7 @@ class PdfDocument:
                 if dpi_threshold is not None
                 else None,
                 skip_if_display_dpi_met=skip_if_display_dpi_met,
-                include_micro=True,
+                include_micro=False,
                 preserve_small_flate_max_bytes=preserve_small_flate_max_bytes,
                 require_smaller_stream=require_smaller_stream,
                 smask_xref=smask,
