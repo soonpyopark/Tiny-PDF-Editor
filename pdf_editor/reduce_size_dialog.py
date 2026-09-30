@@ -65,7 +65,7 @@ class ReduceSizeDialog(QDialog):
         self._dpi_combo = QComboBox()
         for dpi in OPTIMIZE_DPI_CHOICES:
             self._dpi_combo.addItem(f"{dpi}dpi", dpi)
-        default_index = OPTIMIZE_DPI_CHOICES.index(72)
+        default_index = OPTIMIZE_DPI_CHOICES.index(OptimizeSizeOptions().image_dpi)
         self._dpi_combo.setCurrentIndex(default_index)
         self._dpi_combo.setFixedWidth(_PERCENT_SPIN_WIDTH)
         image_layout.addRow("이미지 압축 해상도:", self._dpi_combo)

@@ -106,7 +106,7 @@ OPTIMIZE_PRESERVE_FLATE_MAX_BYTES = 4096
 class OptimizeSizeOptions:
     """Image recompress settings for 용량 줄이기."""
 
-    image_dpi: int = 72
+    image_dpi: int = 150
     image_quality_percent: int = 100
     image_size_percent: int = 100
 
