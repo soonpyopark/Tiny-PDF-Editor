@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import functools
-import hashlib
 import io
 import os
 import re
@@ -105,14 +104,11 @@ OPTIMIZE_PRESERVE_FLATE_MAX_BYTES = 4096
 
 @dataclass(frozen=True)
 class OptimizeSizeOptions:
-    """Acrobat-style optimize settings (data-only image recompress + cleanup)."""
+    """Image recompress settings for 용량 줄이기."""
 
     image_dpi: int = 72
     image_quality_percent: int = 100
     image_size_percent: int = 100
-    remove_duplicate_resources: bool = True
-    compress_streams: bool = True
-    compress_fonts: bool = True
 
 
 _MICRO_IMAGE_MAX_PT = 12.0
@@ -512,22 +508,6 @@ class PdfDocument:
         if pix.colorspace is None:
             return None
         return pix
-
-    @staticmethod
-    def _collect_image_smask_map(doc: fitz.Document) -> dict[int, int]:
-        """Map each image xref to its mask xref (/Mask entry), if present."""
-        smasks: dict[int, int] = {}
-        for page in doc:
-            try:
-                images = page.get_images(full=True)
-            except Exception:
-                continue
-            for img in images:
-                xref = img[0]
-                mask_xref = int(img[1]) if len(img) > 1 else 0
-                if mask_xref > 0:
-                    smasks[xref] = mask_xref
-        return smasks
 
     @staticmethod
     def _xref_from_pdf_value(value: str) -> int:
@@ -975,185 +955,6 @@ class PdfDocument:
             skip_if_display_dpi_met=skip_if_display_dpi_met,
         )
 
-    _DEDUP_DICT_KEYS = (
-        "Width",
-        "Height",
-        "ColorSpace",
-        "BitsPerComponent",
-        "Filter",
-        "Decode",
-        "DecodeParms",
-        "Intent",
-        "OC",
-        "Interpolate",
-    )
-
-    @staticmethod
-    def _embedded_image_fingerprint(
-        doc: fitz.Document,
-        xref: int,
-        *,
-        smask_xref: int = 0,
-    ) -> bytes | None:
-        """Return a stable fingerprint for identical embedded image objects."""
-        if not doc.xref_is_image(xref):
-            return None
-
-        hasher = hashlib.sha256()
-        hasher.update(doc.xref_stream_raw(xref) or b"")
-        for key in PdfDocument._DEDUP_DICT_KEYS:
-            kind, value = doc.xref_get_key(xref, key)
-            if kind != "null":
-                hasher.update(key.encode("ascii"))
-                hasher.update(value.encode("ascii", errors="replace"))
-
-        if smask_xref <= 0:
-            for mask_key in ("SMask", "Mask"):
-                kind, value = doc.xref_get_key(xref, mask_key)
-                if kind == "xref":
-                    smask_xref = int(value.split()[0])
-                    break
-                if kind != "null" and mask_key == "Mask":
-                    hasher.update(b"Mask:")
-                    hasher.update(value.encode("ascii", errors="replace"))
-                    smask_xref = 0
-                    break
-
-        if smask_xref > 0 and doc.xref_is_image(smask_xref):
-            smask_fp = PdfDocument._embedded_image_fingerprint(doc, smask_xref)
-            if smask_fp is not None:
-                hasher.update(b"|SMask|")
-                hasher.update(smask_fp)
-        return hasher.digest()
-
-    @staticmethod
-    def _collect_image_resource_refs(
-        doc: fitz.Document,
-    ) -> list[tuple[int, str, int]]:
-        """Return (container_xref, resource_name, image_xref) triples."""
-        refs: list[tuple[int, str, int]] = []
-        for page_index in range(len(doc)):
-            try:
-                images = doc.get_page_images(page_index, full=True)
-                page_xref = doc.page_xref(page_index)
-            except Exception:
-                continue
-            for img in images:
-                xref = int(img[0])
-                name = str(img[7]) if len(img) > 7 else ""
-                referencer = int(img[9]) if len(img) > 9 else 0
-                container = referencer if referencer else page_xref
-                if name and xref:
-                    refs.append((container, name, xref))
-        return refs
-
-    @staticmethod
-    def _build_image_dedup_redirect(
-        doc: fitz.Document,
-        *,
-        smask_by_xref: dict[int, int] | None = None,
-    ) -> dict[int, int]:
-        """Map duplicate image xrefs to a canonical xref with identical content."""
-        fingerprint_to_canonical: dict[bytes, int] = {}
-        redirect: dict[int, int] = {}
-        seen_xrefs: set[int] = set()
-
-        for page_index in range(len(doc)):
-            try:
-                images = doc.get_page_images(page_index, full=True)
-            except Exception:
-                continue
-            for img in images:
-                seen_xrefs.add(int(img[0]))
-                if len(img) > 1 and img[1]:
-                    seen_xrefs.add(int(img[1]))
-
-        for xref in range(1, doc.xref_length()):
-            try:
-                if doc.xref_is_image(xref):
-                    seen_xrefs.add(xref)
-            except Exception:
-                continue
-
-        for xref in sorted(seen_xrefs):
-            if xref in redirect:
-                continue
-            smask = smask_by_xref.get(xref, 0) if smask_by_xref else 0
-            fingerprint = PdfDocument._embedded_image_fingerprint(
-                doc,
-                xref,
-                smask_xref=smask,
-            )
-            if fingerprint is None:
-                continue
-            canonical = fingerprint_to_canonical.get(fingerprint)
-            if canonical is None:
-                fingerprint_to_canonical[fingerprint] = xref
-            elif canonical != xref:
-                redirect[xref] = canonical
-        return redirect
-
-    @staticmethod
-    def _apply_image_dedup_redirect(
-        doc: fitz.Document,
-        redirect: dict[int, int],
-    ) -> int:
-        """Retarget duplicate image xrefs; orphaned objects are dropped on compact."""
-        if not redirect:
-            return 0
-
-        resolved: dict[int, int] = {}
-        for duplicate in redirect:
-            target = duplicate
-            while target in redirect:
-                target = redirect[target]
-            resolved[duplicate] = target
-
-        for container, name, xref in PdfDocument._collect_image_resource_refs(doc):
-            target = resolved.get(xref)
-            if target is None:
-                continue
-            try:
-                if not doc.xref_is_image(target):
-                    continue
-            except Exception:
-                continue
-            try:
-                doc.xref_set_key(
-                    container,
-                    f"Resources/XObject/{name}",
-                    f"{target} 0 R",
-                )
-            except Exception:
-                continue
-
-        for xref in range(1, doc.xref_length()):
-            try:
-                if not doc.xref_is_image(xref):
-                    continue
-            except Exception:
-                continue
-            for key in ("SMask", "Mask"):
-                kind, value = doc.xref_get_key(xref, key)
-                if kind != "xref":
-                    continue
-                ref_xref = int(value.split()[0])
-                target = resolved.get(ref_xref)
-                if target is None:
-                    continue
-                try:
-                    doc.xref_set_key(xref, key, f"{target} 0 R")
-                except Exception:
-                    continue
-        return len(resolved)
-
-    @staticmethod
-    def _deduplicate_embedded_images(doc: fitz.Document) -> int:
-        """Merge identical embedded image xrefs without changing layout."""
-        smask_map = PdfDocument._collect_image_smask_map(doc)
-        redirect = PdfDocument._build_image_dedup_redirect(doc, smask_by_xref=smask_map)
-        return PdfDocument._apply_image_dedup_redirect(doc, redirect)
-
     @staticmethod
     def _optimize_jpeg_quality(quality_percent: int) -> int:
         """Map UI quality % (100 = default optimize baseline) to JPEG quality."""
@@ -1164,12 +965,6 @@ class PdfDocument:
         )
 
     @staticmethod
-    def _optimize_save_kwargs(options: OptimizeSizeOptions) -> dict[str, object]:
-        if options.compress_streams:
-            return dict(PDF_SAVE_KWARGS)
-        return {"garbage": 4, "deflate": False, "use_objstms": False}
-
-    @staticmethod
     def build_optimized_payload(
         source_bytes: bytes,
         options: OptimizeSizeOptions,
@@ -1177,7 +972,7 @@ class PdfDocument:
         status_callback: Callable[[str], None] | None = None,
         image_progress: Callable[[int, int], None] | None = None,
     ) -> bytes:
-        """Acrobat-style optimize: recompress images at DPI, dedup, optional cleanup."""
+        """Recompress embedded images at the chosen DPI. Leave streams and fonts as they are."""
         source = fitz.open(stream=source_bytes, filetype="pdf")
         try:
             return PdfDocument._optimize_document(
@@ -1198,7 +993,6 @@ class PdfDocument:
         image_progress: Callable[[int, int], None] | None = None,
     ) -> bytes:
         working = fitz.open(stream=source.tobytes(), filetype="pdf")
-        dedup_merged = 0
         try:
             if status_callback is not None:
                 status_callback(
@@ -1229,24 +1023,9 @@ class PdfDocument:
                 if status_callback is not None:
                     status_callback("일부 이미지 재압축을 건너뛰고 계속합니다...")
 
-            if options.remove_duplicate_resources:
-                if status_callback is not None:
-                    status_callback("중복 리소스 제거 중...")
-                dedup_merged = PdfDocument._deduplicate_embedded_images(working)
-                if status_callback is not None and dedup_merged > 0:
-                    status_callback(f"중복 리소스 {dedup_merged}개 병합됨")
-
-            if options.compress_fonts:
-                if status_callback is not None:
-                    status_callback("내장 글꼴 압축 중...")
-                try:
-                    working.subset_fonts()
-                except Exception:
-                    pass
-
             if status_callback is not None:
                 status_callback("문서를 저장하는 중...")
-            return working.tobytes(**PdfDocument._optimize_save_kwargs(options))
+            return working.tobytes(garbage=4, deflate=False, use_objstms=False)
         finally:
             working.close()
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -88,20 +87,6 @@ class ReduceSizeDialog(QDialog):
         image_layout.addRow(image_hint)
         root.addWidget(image_group)
 
-        content_group = QGroupBox("콘텐츠 압축")
-        content_layout = QVBoxLayout(content_group)
-        content_group.setFont(section_font)
-
-        self._dedup_check = QCheckBox("중복 리소스 제거")
-        self._dedup_check.setChecked(True)
-        self._stream_check = QCheckBox("스트림 콘텐츠 압축")
-        self._stream_check.setChecked(True)
-        self._font_check = QCheckBox("내장된 글꼴 압축")
-        self._font_check.setChecked(True)
-        for box in (self._dedup_check, self._stream_check, self._font_check):
-            content_layout.addWidget(box)
-        root.addWidget(content_group)
-
         hint = QLabel("진행 상태는 문서 하단 터미널에 표시됩니다.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #666; font-size: 11px;")
@@ -122,7 +107,4 @@ class ReduceSizeDialog(QDialog):
             image_dpi=dpi,
             image_quality_percent=self._quality_spin.value(),
             image_size_percent=self._size_spin.value(),
-            remove_duplicate_resources=self._dedup_check.isChecked(),
-            compress_streams=self._stream_check.isChecked(),
-            compress_fonts=self._font_check.isChecked(),
         )
