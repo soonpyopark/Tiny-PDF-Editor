@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import http.client
 import json
 import re
 import sys
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,12 +15,11 @@ from PyQt6.QtCore import QObject, Qt, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QMessageBox, QWidget
 
-from pdf_editor.version import APP_BUILD_STAMP, APP_NAME, __version__, version_label
+from pdf_editor.version import APP_BUILD_STAMP, __version__, version_label
 
 GITHUB_REPO = "soonpyopark/Tiny-PDF-Editor"
 RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
 
-_USER_AGENT = f"{APP_NAME}/{__version__}"
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?")
 _BUILD_STAMP_RE = re.compile(r"(\d{6}_\d{6})")
 
@@ -196,29 +196,27 @@ def _current_label(result: UpdateCheckResult) -> str:
 def _fetch_latest_release_body(timeout_sec: float) -> tuple[int, str]:
     """GET the latest GitHub release.
 
-    The host and path are fixed. Qt's HTTP stack on a worker thread reports
-    RemoteHostClosedError ("Connection closed") against api.github.com.
+    The URL is a literal so the request cannot be pointed at another host.
+    Qt's HTTP stack on a worker thread reports RemoteHostClosedError
+    ("Connection closed") against api.github.com.
     """
-    connection = http.client.HTTPSConnection("api.github.com", timeout=timeout_sec)
     try:
-        connection.request(
-            "GET",
-            "/repos/soonpyopark/Tiny-PDF-Editor/releases/latest",
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": _USER_AGENT,
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-        )
-        response = connection.getresponse()
-        body = response.read().decode("utf-8", errors="replace")
-        return int(response.status), body
+        with urllib.request.urlopen(
+            "https://api.github.com/repos/soonpyopark/Tiny-PDF-Editor/releases/latest",
+            timeout=timeout_sec,
+        ) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            return int(response.status), body
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return int(exc.code), body
     except TimeoutError as exc:
         raise TimeoutError("업데이트 확인 시간이 초과되었습니다.") from exc
-    except OSError as exc:
+    except urllib.error.URLError as exc:
+        reason = exc.reason
+        if isinstance(reason, TimeoutError):
+            raise TimeoutError("업데이트 확인 시간이 초과되었습니다.") from exc
         raise RuntimeError("업데이트 서버에 연결하지 못했습니다.") from exc
-    finally:
-        connection.close()
 
 
 def fetch_latest_release(
