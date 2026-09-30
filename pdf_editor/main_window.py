@@ -138,8 +138,12 @@ from pdf_editor.version import (
 )
 from pdf_editor.update_check import (
   UpdateCheckResult,
+  is_startup_notice_skipped,
+  open_releases_page,
+  show_startup_update_prompt,
   show_update_check_result,
   start_update_check,
+  update_notice_key,
 )
 from pdf_editor.print_watch import PrintSpoolWatcher
 from pdf_editor.single_instance import (
@@ -1647,6 +1651,8 @@ class MainWindow(QMainWindow):
     self._optimize_running = False
     self._update_check_thread = None
     self._update_check_worker = None
+    self._update_check_mode: str | None = None
+    self._startup_update_scheduled = False
     self._print_watcher: PrintSpoolWatcher | None = None
     if is_windows_platform():
       QTimer.singleShot(0, refresh_pdf_association_if_registered)
@@ -1678,6 +1684,9 @@ class MainWindow(QMainWindow):
     if tab is not None:
       QTimer.singleShot(0, tab._apply_panel_width_limits)
     self._update_window_title()
+    if not self._startup_update_scheduled:
+      self._startup_update_scheduled = True
+      QTimer.singleShot(0, self._check_for_updates_on_startup)
 
   def _update_window_title(self) -> None:
     tab = self._current_tab()
@@ -2136,22 +2145,49 @@ class MainWindow(QMainWindow):
     act_about.triggered.connect(toggle_about_splash)
     help_menu.addAction(act_about)
 
+  def _check_for_updates_on_startup(self) -> None:
+    self._begin_update_check("startup")
+
   def _check_for_updates(self) -> None:
+    self._begin_update_check("manual")
+
+  def _begin_update_check(self, mode: str) -> None:
     if self._update_check_thread is not None and self._update_check_thread.isRunning():
+      if mode == "manual" and self._update_check_mode != "manual":
+        self._update_check_mode = "manual"
+        self.statusBar().showMessage("업데이트 확인 중…")
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
       return
-    self.statusBar().showMessage("업데이트 확인 중…")
-    QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+    self._update_check_mode = mode
+    if mode == "manual":
+      self.statusBar().showMessage("업데이트 확인 중…")
+      QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
     self._update_check_thread, self._update_check_worker = start_update_check(
       self,
       self._on_update_check_finished,
     )
 
   def _on_update_check_finished(self, result: UpdateCheckResult) -> None:
-    QApplication.restoreOverrideCursor()
-    self.statusBar().showMessage("준비")
-    show_update_check_result(self, result)
+    mode = self._update_check_mode
+    self._update_check_mode = None
     self._update_check_thread = None
     self._update_check_worker = None
+    if mode == "manual":
+      QApplication.restoreOverrideCursor()
+      self.statusBar().showMessage("준비")
+      show_update_check_result(self, result)
+      return
+    if not result.update_available:
+      return
+    if is_startup_notice_skipped(self._app_settings.skipped_update_key(), result):
+      return
+    choice = show_startup_update_prompt(self, result)
+    if choice == "download":
+      open_releases_page(result.release_url)
+    elif choice == "skip":
+      platform, version, stamp = update_notice_key(result)
+      self._app_settings.set_skipped_update(platform, version, stamp)
+      self._app_settings.save()
 
   def _setup_status_credit(self) -> None:
     credit = QLabel(f'<a href="{AUTHOR_URL}">{AUTHOR_LINK_TEXT}</a>')

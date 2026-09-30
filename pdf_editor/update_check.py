@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import re
 import sys
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from PyQt6.QtCore import QEventLoop, QObject, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWidgets import QMessageBox, QWidget
 
 from pdf_editor.version import APP_BUILD_STAMP, APP_NAME, __version__, version_label
@@ -165,6 +166,26 @@ def resolve_update_kind(result: UpdateCheckResult) -> str | None:
     return None
 
 
+def update_notice_key(result: UpdateCheckResult) -> tuple[str, str, str]:
+    """Identity of the release a startup notice would be about, for this OS."""
+    return (
+        sys.platform,
+        (result.latest or "").strip(),
+        (result.latest_build_stamp or "").strip(),
+    )
+
+
+def is_startup_notice_skipped(
+    skipped: tuple[str, str, str],
+    result: UpdateCheckResult,
+) -> bool:
+    """True when the user asked not to be told about this OS's current release."""
+    platform, version, stamp = update_notice_key(result)
+    if not version:
+        return False
+    return skipped == (platform, version, stamp)
+
+
 def _current_label(result: UpdateCheckResult) -> str:
     base = version_label()
     stamp = (result.current_build_stamp or "").strip()
@@ -174,34 +195,33 @@ def _current_label(result: UpdateCheckResult) -> str:
 
 
 def _fetch_latest_release_body(timeout_sec: float) -> tuple[int, str]:
-    manager = QNetworkAccessManager()
-    request = QNetworkRequest(
-        QUrl("https://api.github.com/repos/soonpyopark/Tiny-PDF-Editor/releases/latest")
+    """GET the latest GitHub release.
+
+    urllib is used on purpose. Qt's HTTP stack on a worker thread reports
+    RemoteHostClosedError ("Connection closed") against api.github.com.
+    """
+    request = urllib.request.Request(
+        "https://api.github.com/repos/soonpyopark/Tiny-PDF-Editor/releases/latest",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": _USER_AGENT,
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
     )
-    request.setRawHeader(b"Accept", b"application/vnd.github+json")
-    request.setRawHeader(b"User-Agent", _USER_AGENT.encode("ascii", "replace"))
-    request.setRawHeader(b"X-GitHub-Api-Version", b"2022-11-28")
-    timeout_ms = max(1, int(timeout_sec * 1000))
-    request.setTransferTimeout(timeout_ms)
-    reply = manager.get(request)
-    loop = QEventLoop()
-    reply.finished.connect(loop.quit)
-    timer = QTimer()
-    timer.setSingleShot(True)
-    timer.timeout.connect(loop.quit)
-    timer.start(timeout_ms)
-    loop.exec()
-    if reply.isRunning():
-        reply.abort()
-        raise TimeoutError("업데이트 확인 시간이 초과되었습니다.")
-    status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
-    body = bytes(reply.readAll()).decode("utf-8", errors="replace")
-    error = reply.error()
-    message = reply.errorString()
-    reply.deleteLater()
-    if error != QNetworkReply.NetworkError.NoError and not status:
-        raise RuntimeError(message or "네트워크 오류")
-    return int(status or 0), body
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            return int(response.status), body
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return int(exc.code), body
+    except TimeoutError as exc:
+        raise TimeoutError("업데이트 확인 시간이 초과되었습니다.") from exc
+    except urllib.error.URLError as exc:
+        reason = exc.reason
+        if isinstance(reason, TimeoutError):
+            raise TimeoutError("업데이트 확인 시간이 초과되었습니다.") from exc
+        raise RuntimeError("업데이트 서버에 연결하지 못했습니다.") from exc
 
 
 def fetch_latest_release(
@@ -273,6 +293,25 @@ def open_releases_page(url: str | None = None) -> None:
     QDesktopServices.openUrl(QUrl(url or RELEASES_PAGE_URL))
 
 
+def _available_update_message(result: UpdateCheckResult) -> tuple[str, str]:
+    current_hint = _current_label(result)
+    latest = f"v{result.latest}"
+    if result.update_kind == "build":
+        stamp_hint = (
+            f"\n최신 빌드: {result.latest_build_stamp}"
+            if result.latest_build_stamp
+            else ""
+        )
+        return (
+            f"같은 버전의 새 빌드가 있습니다: {latest}",
+            f"현재 버전: {current_hint}{stamp_hint}",
+        )
+    return (
+        f"새 버전이 있습니다: {latest}",
+        f"현재 버전: {current_hint}",
+    )
+
+
 def show_update_check_result(parent: QWidget | None, result: UpdateCheckResult) -> None:
     title = "업데이트 확인"
     current_hint = _current_label(result)
@@ -292,23 +331,13 @@ def show_update_check_result(parent: QWidget | None, result: UpdateCheckResult) 
             open_releases_page(RELEASES_PAGE_URL)
         return
 
-    kind = result.update_kind
-    if kind is not None:
+    if result.update_kind is not None:
+        text, detail = _available_update_message(result)
         box = QMessageBox(parent)
         box.setIcon(QMessageBox.Icon.Information)
         box.setWindowTitle(title)
-        latest = f"v{result.latest}"
-        if kind == "build":
-            stamp_hint = (
-                f"\n최신 빌드: {result.latest_build_stamp}"
-                if result.latest_build_stamp
-                else ""
-            )
-            box.setText(f"같은 버전의 새 빌드가 있습니다: {latest}")
-            box.setInformativeText(f"현재 버전: {current_hint}{stamp_hint}")
-        else:
-            box.setText(f"새 버전이 있습니다: {latest}")
-            box.setInformativeText(f"현재 버전: {current_hint}")
+        box.setText(text)
+        box.setInformativeText(detail)
         open_btn = box.addButton("다운로드", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("나중에", QMessageBox.ButtonRole.RejectRole)
         box.exec()
@@ -321,6 +350,31 @@ def show_update_check_result(parent: QWidget | None, result: UpdateCheckResult) 
         title,
         f"최신 버전입니다.\n\n현재 버전: {current_hint}",
     )
+
+
+def show_startup_update_prompt(parent: QWidget | None, result: UpdateCheckResult) -> str:
+    """Ask what to do with an available update. Returns download, later, or skip."""
+    text, detail = _available_update_message(result)
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Icon.Information)
+    box.setWindowTitle("업데이트")
+    box.setText(text)
+    box.setInformativeText(detail)
+    open_btn = box.addButton("다운로드", QMessageBox.ButtonRole.AcceptRole)
+    later_btn = box.addButton("나중에", QMessageBox.ButtonRole.RejectRole)
+    skip_btn = box.addButton(
+        "이 버전은 알리지 않기",
+        QMessageBox.ButtonRole.ActionRole,
+    )
+    box.setDefaultButton(later_btn)
+    box.setEscapeButton(later_btn)
+    box.exec()
+    clicked = box.clickedButton()
+    if clicked is open_btn:
+        return "download"
+    if clicked is skip_btn:
+        return "skip"
+    return "later"
 
 
 def start_update_check(

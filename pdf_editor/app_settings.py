@@ -39,6 +39,9 @@ class AppSettings:
         self.virtual_printer_enabled: bool | None = None
         self.page_nav_side: str = "hidden"
         self.page_nav_chosen: bool = False
+        self.skipped_update_platform: str = ""
+        self.skipped_update_version: str = ""
+        self.skipped_update_stamp: str = ""
         self.load()
 
     def load(self) -> None:
@@ -76,6 +79,29 @@ class AppSettings:
             if nav_side in ("left", "right", "hidden"):
                 self.page_nav_side = nav_side
                 self.page_nav_chosen = True
+        platform = data.get("skipped_update_platform")
+        version = data.get("skipped_update_version")
+        stamp = data.get("skipped_update_stamp")
+        if (
+            isinstance(platform, str)
+            and isinstance(version, str)
+            and isinstance(stamp, str)
+        ):
+            self.skipped_update_platform = platform.strip()
+            self.skipped_update_version = version.strip()
+            self.skipped_update_stamp = stamp.strip()
+
+    def skipped_update_key(self) -> tuple[str, str, str]:
+        return (
+            self.skipped_update_platform,
+            self.skipped_update_version,
+            self.skipped_update_stamp,
+        )
+
+    def set_skipped_update(self, platform: str, version: str, stamp: str) -> None:
+        self.skipped_update_platform = platform.strip()
+        self.skipped_update_version = version.strip()
+        self.skipped_update_stamp = stamp.strip()
 
     def save(self) -> None:
         payload = {
@@ -87,6 +113,9 @@ class AppSettings:
                 self.page_nav_side if self.page_nav_chosen else "hidden"
             ),
             "page_nav_chosen": self.page_nav_chosen,
+            "skipped_update_platform": self.skipped_update_platform,
+            "skipped_update_version": self.skipped_update_version,
+            "skipped_update_stamp": self.skipped_update_stamp,
         }
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
