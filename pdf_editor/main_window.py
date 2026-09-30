@@ -257,7 +257,7 @@ class _SignatureMenuButton(QPushButton):
     """Red menu row that opens the signature submenu beside itself."""
 
     def __init__(self, menu: QMenu) -> None:
-        super().__init__("서명 이미지 붙여넣기")
+        super().__init__("서명 넣기(베타)")
         self._menu = menu
         self.setFlat(True)
         self.setAutoDefault(False)
@@ -1143,12 +1143,12 @@ class DocumentTab(QWidget):
     window = self.window()
     if isinstance(window, MainWindow):
       window.statusBar().showMessage(message)
-    QMessageBox.warning(self, "서명 이미지 붙여넣기", message)
+    QMessageBox.warning(self, "서명 넣기(베타)", message)
 
   def _on_signature_stamp_cancelled(self) -> None:
     window = self.window()
     if isinstance(window, MainWindow):
-      window.statusBar().showMessage("서명 이미지 붙여넣기를 취소했습니다.")
+      window.statusBar().showMessage("서명 넣기(베타)를 취소했습니다.")
 
   def _on_signature_stamp_deleted(self) -> None:
     index = self.viewer.current_index()
@@ -1162,7 +1162,7 @@ class DocumentTab(QWidget):
     window = self.window()
     if isinstance(window, MainWindow):
       window.statusBar().showMessage(
-        "서명을 복사했습니다. Ctrl+V 또는 편집 → 서명 이미지 붙여넣기 → 클립보드로 다시 넣을 수 있습니다."
+        "서명을 복사했습니다. Ctrl+V 또는 편집 → 서명 넣기(베타) → 클립보드로 다시 넣을 수 있습니다."
       )
       window._update_edit_actions()
 
@@ -1790,7 +1790,7 @@ class MainWindow(QMainWindow):
 
   def _show_signature_result(self, ok: bool, message: str) -> None:
     if not ok:
-      QMessageBox.information(self, "서명 이미지 붙여넣기", message)
+      QMessageBox.information(self, "서명 넣기(베타)", message)
       return
     self.statusBar().showMessage(message)
 
@@ -1802,7 +1802,7 @@ class MainWindow(QMainWindow):
     self._close_signature_menus()
     tab = self._current_tab()
     if tab is None:
-      QMessageBox.information(self, "서명 이미지 붙여넣기", "먼저 PDF를 여세요.")
+      QMessageBox.information(self, "서명 넣기(베타)", "먼저 PDF를 여세요.")
       return
     self._apply_clipboard_signature(tab)
 
@@ -1810,7 +1810,7 @@ class MainWindow(QMainWindow):
     self._close_signature_menus()
     tab = self._current_tab()
     if tab is None or tab.document.page_count <= 0:
-      QMessageBox.information(self, "서명 이미지 붙여넣기", "먼저 PDF를 여세요.")
+      QMessageBox.information(self, "서명 넣기(베타)", "먼저 PDF를 여세요.")
       return
     path, _ = QFileDialog.getOpenFileName(
       self,
