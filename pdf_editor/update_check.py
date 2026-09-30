@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import sys
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -197,31 +196,29 @@ def _current_label(result: UpdateCheckResult) -> str:
 def _fetch_latest_release_body(timeout_sec: float) -> tuple[int, str]:
     """GET the latest GitHub release.
 
-    urllib is used on purpose. Qt's HTTP stack on a worker thread reports
+    The host and path are fixed. Qt's HTTP stack on a worker thread reports
     RemoteHostClosedError ("Connection closed") against api.github.com.
     """
-    request = urllib.request.Request(
-        "https://api.github.com/repos/soonpyopark/Tiny-PDF-Editor/releases/latest",
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": _USER_AGENT,
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
+    connection = http.client.HTTPSConnection("api.github.com", timeout=timeout_sec)
     try:
-        with urllib.request.urlopen(request, timeout=timeout_sec) as response:
-            body = response.read().decode("utf-8", errors="replace")
-            return int(response.status), body
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        return int(exc.code), body
+        connection.request(
+            "GET",
+            "/repos/soonpyopark/Tiny-PDF-Editor/releases/latest",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": _USER_AGENT,
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        response = connection.getresponse()
+        body = response.read().decode("utf-8", errors="replace")
+        return int(response.status), body
     except TimeoutError as exc:
         raise TimeoutError("업데이트 확인 시간이 초과되었습니다.") from exc
-    except urllib.error.URLError as exc:
-        reason = exc.reason
-        if isinstance(reason, TimeoutError):
-            raise TimeoutError("업데이트 확인 시간이 초과되었습니다.") from exc
+    except OSError as exc:
         raise RuntimeError("업데이트 서버에 연결하지 못했습니다.") from exc
+    finally:
+        connection.close()
 
 
 def fetch_latest_release(
