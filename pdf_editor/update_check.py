@@ -5,17 +5,16 @@ from __future__ import annotations
 import json
 import re
 import sys
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from PyQt6.QtCore import QObject, Qt, QThread, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QUrl
 from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWidgets import QMessageBox, QWidget
 
-from pdf_editor.version import APP_BUILD_STAMP, __version__, version_label
+from pdf_editor.version import APP_BUILD_STAMP, APP_NAME, __version__, version_label
 
 GITHUB_REPO = "soonpyopark/Tiny-PDF-Editor"
 RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
@@ -193,47 +192,26 @@ def _current_label(result: UpdateCheckResult) -> str:
     return base
 
 
-def _fetch_latest_release_body(timeout_sec: float) -> tuple[int, str]:
-    """GET the latest GitHub release.
-
-    The URL is a literal so the request cannot be pointed at another host.
-    Qt's HTTP stack on a worker thread reports RemoteHostClosedError
-    ("Connection closed") against api.github.com.
-    """
-    try:
-        with urllib.request.urlopen(
-            "https://api.github.com/repos/soonpyopark/Tiny-PDF-Editor/releases/latest",
-            timeout=timeout_sec,
-        ) as response:
-            body = response.read().decode("utf-8", errors="replace")
-            return int(response.status), body
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        return int(exc.code), body
-    except TimeoutError as exc:
-        raise TimeoutError("업데이트 확인 시간이 초과되었습니다.") from exc
-    except urllib.error.URLError as exc:
-        reason = exc.reason
-        if isinstance(reason, TimeoutError):
-            raise TimeoutError("업데이트 확인 시간이 초과되었습니다.") from exc
-        raise RuntimeError("업데이트 서버에 연결하지 못했습니다.") from exc
+_LATEST_RELEASE_URL = (
+    "https://api.github.com/repos/soonpyopark/Tiny-PDF-Editor/releases/latest"
+)
 
 
-def fetch_latest_release(
+def release_result_from_http(
+    status: int,
+    body: str,
     *,
-    timeout_sec: float = 12.0,
+    error: str | None = None,
     platform: str | None = None,
 ) -> UpdateCheckResult:
     current = __version__
     current_build_stamp = (APP_BUILD_STAMP or "").strip() or None
-    try:
-        status, body = _fetch_latest_release_body(timeout_sec)
-    except Exception as exc:  # noqa: BLE001 — surface any network/parse failure
+    if error:
         return UpdateCheckResult(
             ok=False,
             current=current,
             current_build_stamp=current_build_stamp,
-            error=str(exc) or "네트워크 오류",
+            error=error,
         )
     if status >= 400:
         return UpdateCheckResult(
@@ -242,7 +220,22 @@ def fetch_latest_release(
             current_build_stamp=current_build_stamp,
             error=f"GitHub 응답 오류 (HTTP {status})",
         )
-    payload = json.loads(body)
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return UpdateCheckResult(
+            ok=False,
+            current=current,
+            current_build_stamp=current_build_stamp,
+            error="릴리스 정보를 해석할 수 없습니다.",
+        )
+    if not isinstance(payload, dict):
+        return UpdateCheckResult(
+            ok=False,
+            current=current,
+            current_build_stamp=current_build_stamp,
+            error="릴리스 정보를 해석할 수 없습니다.",
+        )
 
     tag_name = str(payload.get("tag_name") or "")
     latest = parse_release_tag(tag_name)
@@ -275,13 +268,6 @@ def fetch_latest_release(
         release_url=html_url,
         platform_assets_found=bool(platform_names),
     )
-
-
-class UpdateCheckWorker(QObject):
-    finished = pyqtSignal(object)
-
-    def run(self) -> None:
-        self.finished.emit(fetch_latest_release())
 
 
 def open_releases_page(url: str | None = None) -> None:
@@ -372,25 +358,74 @@ def show_startup_update_prompt(parent: QWidget | None, result: UpdateCheckResult
     return "later"
 
 
+class UpdateCheckSession(QObject):
+    """GitHub release check on the UI thread.
+
+    HTTP/2 is disabled. Qt on a worker thread reported Connection closed
+    against api.github.com.
+    """
+
+    def __init__(
+        self,
+        on_finished: Callable[[UpdateCheckResult], None],
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._on_finished = on_finished
+        self._running = True
+        self._manager = QNetworkAccessManager(self)
+        request = QNetworkRequest(QUrl(_LATEST_RELEASE_URL))
+        request.setAttribute(
+            QNetworkRequest.Attribute.Http2AllowedAttribute,
+            False,
+        )
+        request.setRawHeader(b"Accept", b"application/vnd.github+json")
+        request.setRawHeader(
+            b"User-Agent",
+            f"{APP_NAME}/{__version__}".encode("ascii", "replace"),
+        )
+        request.setRawHeader(b"X-GitHub-Api-Version", b"2022-11-28")
+        request.setTransferTimeout(12_000)
+        self._reply = self._manager.get(request)
+        self._reply.finished.connect(self._finish)
+
+    def isRunning(self) -> bool:
+        return self._running
+
+    def _finish(self) -> None:
+        if not self._running:
+            return
+        self._running = False
+        reply = self._reply
+        status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+        body = bytes(reply.readAll()).decode("utf-8", errors="replace")
+        error = reply.error()
+        reply.deleteLater()
+        if error == QNetworkReply.NetworkError.TimeoutError:
+            result = release_result_from_http(
+                0,
+                "",
+                error="업데이트 확인 시간이 초과되었습니다.",
+            )
+        elif error != QNetworkReply.NetworkError.NoError and not status:
+            result = release_result_from_http(
+                0,
+                "",
+                error="업데이트 서버에 연결하지 못했습니다.",
+            )
+        else:
+            result = release_result_from_http(int(status or 0), body)
+        callback = self._on_finished
+        self._on_finished = None
+        if callback is not None:
+            callback(result)
+        self.deleteLater()
+
+
 def start_update_check(
     parent: QObject | None,
     on_finished: Callable[[UpdateCheckResult], None],
-) -> tuple[QThread, UpdateCheckWorker]:
-    """Run release check off the UI thread. Caller must keep the returned refs."""
-    thread = QThread(parent)
-    worker = UpdateCheckWorker()
-    worker.moveToThread(thread)
-    thread.started.connect(worker.run)
-
-    def _deliver(result: object) -> None:
-        try:
-            assert isinstance(result, UpdateCheckResult)
-            on_finished(result)
-        finally:
-            thread.quit()
-
-    worker.finished.connect(_deliver, Qt.ConnectionType.QueuedConnection)
-    thread.finished.connect(worker.deleteLater)
-    thread.finished.connect(thread.deleteLater)
-    thread.start()
-    return thread, worker
+) -> tuple[UpdateCheckSession, UpdateCheckSession]:
+    """Start a release check. Caller must keep the returned refs until it finishes."""
+    session = UpdateCheckSession(on_finished, parent)
+    return session, session
