@@ -75,6 +75,32 @@ def _preload_runtime_dlls(folders: list[Path]) -> None:
                 loaded.add(key)
             except OSError:
                 continue
+    _preload_python_dlls(folders)
+
+
+def _preload_python_dlls(folders: list[Path]) -> None:
+    """QtCore.pyd imports python3.dll. Load the bundled copies by full path."""
+    import ctypes
+
+    loaded: set[str] = set()
+    for folder in folders:
+        if not folder.is_dir():
+            continue
+        try:
+            entries = list(folder.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            name = entry.name.lower()
+            if not entry.is_file() or not name.startswith("python3") or not name.endswith(".dll"):
+                continue
+            if name in loaded:
+                continue
+            try:
+                _PRELOADED_DLLS.append(ctypes.WinDLL(str(entry)))
+                loaded.add(name)
+            except OSError:
+                continue
 
 
 def prepare_qt_dll_paths() -> None:

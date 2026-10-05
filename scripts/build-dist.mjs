@@ -563,6 +563,12 @@ function ensureQtRuntimeInBundle(appDir) {
   for (const source of windowsIcuDlls()) {
     copyFileToDirs(source, destDirs);
   }
+  for (const name of fs.readdirSync(internalDir)) {
+    if (!/^python3.*\.dll$/i.test(name)) {
+      continue;
+    }
+    copyFileToDirs(path.join(internalDir, name), [pyqtDir]);
+  }
 
   for (const dir of destDirs) {
     for (const name of REQUIRED_RUNTIME_DLLS) {

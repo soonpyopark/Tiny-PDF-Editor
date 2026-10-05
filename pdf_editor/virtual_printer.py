@@ -9,7 +9,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from pdf_editor.app_settings import default_downloads_folder
 from pdf_editor.version import APP_NAME
 
 PRINTER_NAME = "Tiny PDF Editor"
@@ -194,6 +193,8 @@ if ($portObj) {{
 
 
 def next_output_pdf() -> Path:
+    from pdf_editor.app_settings import default_downloads_folder
+
     stamp = datetime.now().strftime("%y%m%d_%H%M%S")
     folder = Path(default_downloads_folder())
     folder.mkdir(parents=True, exist_ok=True)
