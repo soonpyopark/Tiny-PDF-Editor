@@ -145,7 +145,7 @@ from pdf_editor.update_check import (
   start_update_check,
   update_notice_key,
 )
-from pdf_editor.print_watch import PrintSpoolWatcher
+from pdf_editor.print_watch import PrintSpoolWatcher, launch_watch_if_needed
 from pdf_editor.single_instance import (
   bind_instance_server,
   offer_to_running_instance,
@@ -2715,7 +2715,7 @@ class MainWindow(QMainWindow):
       if is_windows_platform():
         from pdf_editor.virtual_printer import set_watch_at_logon
 
-        set_watch_at_logon(False)
+        set_watch_at_logon(True)
         self._start_print_watcher()
       elif sys.platform == "darwin":
         from pdf_editor.macos_virtual_printer import repair_pdf_service
@@ -2736,7 +2736,7 @@ class MainWindow(QMainWindow):
     if is_windows_platform():
       from pdf_editor.virtual_printer import set_watch_at_logon
 
-      set_watch_at_logon(False)
+      set_watch_at_logon(True)
       self._start_print_watcher()
 
   def _start_print_watcher(self) -> None:
@@ -2744,6 +2744,8 @@ class MainWindow(QMainWindow):
       return
     watcher = PrintSpoolWatcher(self)
     if not watcher.start():
+      # 다른 인스턴스/감시가 락을 잡은 경우 — 백그라운드 감시로 이어 준다.
+      launch_watch_if_needed()
       return
     watcher.pdf_ready.connect(self._on_virtual_print_pdf)
     self._print_watcher = watcher
@@ -3466,6 +3468,13 @@ class MainWindow(QMainWindow):
     if self._print_watcher is not None:
       self._print_watcher.stop()
       self._print_watcher = None
+    if (
+      is_windows_platform()
+      and self._app_settings.virtual_printer_enabled
+    ):
+      # 앱을 끈 뒤에도 인쇄 PDF가 열리도록 백그라운드 감시를 이어 준다.
+      # (트레이 UI는 쓰지 않음 — 시작 체감은 유지)
+      launch_watch_if_needed()
     self._app_settings.save()
     event.accept()
 

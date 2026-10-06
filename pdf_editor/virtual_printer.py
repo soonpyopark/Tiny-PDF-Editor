@@ -161,7 +161,10 @@ Add-Printer -Name $name -DriverName $driver -PortName $port
             "이 PC에 「Microsoft Print to PDF」 드라이버가 있어야 합니다.\n\n"
             + (output or "PowerShell 오류")
         )
-    set_watch_at_logon(False)
+    # 로그인 시 백그라운드 감시만 등록한다.
+    # launch_watch_if_needed()는 여기서 호출하지 않는다 — MSI --install-printer
+    # 가 Qt를 불러 QtCore DLL 오류가 나지 않게 하기 위함.
+    set_watch_at_logon(True)
 
 
 def uninstall_virtual_printer() -> None:
