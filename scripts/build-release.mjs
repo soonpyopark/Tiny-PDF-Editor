@@ -56,6 +56,10 @@ async function main() {
   const stamp = formatTimestamp();
   log(`build stamp: ${stamp}`);
 
+  // Clear any leftover stamp from the parent shell before syncing.
+  delete process.env.TINY_BUILD_STAMP;
+  process.env.TINY_BUILD_STAMP = stamp;
+  process.env.TINY_SKIP_STAMP = "0";
   run(`node scripts/sync-version.mjs --stamp=${stamp}`);
   ensurePythonDeps();
   buildPortableApp();

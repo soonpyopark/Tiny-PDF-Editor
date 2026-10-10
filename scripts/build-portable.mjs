@@ -51,10 +51,26 @@ function formatTimestamp(date = new Date()) {
   return `${yy}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
+function readAppBuildStamp() {
+  const versionPath = path.join(ROOT, "pdf_editor", "version.py");
+  const source = fs.readFileSync(versionPath, "utf8");
+  const match = source.match(/APP_BUILD_STAMP\s*=\s*"([^"]*)"/);
+  return match ? match[1].trim() : "";
+}
+
 function resolveBuildStamp() {
   const fromEnv = String(process.env.TINY_BUILD_STAMP || "").trim();
   if (/^\d{6}_\d{6}$/.test(fromEnv)) {
     return fromEnv;
+  }
+  if (process.env.TINY_SKIP_STAMP === "1") {
+    const fromVersion = readAppBuildStamp();
+    if (/^\d{6}_\d{6}$/.test(fromVersion)) {
+      return fromVersion;
+    }
+    throw new Error(
+      "TINY_SKIP_STAMP=1 requires TINY_BUILD_STAMP or APP_BUILD_STAMP in version.py",
+    );
   }
   return formatTimestamp();
 }
@@ -149,7 +165,7 @@ function main() {
   if (process.env.TINY_SKIP_STAMP !== "1") {
     stampBuildId(timestamp);
   } else {
-    run("node scripts/sync-version.mjs");
+    log(`reuse APP_BUILD_STAMP ${timestamp} (TINY_SKIP_STAMP=1)`);
   }
   log(`build stamp: ${timestamp}`);
 

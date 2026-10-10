@@ -31,10 +31,8 @@ function formatBuildStamp(date = new Date()) {
 }
 
 function resolveStampArg() {
-  const fromEnv = String(process.env.TINY_BUILD_STAMP || "").trim();
-  if (/^\d{6}_\d{6}$/.test(fromEnv)) {
-    return fromEnv;
-  }
+  // CLI wins over env so a leftover TINY_BUILD_STAMP cannot override
+  // build:release's --stamp= (that mismatch shipped MSI names ≠ EXE stamp).
   for (const arg of process.argv.slice(2)) {
     if (arg === "--refresh-stamp") {
       return formatBuildStamp();
@@ -43,6 +41,13 @@ function resolveStampArg() {
     if (match && /^\d{6}_\d{6}$/.test(match[1].trim())) {
       return match[1].trim();
     }
+  }
+  if (process.env.TINY_SKIP_STAMP === "1") {
+    return null;
+  }
+  const fromEnv = String(process.env.TINY_BUILD_STAMP || "").trim();
+  if (/^\d{6}_\d{6}$/.test(fromEnv)) {
+    return fromEnv;
   }
   return null;
 }

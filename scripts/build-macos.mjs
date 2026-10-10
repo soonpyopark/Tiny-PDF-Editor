@@ -560,7 +560,7 @@ function main() {
   if (process.env.TINY_SKIP_STAMP !== "1") {
     stampBuildId(timestamp);
   } else {
-    run("node scripts/sync-version.mjs");
+    log(`reuse APP_BUILD_STAMP ${timestamp} (TINY_SKIP_STAMP=1)`);
   }
   log(`build stamp: ${timestamp}`);
 

@@ -9,6 +9,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -142,6 +143,90 @@ function readAppBuildStamp() {
   return match?.[1]?.trim() || "";
 }
 
+function clearVersionBytecache() {
+  const cacheDir = path.join(ROOT, "pdf_editor", "__pycache__");
+  if (!fs.existsSync(cacheDir)) {
+    return;
+  }
+  for (const name of fs.readdirSync(cacheDir)) {
+    if (!/^version\..*\.pyc$/i.test(name)) {
+      continue;
+    }
+    fs.rmSync(path.join(cacheDir, name), { force: true });
+  }
+}
+
+function removeStalePyInstallerTree(stalePath) {
+  try {
+    fs.rmSync(stalePath, { recursive: true, force: true });
+  } catch (error) {
+    throw new Error(
+      `Could not clear stale PyInstaller output at ${stalePath}. ` +
+        "Close Tiny PDF Editor (and print-watch) then rebuild. " +
+        `(${error instanceof Error ? error.message : error})`,
+    );
+  }
+  if (fs.existsSync(stalePath)) {
+    throw new Error(
+      `Stale PyInstaller output still locked: ${stalePath}. ` +
+        "Close Tiny PDF Editor (and print-watch) then rebuild.",
+    );
+  }
+}
+
+function exeContainsBuildStamp(exePath, stamp) {
+  if (!stamp || !fs.existsSync(exePath)) {
+    return false;
+  }
+  const data = fs.readFileSync(exePath);
+  const needle = Buffer.from(stamp, "utf8");
+  if (data.includes(needle)) {
+    return true;
+  }
+  // PyInstaller stores pure modules in a zlib-compressed PKG archive.
+  let offset = 0;
+  while (offset < data.length) {
+    const start = data.indexOf(Buffer.from([0x78, 0x9c]), offset);
+    if (start < 0) {
+      break;
+    }
+    try {
+      const inflated = zlib.inflateSync(data.subarray(start, start + 3_000_000));
+      if (inflated.includes(needle)) {
+        return true;
+      }
+    } catch {
+      // Not a zlib stream at this offset.
+    }
+    offset = start + 1;
+  }
+  return false;
+}
+
+export function assertExeHasBuildStamp(exePath, stamp = readAppBuildStamp()) {
+  if (!stamp) {
+    return;
+  }
+  if (exeContainsBuildStamp(exePath, stamp)) {
+    return;
+  }
+  throw new Error(
+    `PyInstaller EXE is missing APP_BUILD_STAMP ${stamp}. ` +
+      "A stale bundle was reused. Delete .build/pyinstaller-dist and " +
+      ".build/pyinstaller-work, close Tiny PDF Editor, then rebuild.",
+  );
+}
+
+function recordEmbeddedAppVersion() {
+  const key = `${readAppVersion()}|${readAppBuildStamp()}`;
+  fs.mkdirSync(PYI_WORK, { recursive: true });
+  fs.writeFileSync(
+    path.join(PYI_WORK, "embedded-app-version.txt"),
+    `${key}\n`,
+    "utf8",
+  );
+}
+
 function invalidatePyInstallerIfVersionChanged() {
   const version = readAppVersion();
   const buildStamp = readAppBuildStamp();
@@ -150,23 +235,29 @@ function invalidatePyInstallerIfVersionChanged() {
   const previous = fs.existsSync(stampPath)
     ? fs.readFileSync(stampPath, "utf8").trim()
     : "";
-  if (previous === key) {
+  const builtExe = path.join(PYI_DIST, "PDFEditor", "PDFEditor.exe");
+  const exeHasStamp = exeContainsBuildStamp(builtExe, buildStamp);
+  if (previous === key && exeHasStamp) {
     return;
   }
 
   // version.py is compiled into PYZ. Incremental PyInstaller can keep a stale
   // PYZ (splash/title still show the previous release) — force a full rebuild.
+  // Record the stamp only after a successful build + verification.
+  clearVersionBytecache();
   const stalePaths = [
     path.join(PYI_DIST, "PDFEditor"),
     path.join(PYI_WORK, "PDFEditor"),
   ];
   for (const stale of stalePaths) {
-    fs.rmSync(stale, { recursive: true, force: true });
+    removeStalePyInstallerTree(stale);
   }
-  fs.mkdirSync(PYI_WORK, { recursive: true });
-  fs.writeFileSync(stampPath, `${key}\n`, "utf8");
+  if (fs.existsSync(stampPath)) {
+    fs.rmSync(stampPath, { force: true });
+  }
   log(
-    `app build id changed (${previous || "none"} -> ${key}); forcing PyInstaller rebuild`,
+    `app build id changed (${previous || "none"} -> ${key}` +
+      `${exeHasStamp ? "" : "; EXE missing stamp"}); forcing PyInstaller rebuild`,
   );
 }
 
@@ -639,6 +730,10 @@ export function buildPortableApp() {
     `python -m PyInstaller --noconfirm "${specPath}" --distpath "${PYI_DIST}" --workpath "${PYI_WORK}"`,
   );
   finalizePortableAppBundle(appDir);
+  const builtExe = path.join(appDir, "PDFEditor.exe");
+  assertExeHasBuildStamp(builtExe, readAppBuildStamp());
+  recordEmbeddedAppVersion();
+  log(`verified EXE embeds APP_BUILD_STAMP ${readAppBuildStamp()}`);
 }
 
 function fileHash(filePath) {
