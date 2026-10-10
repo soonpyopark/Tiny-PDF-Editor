@@ -5,7 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QFileSystemWatcher, QLockFile, QObject, QProcess, QTimer, pyqtSignal
+from PyQt6.QtCore import QFileSystemWatcher, QLockFile, QObject, QProcess, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from pdf_editor.resources import load_app_icon
@@ -126,6 +127,28 @@ class PrintWatchController(QObject):
         self.watcher.stop()
 
 
+class _PrintWatchHolder(QWidget):
+    """Hidden top-level window so MSI Restart Manager can send WM_CLOSE."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle(APP_NAME)
+        self.setWindowFlags(
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, True)
+        self.resize(1, 1)
+        self.move(-32_000, -32_000)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        event.accept()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+
+
 def run_print_watch_app(app: QApplication) -> int:
     if not printer_is_installed():
         return 0
@@ -136,10 +159,11 @@ def run_print_watch_app(app: QApplication) -> int:
     if not controller.start():
         return 0
     app.aboutToQuit.connect(controller.stop)
-    holder = QWidget()
-    holder.setWindowTitle(APP_NAME)
-    holder.resize(1, 1)
-    app.setQuitOnLastWindowClosed(False)
+    # Keep a real HWND so CloseApplication / Restart Manager can shut us down.
+    # QuitOnLastWindowClosed stays True so WM_CLOSE ends the watch process.
+    holder = _PrintWatchHolder()
+    holder.show()
+    app.setQuitOnLastWindowClosed(True)
     _ = holder
     return app.exec()
 

@@ -408,11 +408,84 @@ class TinyApplication(QApplication):
         super().__init__(argv)
         self.pending_file_open_paths: list[str] = []
         self.main_window: MainWindow | None = None
+        self.windows: list[MainWindow] = []
+        self.instance_server = None
 
     def take_pending_file_open_paths(self) -> list[str]:
         paths = self.pending_file_open_paths
         self.pending_file_open_paths = []
         return paths
+
+    def register_window(self, window: MainWindow) -> None:
+        if window not in self.windows:
+            self.windows.append(window)
+        self.main_window = window
+
+    def unregister_window(self, window: MainWindow) -> None:
+        if window in self.windows:
+            self.windows.remove(window)
+        if self.main_window is window:
+            self.main_window = self.windows[-1] if self.windows else None
+
+    def open_in_new_window_enabled(self) -> bool:
+        for window in self.windows:
+            return bool(window._app_settings.open_in_new_window)
+        return True
+
+    def sync_open_in_new_window(self, enabled: bool) -> None:
+        for window in self.windows:
+            window._app_settings.open_in_new_window = enabled
+            action = getattr(window, "_act_open_in_new_window", None)
+            if action is None:
+                continue
+            action.blockSignals(True)
+            action.setChecked(enabled)
+            action.blockSignals(False)
+        if self.windows:
+            self.windows[0]._app_settings.save()
+
+    def preferred_window(self) -> MainWindow | None:
+        active = self.activeWindow()
+        if isinstance(active, MainWindow) and active in self.windows:
+            return active
+        return self.main_window or (self.windows[0] if self.windows else None)
+
+    def activate_window(self, window: MainWindow | None) -> None:
+        if window is None:
+            return
+        window.showNormal()
+        window.raise_()
+        window.activateWindow()
+
+    def deliver_external_paths(self, paths: list[str]) -> None:
+        """Open paths from a second launch / FileOpen / print spool."""
+        cleaned = [path for path in paths if path]
+        if not cleaned:
+            self.activate_window(self.preferred_window())
+            return
+        claimer = self.preferred_window()
+        if claimer is not None:
+            cleaned = [claimer._claim_print_pdf_if_needed(path) for path in cleaned]
+        target = None
+        for window in self.windows:
+            if window._is_effectively_empty():
+                target = window
+                break
+        if target is None and self.open_in_new_window_enabled():
+            window = create_document_window(cleaned, host_services=False)
+            self.activate_window(window)
+            window.statusBar().showMessage(f"인쇄 PDF: {cleaned[0]}")
+            return
+        if target is None:
+            target = self.preferred_window()
+        if target is None:
+            window = create_document_window(cleaned, host_services=True)
+            self.activate_window(window)
+            return
+        target._discard_lone_empty_tab()
+        target._open_paths(cleaned, force_same_window=True)
+        self.activate_window(target)
+        target.statusBar().showMessage(f"인쇄 PDF: {cleaned[0]}")
 
     def event(self, event: QEvent) -> bool:
         if isinstance(event, QFileOpenEvent):
@@ -427,11 +500,23 @@ class TinyApplication(QApplication):
             return
         if not PdfDocument.is_supported_file(path):
             return
-        window = self.main_window
-        if window is not None:
-            window._open_printed_or_dropped(path)
+        if self.windows:
+            self.deliver_external_paths([path])
             return
         self.pending_file_open_paths.append(path)
+
+
+def create_document_window(
+    launch_paths: list[str] | None = None,
+    *,
+    host_services: bool = False,
+) -> MainWindow:
+    window = MainWindow(launch_paths=launch_paths, host_services=host_services)
+    app = QApplication.instance()
+    if isinstance(app, TinyApplication):
+        app.register_window(window)
+    window.show()
+    return window
 
 
 class CloseSaveChoice(str, Enum):
@@ -1594,13 +1679,19 @@ class _RecentMenuEventFilter(QObject):
 
 
 class MainWindow(QMainWindow):
-  def __init__(self, launch_paths: list[str] | None = None) -> None:
+  def __init__(
+    self,
+    launch_paths: list[str] | None = None,
+    *,
+    host_services: bool = True,
+  ) -> None:
     super().__init__()
     self.setObjectName("mainWindow")
     self.setWindowTitle(titled_name())
     self.setMinimumSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
     self.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
     self._centered_on_show = False
+    self._host_services = host_services
 
     app_icon = load_app_icon()
     if not app_icon.isNull():
@@ -1654,9 +1745,9 @@ class MainWindow(QMainWindow):
     self._update_check_mode: str | None = None
     self._startup_update_scheduled = False
     self._print_watcher: PrintSpoolWatcher | None = None
-    if is_windows_platform():
+    if self._host_services and is_windows_platform():
       QTimer.singleShot(0, refresh_pdf_association_if_registered)
-    if supports_virtual_printer():
+    if self._host_services and supports_virtual_printer():
       QTimer.singleShot(0, self._ensure_virtual_printer)
     if self._pending_launch_paths:
       QTimer.singleShot(0, self._open_pending_launch_paths)
@@ -1686,7 +1777,8 @@ class MainWindow(QMainWindow):
     self._update_window_title()
     if not self._startup_update_scheduled:
       self._startup_update_scheduled = True
-      QTimer.singleShot(0, self._check_for_updates_on_startup)
+      if self._host_services:
+        QTimer.singleShot(0, self._check_for_updates_on_startup)
 
   def _update_window_title(self) -> None:
     tab = self._current_tab()
@@ -2137,6 +2229,12 @@ class MainWindow(QMainWindow):
     view_menu.addAction(self._act_fullscreen)
     self.addAction(self._act_fullscreen)
 
+    self._act_open_in_new_window = QAction("새 창으로 열기", self)
+    self._act_open_in_new_window.setCheckable(True)
+    self._act_open_in_new_window.setChecked(self._app_settings.open_in_new_window)
+    self._act_open_in_new_window.toggled.connect(self._toggle_open_in_new_window)
+    view_menu.addAction(self._act_open_in_new_window)
+
     help_menu = self.menuBar().addMenu("도움말(&H)")
     act_update = QAction("업데이트 확인", self)
     act_update.triggered.connect(self._check_for_updates)
@@ -2545,17 +2643,70 @@ class MainWindow(QMainWindow):
       return
     self.tabs.removeTab(0)
 
+  def _is_effectively_empty(self) -> bool:
+    if self.tabs.count() == 0:
+      return True
+    for index in range(self.tabs.count()):
+      widget = self.tabs.widget(index)
+      if not isinstance(widget, DocumentTab):
+        return False
+      if (
+        widget.document.modified
+        or widget.document.source_path
+        or widget.document.page_count > 0
+      ):
+        return False
+    return True
+
+  def _toggle_open_in_new_window(self, checked: bool) -> None:
+    self._app_settings.open_in_new_window = bool(checked)
+    self._app_settings.save()
+    app = QApplication.instance()
+    if isinstance(app, TinyApplication):
+      app.sync_open_in_new_window(bool(checked))
+
+  def _should_open_in_new_window(self) -> bool:
+    return self._app_settings.open_in_new_window and not self._is_effectively_empty()
+
+  def _open_paths_in_new_window(
+    self,
+    paths: list[str],
+    *,
+    initial_page: int | None = None,
+  ) -> bool:
+    window = create_document_window(None, host_services=False)
+    window._discard_lone_empty_tab()
+    ok = window._open_paths(paths, initial_page=initial_page, force_same_window=True)
+    if not ok:
+      window.close()
+      return False
+    app = QApplication.instance()
+    if isinstance(app, TinyApplication):
+      app.activate_window(window)
+    else:
+      window.raise_()
+      window.activateWindow()
+    return True
+
   def _open_pending_launch_paths(self) -> None:
     paths = [self._claim_print_pdf_if_needed(path) for path in self._pending_launch_paths]
     self._pending_launch_paths = []
     if paths:
       self._discard_lone_empty_tab()
-    if not self._open_paths(paths) and self.tabs.count() == 0:
+    if not self._open_paths(paths, force_same_window=True) and self.tabs.count() == 0:
       self._new_tab()
 
-  def _open_paths(self, paths: list[str], *, initial_page: int | None = None) -> bool:
+  def _open_paths(
+    self,
+    paths: list[str],
+    *,
+    initial_page: int | None = None,
+    force_same_window: bool = False,
+  ) -> bool:
     if not paths:
       return False
+    if not force_same_window and self._should_open_in_new_window():
+      return self._open_paths_in_new_window(paths, initial_page=initial_page)
 
     if len(paths) == 1:
       path = paths[0]
@@ -2758,8 +2909,13 @@ class MainWindow(QMainWindow):
     return str(claim_incoming_pdf(path))
 
   def _open_printed_or_dropped(self, path: str) -> None:
+    app = QApplication.instance()
+    if isinstance(app, TinyApplication) and len(app.windows) > 0:
+      app.deliver_external_paths([path])
+      return
+    claimed = self._claim_print_pdf_if_needed(path)
     self._discard_lone_empty_tab()
-    self._open_paths([self._claim_print_pdf_if_needed(path)])
+    self._open_paths([claimed], force_same_window=True)
     self.showNormal()
     self.raise_()
     self.activateWindow()
@@ -2767,6 +2923,13 @@ class MainWindow(QMainWindow):
 
   def _on_virtual_print_pdf(self, path: str) -> None:
     self._open_printed_or_dropped(path)
+
+  def _become_host(self) -> None:
+    if self._host_services:
+      return
+    self._host_services = True
+    if supports_virtual_printer():
+      self._ensure_virtual_printer()
 
   def _manage_virtual_printer(self) -> None:
     if not supports_virtual_printer():
@@ -3465,17 +3628,22 @@ class MainWindow(QMainWindow):
           event.ignore()
           return
     self._persist_open_document_pages()
+    was_host = self._host_services
     if self._print_watcher is not None:
       self._print_watcher.stop()
       self._print_watcher = None
-    if (
-      is_windows_platform()
-      and self._app_settings.virtual_printer_enabled
-    ):
+    self._app_settings.save()
+    app = QApplication.instance()
+    remaining: list[MainWindow] = []
+    if isinstance(app, TinyApplication):
+      app.unregister_window(self)
+      remaining = list(app.windows)
+    if was_host and remaining:
+      remaining[0]._become_host()
+    elif was_host and is_windows_platform() and self._app_settings.virtual_printer_enabled:
       # 앱을 끈 뒤에도 인쇄 PDF가 열리도록 백그라운드 감시를 이어 준다.
       # (트레이 UI는 쓰지 않음 — 시작 체감은 유지)
       launch_watch_if_needed()
-    self._app_settings.save()
     event.accept()
 
 
@@ -3519,11 +3687,12 @@ def run(argv: list[str] | None = None) -> None:
   if offer_to_running_instance(launch_paths):
     sys.exit(0)
   instance_server = start_instance_server()
+  app.instance_server = instance_server
 
   splash = show_loading_splash(app_icon)
   started = time.monotonic()
-  window = MainWindow(launch_paths=launch_paths)
-  app.main_window = window
+  window = MainWindow(launch_paths=launch_paths, host_services=True)
+  app.register_window(window)
   late_opens = app.take_pending_file_open_paths()
   if late_opens:
     window._pending_launch_paths = _merge_open_paths(
@@ -3533,8 +3702,11 @@ def run(argv: list[str] | None = None) -> None:
     if not launch_paths:
       QTimer.singleShot(0, window._open_pending_launch_paths)
   if instance_server is not None:
-    window._instance_server = instance_server
-    bind_instance_server(instance_server, window)
+    bind_instance_server(
+      instance_server,
+      app.deliver_external_paths,
+      on_activate=lambda: app.activate_window(app.preferred_window()),
+    )
   elapsed_ms = int((time.monotonic() - started) * 1000)
 
   finish_loading_splash(splash, elapsed_ms, window.show)

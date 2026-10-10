@@ -7,7 +7,8 @@
   Payload is staged to msi/Tiny PDF Editor/ before linking (same folder as this .wxs).
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
 
   <Package Name="Tiny PDF Editor"
            Manufacturer="Tiny PDF Editor"
@@ -29,6 +30,21 @@
       Schedule="afterInstallValidate"
       MigrateFeatures="yes" />
     <MediaTemplate EmbedCab="yes" />
+
+    <!--
+      앱을 닫아도 인쇄 감시(print-watch)가 Tiny PDF Editor.exe로 남을 수 있다.
+      설치·업그레이드 전에 종료해 File In Use / Shutting down 실패를 막는다.
+    -->
+    <util:CloseApplication
+      Id="CloseTinyPdfEditor"
+      Target="Tiny PDF Editor.exe"
+      Description="Tiny PDF Editor"
+      CloseMessage="yes"
+      EndSessionMessage="yes"
+      RebootPrompt="no"
+      PromptToContinue="no"
+      TerminateProcess="2000"
+      Timeout="5000" />
 
     <Property Id="ARPHELPLINK" Value="https://note4all.tistory.com" />
     <!-- Shown in Control Panel → Programs and Features / Settings → Apps -->
@@ -56,15 +72,19 @@
 
     <StandardDirectory Id="DesktopFolder" />
 
+    <!--
+      Directory + relative exe so install-printer is always argv[1].
+      Printer CLI must not load Qt (see main.py).
+    -->
     <CustomAction Id="CA_InstallPrinter"
                   Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;[INSTALLFOLDER]Tiny PDF Editor.exe&quot; --install-printer"
+                  ExeCommand="&quot;Tiny PDF Editor.exe&quot; --install-printer"
                   Execute="immediate"
                   Impersonate="yes"
                   Return="ignore" />
     <CustomAction Id="CA_UninstallPrinter"
                   Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;[INSTALLFOLDER]Tiny PDF Editor.exe&quot; --uninstall-printer"
+                  ExeCommand="&quot;Tiny PDF Editor.exe&quot; --uninstall-printer"
                   Execute="immediate"
                   Impersonate="yes"
                   Return="ignore" />

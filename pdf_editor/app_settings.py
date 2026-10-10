@@ -39,6 +39,7 @@ class AppSettings:
         self.virtual_printer_enabled: bool | None = None
         self.page_nav_side: str = "hidden"
         self.page_nav_chosen: bool = False
+        self.open_in_new_window: bool = True
         self.skipped_update_platform: str = ""
         self.skipped_update_version: str = ""
         self.skipped_update_stamp: str = ""
@@ -79,6 +80,9 @@ class AppSettings:
             if nav_side in ("left", "right", "hidden"):
                 self.page_nav_side = nav_side
                 self.page_nav_chosen = True
+        open_new = data.get("open_in_new_window")
+        if isinstance(open_new, bool):
+            self.open_in_new_window = open_new
         platform = data.get("skipped_update_platform")
         version = data.get("skipped_update_version")
         stamp = data.get("skipped_update_stamp")
@@ -113,6 +117,7 @@ class AppSettings:
                 self.page_nav_side if self.page_nav_chosen else "hidden"
             ),
             "page_nav_chosen": self.page_nav_chosen,
+            "open_in_new_window": self.open_in_new_window,
             "skipped_update_platform": self.skipped_update_platform,
             "skipped_update_version": self.skipped_update_version,
             "skipped_update_stamp": self.skipped_update_stamp,

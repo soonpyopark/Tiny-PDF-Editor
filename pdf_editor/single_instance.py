@@ -1,6 +1,8 @@
-"""Forward a second launch (print PDF) into the already running window."""
+"""Forward a second launch (print PDF) into the already running app."""
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 from PyQt6.QtCore import QByteArray
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
@@ -32,7 +34,12 @@ def start_instance_server() -> QLocalServer | None:
     return server
 
 
-def bind_instance_server(server: QLocalServer, window) -> None:
+def bind_instance_server(
+    server: QLocalServer,
+    on_paths: Callable[[list[str]], None],
+    *,
+    on_activate: Callable[[], None] | None = None,
+) -> None:
     def _accept() -> None:
         sock = server.nextPendingConnection()
         if sock is None:
@@ -43,14 +50,9 @@ def bind_instance_server(server: QLocalServer, window) -> None:
         sock.close()
         paths = [line.strip() for line in text.splitlines() if line.strip()]
         if not paths:
-            window.showNormal()
-            window.raise_()
-            window.activateWindow()
+            if on_activate is not None:
+                on_activate()
             return
-        window._open_paths(paths)
-        window.showNormal()
-        window.raise_()
-        window.activateWindow()
-        window.statusBar().showMessage(f"인쇄 PDF: {paths[0]}")
+        on_paths(paths)
 
     server.newConnection.connect(_accept)

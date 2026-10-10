@@ -164,7 +164,7 @@ function buildMsi(timestamp) {
   ensureArpProductIcon();
 
   run(
-    `${wixCmd} build "${PRODUCT_WXS}" -d ProductVersion=${productVersion} -d ProductCode=${productCode} -bindpath "${MSI_DIR}" -ext WixToolset.UI.wixext -o "${outputPath}"`,
+    `${wixCmd} build "${PRODUCT_WXS}" -d ProductVersion=${productVersion} -d ProductCode=${productCode} -bindpath "${MSI_DIR}" -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext -o "${outputPath}"`,
   );
 
   const sizeMb = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(1);
