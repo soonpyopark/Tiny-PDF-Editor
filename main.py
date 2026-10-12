@@ -35,11 +35,76 @@ def _is_printer_cli(argv: list[str]) -> bool:
     return "--install-printer" in flags or "--uninstall-printer" in flags
 
 
+def _parent_is_msiexec() -> bool:
+    """True when this process was started by Windows Installer."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return False
+
+    th32cs_snapprocess = 0x00000002
+    invalid_handle = ctypes.c_void_p(-1).value
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", ctypes.c_wchar * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+    kernel32.Process32FirstW.argtypes = [ctypes.c_void_p, ctypes.POINTER(PROCESSENTRY32W)]
+    kernel32.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(PROCESSENTRY32W)]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+
+    pid = kernel32.GetCurrentProcessId()
+    snapshot = kernel32.CreateToolhelp32Snapshot(th32cs_snapprocess, 0)
+    if not snapshot or snapshot == invalid_handle:
+        return False
+
+    entry = PROCESSENTRY32W()
+    entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+    parent_pid = 0
+    try:
+        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            if entry.th32ProcessID == pid:
+                parent_pid = int(entry.th32ParentProcessID)
+                break
+            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+        if not parent_pid:
+            return False
+        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            if entry.th32ProcessID == parent_pid:
+                return entry.szExeFile.lower().endswith("msiexec.exe")
+            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return False
+
+
 def main(argv: list[str] | None = None) -> None:
     args = list(sys.argv if argv is None else argv)
     # Printer setup must exit before any Qt import or DLL preload.
     if _is_printer_cli(args):
         raise SystemExit(_run_printer_cli(args))
+
+    # Defense in depth: never load Qt if somehow started by Windows Installer.
+    # Printer setup is done on first app launch, not from MSI custom actions.
+    if _parent_is_msiexec():
+        raise SystemExit(0)
 
     from pdf_editor.qt_runtime import prepare_qt_dll_paths
 

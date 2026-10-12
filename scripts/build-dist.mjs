@@ -658,7 +658,9 @@ function ensureQtRuntimeInBundle(appDir) {
     if (!/^python3.*\.dll$/i.test(name)) {
       continue;
     }
-    copyFileToDirs(path.join(internalDir, name), [pyqtDir]);
+    // QtCore.pyd needs python3*.dll on the DLL path; keep copies next to the
+    // exe and inside PyQt6 so MSI/empty-PATH launches still resolve them.
+    copyFileToDirs(path.join(internalDir, name), [appDir, internalDir, pyqtDir]);
   }
 
   for (const dir of destDirs) {

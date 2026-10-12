@@ -73,25 +73,12 @@
     <StandardDirectory Id="DesktopFolder" />
 
     <!--
-      Directory + relative exe so install-printer is always argv[1].
-      Printer CLI must not load Qt (see main.py).
+      Do not run Tiny PDF Editor.exe from MSI custom actions.
+      Spawning the exe during setup caused QtCore DLL errors when the
+      command line/args were dropped. Virtual printer + print-watch are
+      registered on first app launch (_ensure_virtual_printer) or via
+      파일 → 가상 프린터...
     -->
-    <CustomAction Id="CA_InstallPrinter"
-                  Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;Tiny PDF Editor.exe&quot; --install-printer"
-                  Execute="immediate"
-                  Impersonate="yes"
-                  Return="ignore" />
-    <CustomAction Id="CA_UninstallPrinter"
-                  Directory="INSTALLFOLDER"
-                  ExeCommand="&quot;Tiny PDF Editor.exe&quot; --uninstall-printer"
-                  Execute="immediate"
-                  Impersonate="yes"
-                  Return="ignore" />
-    <InstallExecuteSequence>
-      <Custom Action="CA_InstallPrinter" After="InstallFinalize" Condition="NOT REMOVE" />
-      <Custom Action="CA_UninstallPrinter" Before="RemoveFiles" Condition="REMOVE" />
-    </InstallExecuteSequence>
 
     <Component Id="PdfFileAssociation" Directory="INSTALLFOLDER" Guid="F2A8C4D6-1E3B-4F5A-9C7D-8E0B2A4C6D8E">
       <RegistryKey Root="HKCU" Key="Software\Classes\Applications\Tiny PDF Editor.exe">

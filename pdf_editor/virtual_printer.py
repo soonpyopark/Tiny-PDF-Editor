@@ -53,11 +53,17 @@ def _creation_flags() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0) if is_windows() else 0
 
 
+def _powershell_exe() -> str:
+    """Absolute powershell path — MSI custom actions often have a tiny PATH."""
+    root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
+    return str(Path(root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+
+
 def _run_powershell(script: str) -> tuple[int, str]:
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
     completed = subprocess.run(
         [
-            "powershell",
+            _powershell_exe(),
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
@@ -162,8 +168,7 @@ Add-Printer -Name $name -DriverName $driver -PortName $port
             + (output or "PowerShell 오류")
         )
     # 로그인 시 백그라운드 감시만 등록한다.
-    # launch_watch_if_needed()는 여기서 호출하지 않는다 — MSI --install-printer
-    # 가 Qt를 불러 QtCore DLL 오류가 나지 않게 하기 위함.
+    # launch_watch_if_needed()는 앱 UI 경로(_ensure_virtual_printer)에서 한다.
     set_watch_at_logon(True)
 
 
