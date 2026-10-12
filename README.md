@@ -1,4 +1,4 @@
-# Tiny PDF Editor v1.1.9
+# Tiny PDF Editor v1.2.0
 
 **포터블 PDF 편집기**입니다. Windows(exe·MSI·포터블 zip)와 macOS(`.app`·DMG) 배포판을 제공하며, 페이지 병합·편집·검색·용량 줄이기·쪽 번호 매기기·개인정보 제거 등 일상적인 PDF 작업을 한 프로그램에서 처리할 수 있습니다.
 
@@ -19,15 +19,15 @@
 
 ### Windows — 포터블 zip
 
-1. 릴리스 또는 배포 페이지에서 `Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS_portable.zip`을 받습니다.
-2. 압축을 푼 뒤, 폴더 안의 `Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS.exe`를 실행합니다.
+1. 릴리스 또는 배포 페이지에서 `Tiny PDF Editor v1.2.0_YYMMDD_HHMMSS_portable.zip`을 받습니다.
+2. 압축을 푼 뒤, 폴더 안의 `Tiny PDF Editor v1.2.0_YYMMDD_HHMMSS.exe`를 실행합니다.
 3. `_internal` 폴더와 exe는 **같은 위치**에 있어야 합니다. exe만 따로 복사하면 실행되지 않습니다.
 
 USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
 ### Windows — MSI 설치판
 
-1. `Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS.msi`를 더블 클릭해 설치합니다.
+1. `Tiny PDF Editor v1.2.0_YYMMDD_HHMMSS.msi`를 더블 클릭해 설치합니다.
 2. 관리자 권한 없이 **현재 사용자** 계정에 설치됩니다 (`%LocalAppData%`).
 3. 설치 시 PDF 파일 연결(HKCU)과 시작 메뉴·바탕화면 바로가기가 등록됩니다.
 4. 설치 과정의 사용권 계약에는 [https://note4all.tistory.com](https://note4all.tistory.com)이 표시됩니다.
@@ -35,7 +35,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 
 ### macOS — DMG / .app
 
-1. `Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS.dmg`를 열어 `Tiny PDF Editor.app`을 **응용 프로그램** 폴더로 복사합니다.
+1. `Tiny PDF Editor v1.2.0_YYMMDD_HHMMSS.dmg`를 열어 `Tiny PDF Editor.app`을 **응용 프로그램** 폴더로 복사합니다.
 2. 앱을 실행합니다. (서명·공증되지 않은 빌드이므로 최초 실행 시 Gatekeeper 경고가 날 수 있습니다.)
 3. 경고가 뜨면 앱을 **Control-클릭 → 열기**, 또는 **시스템 설정 → 개인정보 보호 및 보안**에서 허용하세요.
 
@@ -257,8 +257,8 @@ npm run build:dist:portable
 npm run build:release
 ```
 
-산출물 예: `msi/Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS.msi`,
-`msi/Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS_portable.zip`.
+산출물 예: `msi/Tiny PDF Editor v1.2.0_YYMMDD_HHMMSS.msi`,
+`msi/Tiny PDF Editor v1.2.0_YYMMDD_HHMMSS_portable.zip`.
 앱에 심어진 `APP_BUILD_STAMP`도 이 시각과 같아, 같은 태그로 재배포해도 업데이트 확인이 새 빌드를 구분합니다.
 
 ### macOS 배포판 빌드 (Apple Silicon)
@@ -281,8 +281,8 @@ DMG 파일명과 동일한 `APP_BUILD_STAMP`를 앱에 심으며, 업데이트 �
 
 ```
 dist/
-  Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS/
-    Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS.exe
+  Tiny PDF Editor v1.2.0_YYMMDD_HHMMSS/
+    Tiny PDF Editor v1.2.0_YYMMDD_HHMMSS.exe
     _internal/          (실행에 필요한 라이브러리)
     LICENSE
     README.md
@@ -294,20 +294,20 @@ dist/
 ```
 dist/
   Tiny PDF Editor.app
-  Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS/
+  Tiny PDF Editor v1.2.0_YYMMDD_HHMMSS/
     Tiny PDF Editor.app
     LICENSE
     README.md
     DISTRIBUTE.md
-  Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS.dmg
+  Tiny PDF Editor v1.2.0_YYMMDD_HHMMSS.dmg
 ```
 
 **MSI / 포터블 zip 빌드 결과** (`msi/`):
 
 ```
 msi/
-  Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS.msi
-  Tiny PDF Editor v1.1.9_YYMMDD_HHMMSS_portable.zip
+  Tiny PDF Editor v1.2.0_YYMMDD_HHMMSS.msi
+  Tiny PDF Editor v1.2.0_YYMMDD_HHMMSS_portable.zip
 ```
 
 포터블 빌드 폴더는 최근 **3개**만 유지됩니다.  
