@@ -3,5 +3,5 @@ PyQt6>=6.11.0
 openpyxl>=3.1.5
 ko-pii>=1.16.0
 numpy>=2.5.4
-Pillow>=12.3.0
+Pillow>=13.0.0
 onnxruntime>=1.31.0
