@@ -174,6 +174,22 @@ class PdfDocument:
     def resume_rendering(self) -> None:
         self._render_pause_depth = max(0, self._render_pause_depth - 1)
 
+    def close(self) -> None:
+        """Release the native MuPDF handle. Safe to call more than once."""
+        doc = self._doc
+        self._doc = fitz.open()
+        self._source_path = None
+        self._modified = False
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        self._password_options = None
+        self._source_had_encryption = False
+        self._render_pause_depth = 0
+        try:
+            doc.close()
+        except Exception:
+            pass
+
     @property
     def page_count(self) -> int:
         return len(self._doc)
@@ -3635,23 +3651,34 @@ class PdfDocument:
         folder: str,
         *,
         base_name: str | None = None,
+        dpi: int = 150,
     ) -> list[str]:
         if not indices:
             raise ValueError("보낼 페이지를 선택하세요.")
+        valid = sorted(
+            {index for index in indices if 0 <= index < len(self._doc)}
+        )
+        if not valid:
+            raise ValueError("저장할 유효한 페이지가 없습니다.")
         folder_path = Path(folder)
         folder_path.mkdir(parents=True, exist_ok=True)
         stem = self._sanitize_export_basename(
             base_name if base_name is not None else Path(self.display_name).stem
         )
         saved: list[str] = []
-        matrix = fitz.Identity
-        for index in sorted(indices):
-            if 0 <= index < len(self._doc):
-                page = self._doc[index]
-                pix = page.get_pixmap(matrix=matrix, alpha=False, annots=True)
+        zoom = max(0.1, float(dpi) / 72.0)
+        matrix = fitz.Matrix(zoom, zoom)
+        for index in valid:
+            page = self._doc[index]
+            pix = page.get_pixmap(matrix=matrix, alpha=False, annots=True)
+            try:
                 filename = folder_path / f"{stem}_{index + 1}.png"
                 pix.save(str(filename))
                 saved.append(str(filename))
+            finally:
+                pix = None
+        if not saved:
+            raise ValueError("이미지를 저장하지 못했습니다.")
         return saved
 
     @staticmethod

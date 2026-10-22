@@ -90,6 +90,11 @@ ZOOM_STEP_FACTOR = 1.1
 ARROW_SCROLL_STEP = 90
 WHEEL_SCROLL_MULTIPLIER = 1.5
 SMOOTH_SCROLL_DURATION_MS = 260
+READING_SCROLL_DURATION_MS = 320
+# Keep this fraction of the viewport visible so the eye can track across jumps.
+READING_VIEWPORT_OVERLAP = 0.15
+# When a page already fits the screen, advance by most of one page/row.
+READING_PAGE_ADVANCE = 0.90
 PREVIEW_BACKGROUND = "#efefef"
 SPREAD_GAP_PX = 12
 PAGE_STACK_GAP_PX = 16
@@ -1150,6 +1155,7 @@ class PageViewer(QWidget):
         self._zoom = 1.0
         self._fit_mode: str | None = "page"
         self._fit_zoom_scale = 1.0
+        self._layout_epoch = 0
         self._search_page_rects: list[fitz.Rect] = []
         self._search_active_index = -1
         self._review_page_index = -1
@@ -1589,6 +1595,8 @@ class PageViewer(QWidget):
         self._flush_ui()
 
     def set_document(self, document: PdfDocument | None) -> None:
+        self._stop_scroll_animation()
+        self._layout_epoch += 1
         self.cancel_signature_stamp()
         self._clear_strip()
         self._document = document
@@ -1604,7 +1612,13 @@ class PageViewer(QWidget):
     def fit_page_when_ready(self) -> None:
         """Apply page fit after layout so the viewport has its final size."""
         self.fit_page()
-        QTimer.singleShot(0, self.fit_page)
+        epoch = self._layout_epoch
+        QTimer.singleShot(0, lambda: self._fit_page_if_epoch(epoch))
+
+    def _fit_page_if_epoch(self, epoch: int) -> None:
+        if epoch != self._layout_epoch or not self._document:
+            return
+        self.fit_page()
 
     def facing_mode(self) -> bool:
         return self._facing_mode
@@ -1619,7 +1633,11 @@ class PageViewer(QWidget):
             self._current_index = self._normalize_page_index(self._current_index)
         self.refresh()
         if self._fit_mode:
-            QTimer.singleShot(0, self._render_current_page)
+            epoch = self._layout_epoch
+            QTimer.singleShot(
+                0,
+                lambda: self._render_current_page_if_epoch(epoch),
+            )
 
     def _page_step(self) -> int:
         return 2 if self._facing_mode else 1
@@ -1759,7 +1777,17 @@ class PageViewer(QWidget):
             return
         if not self._document:
             return
-        pix = self._document.render_page_pixmap(page_index, zoom)
+        # OCR / optimize pause rendering; keep the last pixmap instead of raising.
+        if self._document.rendering_paused and not force_render:
+            canvas.setVisible(True)
+            return
+        try:
+            pix = self._document.render_page_pixmap(
+                page_index, zoom, ignore_pause=force_render
+            )
+        except RuntimeError:
+            canvas.setVisible(True)
+            return
         canvas.setVisible(True)
         canvas.set_content(
             pixmap_from_fitz(pix),
@@ -2783,21 +2811,17 @@ class PageViewer(QWidget):
                 event.accept()
                 return
         if key in (Qt.Key.Key_Up, Qt.Key.Key_PageUp):
-            step = (
-                self.scroll_area.verticalScrollBar().pageStep()
-                if key == Qt.Key.Key_PageUp
-                else ARROW_SCROLL_STEP
-            )
-            self._handle_preview_wheel(step, Qt.KeyboardModifier.NoModifier)
+            if key == Qt.Key.Key_PageUp:
+                self.scroll_by_key(up=True, page=True)
+            else:
+                self.scroll_by_key(up=True, page=False)
             event.accept()
             return
         if key in (Qt.Key.Key_Down, Qt.Key.Key_PageDown):
-            step = (
-                self.scroll_area.verticalScrollBar().pageStep()
-                if key == Qt.Key.Key_PageDown
-                else ARROW_SCROLL_STEP
-            )
-            self._handle_preview_wheel(-step, Qt.KeyboardModifier.NoModifier)
+            if key == Qt.Key.Key_PageDown:
+                self.scroll_by_key(up=False, page=True)
+            else:
+                self.scroll_by_key(up=False, page=False)
             event.accept()
             return
         if key == Qt.Key.Key_Left:
@@ -2834,7 +2858,9 @@ class PageViewer(QWidget):
             return self._scroll_target
         return self.scroll_area.verticalScrollBar().value()
 
-    def _scroll_vertically(self, delta_y: int) -> None:
+    def _scroll_vertically(
+        self, delta_y: int, *, duration_ms: int | None = None
+    ) -> None:
         bar = self.scroll_area.verticalScrollBar()
         base = self._effective_scroll_value()
         target = max(bar.minimum(), min(bar.maximum(), base - delta_y))
@@ -2843,26 +2869,66 @@ class PageViewer(QWidget):
             return
         self._scroll_target = target
         self._scroll_anim.stop()
+        self._scroll_anim.setDuration(
+            SMOOTH_SCROLL_DURATION_MS if duration_ms is None else max(1, duration_ms)
+        )
         self._scroll_anim.setStartValue(bar.value())
         self._scroll_anim.setEndValue(target)
         self._scroll_anim.start()
+
+    def _reading_scroll_step_px(self) -> int:
+        """Vertical jump for page-nav / PageUp·Down, tuned for reading comfort.
+
+        - 너비 맞춤·페이지가 화면보다 긴 경우: 화면의 ~85%만 이동해 겹침을 남김
+        - 높이/화면 맞춤처럼 한 페이지가 거의 다 보일 때: 다음 페이지로 자연스럽게 넘김
+        """
+        viewport_h = max(1, self.scroll_area.viewport().height())
+        row_h = 0.0
+        if self._document and self._document.page_count > 0:
+            row_h = float(self._document_row_height(self._current_index))
+            if row_h > 0:
+                row_h += float(PAGE_STACK_GAP_PX)
+
+        fit = self._fit_mode
+        page_taller_than_view = row_h > viewport_h * 1.08
+        if fit == "width" or page_taller_than_view:
+            return max(48, int(viewport_h * (1.0 - READING_VIEWPORT_OVERLAP)))
+
+        if row_h > 0:
+            return max(
+                48,
+                int(
+                    min(
+                        row_h * READING_PAGE_ADVANCE,
+                        viewport_h * 0.95,
+                    )
+                ),
+            )
+        return max(48, int(viewport_h * (1.0 - READING_VIEWPORT_OVERLAP)))
 
     def _scroll_to_page_bottom(self) -> None:
         self._stop_scroll_animation()
         bar = self.scroll_area.verticalScrollBar()
         bar.setValue(bar.maximum())
-        QTimer.singleShot(0, lambda: bar.setValue(bar.maximum()))
+        epoch = self._layout_epoch
+        QTimer.singleShot(
+            0, lambda: self._apply_scroll_if_epoch(epoch, bar.maximum())
+        )
 
     def _apply_scroll_value(self, value: int) -> None:
         bar = self.scroll_area.verticalScrollBar()
         clamped = max(bar.minimum(), min(bar.maximum(), int(value)))
         bar.setValue(clamped)
+        epoch = self._layout_epoch
         QTimer.singleShot(
-            0,
-            lambda v=clamped: bar.setValue(
-                max(bar.minimum(), min(bar.maximum(), v))
-            ),
+            0, lambda v=clamped: self._apply_scroll_if_epoch(epoch, v)
         )
+
+    def _apply_scroll_if_epoch(self, epoch: int, value: int) -> None:
+        if epoch != self._layout_epoch or not self._document:
+            return
+        bar = self.scroll_area.verticalScrollBar()
+        bar.setValue(max(bar.minimum(), min(bar.maximum(), int(value))))
 
     def _on_scroll_anim_finished(self) -> None:
         self._scroll_target = None
@@ -2899,12 +2965,17 @@ class PageViewer(QWidget):
 
     def scroll_by_key(self, *, up: bool, page: bool) -> None:
         """Scroll the continuous page strip; neighboring pages stay in view."""
-        step = (
-            self.scroll_area.verticalScrollBar().pageStep()
-            if page
-            else ARROW_SCROLL_STEP
+        if page:
+            step = self._reading_scroll_step_px()
+            self._scroll_vertically(
+                step if up else -step,
+                duration_ms=READING_SCROLL_DURATION_MS,
+            )
+            return
+        self._handle_preview_wheel(
+            ARROW_SCROLL_STEP if up else -ARROW_SCROLL_STEP,
+            Qt.KeyboardModifier.NoModifier,
         )
-        self._handle_preview_wheel(step if up else -step, Qt.KeyboardModifier.NoModifier)
 
     def _handle_preview_wheel(self, delta_y: int, modifiers: Qt.KeyboardModifier) -> bool:
         if modifiers & Qt.KeyboardModifier.ControlModifier:
@@ -3426,6 +3497,11 @@ class PageViewer(QWidget):
     def _render_current_page_if_fitting(self) -> None:
         if self._fit_mode and not self._rendering:
             self._render_current_page()
+
+    def _render_current_page_if_epoch(self, epoch: int) -> None:
+        if epoch != self._layout_epoch or not self._document:
+            return
+        self._render_current_page()
 
     def _render_current_page(self) -> None:
         if self._rendering:

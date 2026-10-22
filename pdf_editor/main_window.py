@@ -215,7 +215,8 @@ _MACOS_CHROME_STYLESHEET = """
   #tabSearchBar {
     background: #e6e6e6;
     border-bottom: 1px solid #c8c8c8;
-    padding: 4px 8px 4px 4px;
+    /* Right padding comes from set_right_inset (align ▶ with title-bar close X). */
+    padding: 4px 0 4px 4px;
   }
   #tabSearchBar QLabel {
     color: #333333;
@@ -687,6 +688,18 @@ class TabSearchBar(QWidget):
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(4)
 
+    self.search_result_label = QLabel("검색 결과 : ")
+    layout.addWidget(self.search_result_label)
+
+    self.search_status = QLabel("[ 0 / 0 ]")
+    self.search_status.setFixedWidth(85)
+    self.search_status.setAlignment(
+      Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+    )
+    layout.addWidget(self.search_status)
+
+    layout.addSpacing(8)
+
     self.search_edit = QLineEdit()
     self.search_edit.setPlaceholderText("텍스트 검색")
     self.search_edit.setClearButtonEnabled(True)
@@ -708,17 +721,6 @@ class TabSearchBar(QWidget):
     self.btn_search_next.clicked.connect(self.search_next.emit)
     layout.addWidget(self.btn_search_next)
 
-    layout.addSpacing(8)
-    self.search_result_label = QLabel("검색 결과 : ")
-    layout.addWidget(self.search_result_label)
-
-    self.search_status = QLabel("[ 0 / 0 ]")
-    self.search_status.setFixedWidth(85)
-    self.search_status.setAlignment(
-      Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
-    )
-    layout.addWidget(self.search_status)
-
   def focus_search(self) -> None:
     self.search_edit.setFocus()
     self.search_edit.selectAll()
@@ -730,7 +732,13 @@ class TabSearchBar(QWidget):
     self.search_status.setText(f"[ {current} / {total} ]")
 
   def set_right_inset(self, pixels: int) -> None:
-    self._layout.setContentsMargins(0, 0, max(0, pixels), 0)
+    inset = max(0, int(pixels))
+    margins = self._layout.contentsMargins()
+    if margins.right() == inset:
+      return
+    self._layout.setContentsMargins(
+      margins.left(), margins.top(), inset, margins.bottom()
+    )
     self.updateGeometry()
 
   def _on_search_text_changed(self, text: str) -> None:
@@ -1713,6 +1721,7 @@ class MainWindow(QMainWindow):
     self._search_bar.search_next.connect(self._search_next)
     self._search_bar.search_prev.connect(self._search_prev)
     self.tabs.setCornerWidget(self._search_bar, Qt.Corner.TopRightCorner)
+    self._sync_search_bar_right_inset()
 
     self.setCentralWidget(self.tabs)
 
@@ -1740,6 +1749,7 @@ class MainWindow(QMainWindow):
 
     self._pending_launch_paths = list(launch_paths or [])
     self._optimize_running = False
+    self._optimize_gen = 0
     self._update_check_thread = None
     self._update_check_worker = None
     self._update_check_mode: str | None = None
@@ -1756,6 +1766,7 @@ class MainWindow(QMainWindow):
 
   def resizeEvent(self, event) -> None:
     super().resizeEvent(event)
+    self._sync_search_bar_right_inset()
     tab = self._current_tab()
     if tab is not None:
       tab._apply_panel_width_limits()
@@ -1771,6 +1782,7 @@ class MainWindow(QMainWindow):
           geo.y() + max(0, (geo.height() - self.height()) // 2),
         )
       self._centered_on_show = True
+    self._sync_search_bar_right_inset()
     tab = self._current_tab()
     if tab is not None:
       QTimer.singleShot(0, tab._apply_panel_width_limits)
@@ -1779,6 +1791,31 @@ class MainWindow(QMainWindow):
       self._startup_update_scheduled = True
       if self._host_services:
         QTimer.singleShot(0, self._check_for_updates_on_startup)
+
+  def _search_bar_close_align_inset(self) -> int:
+    """Right inset so the ▶ button lines up with the title-bar close X glyph."""
+    if sys.platform != "win32":
+      return 4
+    # Win11 caption button is ~46 logical px; the X glyph (~10px) is centered,
+    # so the glyph's right edge sits ~(46-10)/2 px in from the window's right.
+    button_width = 46
+    glyph_width = 10
+    try:
+      import ctypes
+
+      # SM_CXSIZE = caption button width (may be outdated on Win11; clamp).
+      measured = int(ctypes.windll.user32.GetSystemMetrics(30))
+      if 36 <= measured <= 64:
+        button_width = measured
+    except Exception:
+      pass
+    return max(0, (button_width - glyph_width) // 2)
+
+  def _sync_search_bar_right_inset(self) -> None:
+    bar = getattr(self, "_search_bar", None)
+    if bar is None:
+      return
+    bar.set_right_inset(self._search_bar_close_align_inset())
 
   def _update_window_title(self) -> None:
     tab = self._current_tab()
@@ -2504,7 +2541,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("준비")
       return
 
-    self._search_hits = tab.document.search_text(self._search_query)
+    page_count = tab.document.page_count
+    self._search_hits = [
+      hit
+      for hit in tab.document.search_text(self._search_query)
+      if 0 <= hit.page_index < page_count
+    ]
     if not self._search_hits:
       tab.viewer.clear_search_highlights()
       self._search_bar.set_search_status(0, 0)
@@ -2543,7 +2585,21 @@ class MainWindow(QMainWindow):
     tab = self._current_tab()
     if tab is None or not self._search_hits:
       return
+    if not (0 <= hit_index < len(self._search_hits)):
+      return
     hit = self._search_hits[hit_index]
+    if not (0 <= hit.page_index < tab.document.page_count):
+      self._search_hits = [
+        item
+        for item in self._search_hits
+        if 0 <= item.page_index < tab.document.page_count
+      ]
+      if not self._search_hits:
+        self._clear_search_highlights()
+        return
+      self._search_index = 0
+      hit = self._search_hits[0]
+      hit_index = 0
     page_hits = [item.rect for item in self._search_hits if item.page_index == hit.page_index]
     active_on_page = sum(
       1 for item in self._search_hits[: hit_index + 1] if item.page_index == hit.page_index
@@ -3439,11 +3495,15 @@ class MainWindow(QMainWindow):
     QApplication.processEvents()
     applied = False
     try:
+      if not self._tab_still_open(tab):
+        return
       result = run_ocr_on_document(
         tab.document,
         page_indices,
         status_callback=tab.viewer.append_log_line,
       )
+      if not self._tab_still_open(tab):
+        return
       applied = result.applied > 0
       tab.viewer.append_log_line(
         f"완료: {result.applied}페이지, {result.lines}줄 "
@@ -3462,15 +3522,18 @@ class MainWindow(QMainWindow):
       elif result.applied == 0:
         QMessageBox.warning(self, "OCR", "인식된 줄이 없습니다.")
     except Exception as exc:
-      tab.viewer.append_log_line(f"오류: {exc}")
-      QMessageBox.critical(self, "OCR 오류", str(exc))
+      if self._tab_still_open(tab):
+        tab.viewer.append_log_line(f"오류: {exc}")
+        QMessageBox.critical(self, "OCR 오류", str(exc))
     finally:
-      tab.document.resume_rendering()
-      tab.viewer.hide_busy_message()
-      if applied:
-        index = tab.thumbnails.current_index()
-        tab.refresh_all(keep_index=index)
-        self._update_edit_actions()
+      still_open = self._tab_still_open(tab)
+      if still_open:
+        tab.document.resume_rendering()
+        tab.viewer.hide_busy_message()
+        if applied:
+          index = tab.thumbnails.current_index()
+          tab.refresh_all(keep_index=index)
+          self._update_edit_actions()
 
   def _open_page_number_dialog(self) -> None:
     tab = self._current_tab()
@@ -3519,24 +3582,36 @@ class MainWindow(QMainWindow):
     tab.viewer.append_log_line("> 용량 줄이기 작업을 시작합니다...")
     tab.viewer.show_busy_message("용량 줄이기 진행 중...")
     self._optimize_running = True
+    self._optimize_gen += 1
+    gen = self._optimize_gen
     QTimer.singleShot(
       0,
-      lambda: self._run_optimize(tab, options, source_bytes),
+      lambda: self._run_optimize(tab, options, source_bytes, gen),
     )
 
-  def _run_optimize(self, tab: DocumentTab, options, source_bytes: bytes) -> None:
+  def _tab_still_open(self, tab: DocumentTab) -> bool:
+    return self.tabs.indexOf(tab) >= 0
+
+  def _run_optimize(
+    self, tab: DocumentTab, options, source_bytes: bytes, gen: int
+  ) -> None:
+    if gen != self._optimize_gen or not self._tab_still_open(tab):
+      self._optimize_running = False
+      return
     before = len(source_bytes)
     last_image_log = {"text": ""}
     applied = False
 
     def on_status(message: str) -> None:
-      tab.viewer.append_log_line(message)
+      if self._tab_still_open(tab):
+        tab.viewer.append_log_line(message)
 
     def on_image_progress(current: int, total: int) -> None:
       text = f"  이미지 재압축 중... {current}/{total}"
       if text != last_image_log["text"]:
         last_image_log["text"] = text
-        tab.viewer.append_log_line(text)
+        if self._tab_still_open(tab):
+          tab.viewer.append_log_line(text)
 
     try:
       payload = PdfDocument.build_optimized_payload(
@@ -3545,6 +3620,8 @@ class MainWindow(QMainWindow):
         status_callback=on_status,
         image_progress=on_image_progress,
       )
+      if gen != self._optimize_gen or not self._tab_still_open(tab):
+        return
       after = len(payload)
       tab.document.apply_reduced_payload(payload)
       applied = True
@@ -3556,16 +3633,18 @@ class MainWindow(QMainWindow):
         f" → {format_file_size(after)}"
       )
     except Exception as exc:
-      tab.viewer.append_log_line(f"오류: {exc}")
-      QMessageBox.critical(self, "용량 줄이기 오류", str(exc))
+      if self._tab_still_open(tab):
+        tab.viewer.append_log_line(f"오류: {exc}")
+        QMessageBox.critical(self, "용량 줄이기 오류", str(exc))
     finally:
       self._optimize_running = False
-      tab.document.resume_rendering()
-      tab.viewer.hide_busy_message()
-      if applied:
-        index = tab.thumbnails.current_index()
-        tab.refresh_all(keep_index=index)
-        self._update_edit_actions()
+      if self._tab_still_open(tab):
+        tab.document.resume_rendering()
+        tab.viewer.hide_busy_message()
+        if applied:
+          index = tab.thumbnails.current_index()
+          tab.refresh_all(keep_index=index)
+          self._update_edit_actions()
 
   def _delete_selected(self) -> None:
     tab = self._current_tab()
@@ -3594,6 +3673,28 @@ class MainWindow(QMainWindow):
   def _rotate_all_pages_ccw(self) -> None:
     self._rotate_all_pages(-90)
 
+  def _dispose_document_tab(self, widget: DocumentTab) -> None:
+    """Detach UI from the document and release the MuPDF handle."""
+    widget._file_insert_token += 1
+    self._optimize_gen += 1
+    try:
+      widget.viewer.set_document(None)
+    except Exception:
+      pass
+    try:
+      widget.thumbnails.set_document(None)
+    except Exception:
+      pass
+    try:
+      widget.highlight_panel.set_document(None)
+    except Exception:
+      pass
+    try:
+      widget.document.close()
+    except Exception:
+      pass
+    widget.deleteLater()
+
   def _close_tab(self, index: int) -> None:
     widget = self.tabs.widget(index)
     if isinstance(widget, DocumentTab) and widget.document.modified:
@@ -3609,8 +3710,10 @@ class MainWindow(QMainWindow):
       source = widget.document.source_path
       if source and Path(source).suffix.lower() == ".pdf":
         self._recent_files.set_page(source, widget.viewer.current_index())
-      widget._file_insert_token += 1
-    self.tabs.removeTab(index)
+      self.tabs.removeTab(index)
+      self._dispose_document_tab(widget)
+    else:
+      self.tabs.removeTab(index)
     if self.tabs.count() == 0:
       self._new_tab()
 
@@ -3633,6 +3736,12 @@ class MainWindow(QMainWindow):
       self._print_watcher.stop()
       self._print_watcher = None
     self._app_settings.save()
+    # Release MuPDF handles before the window goes away.
+    while self.tabs.count() > 0:
+      widget = self.tabs.widget(0)
+      self.tabs.removeTab(0)
+      if isinstance(widget, DocumentTab):
+        self._dispose_document_tab(widget)
     app = QApplication.instance()
     remaining: list[MainWindow] = []
     if isinstance(app, TinyApplication):

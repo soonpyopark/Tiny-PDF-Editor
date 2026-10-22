@@ -36,7 +36,7 @@ def _is_printer_cli(argv: list[str]) -> bool:
 
 
 def _parent_is_msiexec() -> bool:
-    """True when this process was started by Windows Installer."""
+    """True when msiexec.exe is found up the process parent chain."""
     if sys.platform != "win32":
         return False
     try:
@@ -68,30 +68,40 @@ def _parent_is_msiexec() -> bool:
     kernel32.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(PROCESSENTRY32W)]
     kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
 
-    pid = kernel32.GetCurrentProcessId()
     snapshot = kernel32.CreateToolhelp32Snapshot(th32cs_snapprocess, 0)
     if not snapshot or snapshot == invalid_handle:
         return False
 
     entry = PROCESSENTRY32W()
     entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
-    parent_pid = 0
+    parents: dict[int, tuple[int, str]] = {}
     try:
         more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
         while more:
-            if entry.th32ProcessID == pid:
-                parent_pid = int(entry.th32ParentProcessID)
-                break
-            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
-        if not parent_pid:
-            return False
-        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
-        while more:
-            if entry.th32ProcessID == parent_pid:
-                return entry.szExeFile.lower().endswith("msiexec.exe")
+            parents[int(entry.th32ProcessID)] = (
+                int(entry.th32ParentProcessID),
+                entry.szExeFile.lower(),
+            )
             more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
     finally:
         kernel32.CloseHandle(snapshot)
+
+    pid = int(kernel32.GetCurrentProcessId())
+    seen: set[int] = set()
+    # Walk a few ancestors so msiexec → cmd/powershell → exe still matches.
+    for _ in range(8):
+        if pid in seen:
+            break
+        seen.add(pid)
+        info = parents.get(pid)
+        if info is None:
+            break
+        parent_pid, name = info
+        if name.endswith("msiexec.exe"):
+            return True
+        if parent_pid <= 0 or parent_pid == pid:
+            break
+        pid = parent_pid
     return False
 
 
