@@ -9,11 +9,15 @@
 
 ## 실행 화면
 
-| Windows | macOS |
-| --- | --- |
-| ![Windows 실행 화면](assets/screenshot-windows.png) | ![macOS 실행 화면](assets/screenshot-macos.png) |
+### Windows
+
+![Windows 실행 화면](assets/screenshot-windows.png)
 
 ![Windows 편집 메뉴 실행 화면](assets/screenshot-windows-edit.png)
+
+### macOS
+
+![macOS 실행 화면](assets/screenshot-macos.png)
 
 ## 다운로드 및 실행
 
