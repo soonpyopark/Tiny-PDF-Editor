@@ -40,6 +40,8 @@ class AppSettings:
         self.page_nav_side: str = "hidden"
         self.page_nav_chosen: bool = False
         self.open_in_new_window: bool = True
+        # Signature: outside-click commit is easy to trigger by mistake.
+        self.signature_commit_on_outside_click: bool = False
         self.skipped_update_platform: str = ""
         self.skipped_update_version: str = ""
         self.skipped_update_stamp: str = ""
@@ -83,6 +85,9 @@ class AppSettings:
         open_new = data.get("open_in_new_window")
         if isinstance(open_new, bool):
             self.open_in_new_window = open_new
+        outside = data.get("signature_commit_on_outside_click")
+        if isinstance(outside, bool):
+            self.signature_commit_on_outside_click = outside
         platform = data.get("skipped_update_platform")
         version = data.get("skipped_update_version")
         stamp = data.get("skipped_update_stamp")
@@ -118,6 +123,9 @@ class AppSettings:
             ),
             "page_nav_chosen": self.page_nav_chosen,
             "open_in_new_window": self.open_in_new_window,
+            "signature_commit_on_outside_click": (
+                self.signature_commit_on_outside_click
+            ),
             "skipped_update_platform": self.skipped_update_platform,
             "skipped_update_version": self.skipped_update_version,
             "skipped_update_stamp": self.skipped_update_stamp,

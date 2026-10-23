@@ -1285,6 +1285,7 @@ class PageViewer(QWidget):
         self._stamp_ignore_press = False
         self._stamp_committing = False
         self._stamp_commit_queued = False
+        self._signature_commit_on_outside_click = False
         self._stamp_escape = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._stamp_escape.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._stamp_escape.activated.connect(self.cancel_signature_stamp)
@@ -1632,12 +1633,15 @@ class PageViewer(QWidget):
         if self._document and self._document.page_count > 0:
             self._current_index = self._normalize_page_index(self._current_index)
         self.refresh()
+        # Strip/canvas positions change; re-glue the stamp after layout settles.
+        QTimer.singleShot(0, self._sync_signature_overlay)
         if self._fit_mode:
             epoch = self._layout_epoch
             QTimer.singleShot(
                 0,
                 lambda: self._render_current_page_if_epoch(epoch),
             )
+            QTimer.singleShot(0, self._sync_signature_overlay)
 
     def _page_step(self) -> int:
         return 2 if self._facing_mode else 1
@@ -2000,6 +2004,8 @@ class PageViewer(QWidget):
             self._zoom = target
         self._sync_zoom_controls()
         self._render_current_page()
+        # Zoom changes canvas size/pos; keep the stamp overlay glued on.
+        QTimer.singleShot(0, self._sync_signature_overlay)
 
     def _scale_zoom(self, factor: float) -> None:
         self.set_zoom_percent(self._current_display_zoom() * 100 * factor)
@@ -2024,13 +2030,24 @@ class PageViewer(QWidget):
 
     def rotate_view_cw(self) -> None:
         if self._document and self._document.page_count > 0:
+            self.end_signature_session_for_geometry_change()
             self._document.rotate_pages([self._current_index], 90)
             self.refresh()
 
     def rotate_view_ccw(self) -> None:
         if self._document and self._document.page_count > 0:
+            self.end_signature_session_for_geometry_change()
             self._document.rotate_pages([self._current_index], -90)
             self.refresh()
+
+    def end_signature_session_for_geometry_change(self) -> None:
+        """Drop in-progress stamp edit when page geometry changes (e.g. rotate).
+
+        Committed stamps stay in page space and rotate with the page; an open
+        overlay would keep stale rects and look glued to the wrong corner.
+        """
+        if self.is_signature_stamp_active():
+            self.cancel_signature_stamp()
 
     def refresh(self) -> None:
         if not self._document or self._document.page_count == 0:
@@ -2045,6 +2062,12 @@ class PageViewer(QWidget):
 
     def is_signature_session_active(self) -> bool:
         return self._stamp_armed
+
+    def set_signature_commit_on_outside_click(self, enabled: bool) -> None:
+        self._signature_commit_on_outside_click = bool(enabled)
+
+    def signature_commit_on_outside_click(self) -> bool:
+        return self._signature_commit_on_outside_click
 
     def begin_signature_stamp(self, png_bytes: bytes, image_width: int, image_height: int) -> None:
         if self._stamp_committing:
@@ -2144,8 +2167,12 @@ class PageViewer(QWidget):
             else:
                 self._document.stamp_image(page_index, png_bytes, rect)
             self._stamp_edit_hit = None
+            # Rasterize while the overlay still covers the spot, then drop it.
+            # Teardown-first left a frame of the pre-stamp pixmap (looks gone).
+            self._refresh_pages_after_stamp()
             self._teardown_signature_stamp(emit_cancel=False)
-            self.refresh()
+            self._refresh_pages_after_stamp()
+            self.reveal_page_rect(rect, page_index=page_index)
             self.signature_stamp_committed.emit()
             return True
         except Exception as exc:
@@ -2157,6 +2184,17 @@ class PageViewer(QWidget):
             return False
         finally:
             self._stamp_committing = False
+
+    def _refresh_pages_after_stamp(self) -> None:
+        """Re-render pages after a stamp commit/delete, ignoring in-flight renders."""
+        self._rendering = False
+        self._rebuilding_strip = False
+        if not self._document or self._document.page_count == 0:
+            return
+        self._update_page_info()
+        restore = self._document_scroll_offset()
+        self._rebuild_visible_strip(restore_offset=restore, force_render=True)
+        self._update_preview_stack()
 
     def cancel_signature_stamp(self) -> None:
         if self._stamp_overlay is not None or self._stamp_armed:
@@ -2171,7 +2209,14 @@ class PageViewer(QWidget):
         point = canvas._page_point_from_viewport(event.pos())
         hit = self._document.find_signature_stamp_at(page_index, point)
         if self._stamp_overlay is not None:
-            self._queue_signature_commit()
+            if self._signature_commit_on_outside_click:
+                self._queue_signature_commit()
+            else:
+                # Keep editing; outside click used to commit by mistake too often.
+                self._sync_signature_overlay()
+                if self._stamp_overlay is not None:
+                    self._stamp_overlay.raise_()
+                    self._stamp_overlay.setFocus()
             return True
         if hit is not None:
             self._begin_edit_signature(hit)
@@ -2296,7 +2341,7 @@ class PageViewer(QWidget):
         if edit_hit is not None:
             self._document.delete_signature_stamp(edit_hit, record_undo=True)
             self._teardown_signature_stamp(emit_cancel=False)
-            self.refresh()
+            self._refresh_pages_after_stamp()
             self.signature_stamp_deleted.emit()
             return True
         self._teardown_signature_stamp(emit_cancel=False)
@@ -2311,7 +2356,7 @@ class PageViewer(QWidget):
         ):
             return self.delete_current_signature_stamp()
         self._document.delete_signature_stamp(hit, record_undo=True)
-        self.refresh()
+        self._refresh_pages_after_stamp()
         self.signature_stamp_deleted.emit()
         return True
 
@@ -2356,7 +2401,7 @@ class PageViewer(QWidget):
         self._place_signature_overlay(
             hit.page_index,
             hit.rect,
-            commit_on_double_click=False,
+            commit_on_double_click=True,
         )
         self._set_stamp_shortcuts(True)
 
@@ -3121,15 +3166,18 @@ class PageViewer(QWidget):
         self._position_page_nav_buttons()
         if self._fit_mode:
             self._sync_document_scrollbar()
+            QTimer.singleShot(0, self._sync_signature_overlay)
             return
         if self._document and self._document.page_count > 0 and not self._rendering:
             self._rebuild_visible_strip()
         else:
             self._sync_document_scrollbar()
+            QTimer.singleShot(0, self._sync_signature_overlay)
 
     def _on_host_scroll_changed(self, *_args) -> None:
         if self._rebuilding_strip or self._rendering:
             self._sync_document_scrollbar()
+            QTimer.singleShot(0, self._sync_signature_overlay)
             return
         if not self._document or self._document.page_count == 0:
             self._sync_document_scrollbar()
@@ -3140,6 +3188,7 @@ class PageViewer(QWidget):
         if rows == self._strip_rows:
             self._update_current_from_viewport(doc_offset, viewport_h)
             self._sync_document_scrollbar()
+            self._sync_signature_overlay()
             return
         self._rebuild_visible_strip()
 

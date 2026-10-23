@@ -21,6 +21,7 @@ from pdf_editor.hwp_convert import (
 )
 from pdf_editor.signature_stamp import (
     SIGNATURE_ANNOT_TITLE,
+    SIGNATURE_EMBFILE_PREFIX,
     SignatureStampHit,
     is_signature_annot,
     parse_signature_annot,
@@ -3195,7 +3196,9 @@ class PdfDocument:
         page = self._doc[page_index]
         if self._has_signature_annot_near(page, dest):
             self._wipe_signature_cluster(page, dest)
-        image_xref = page.insert_image(dest, stream=image_bytes, keep_proportion=False)
+        image_xref = self._insert_signature_image(
+            page, dest, image_bytes, image_id
+        )
         self._add_signature_marker(
             page,
             dest,
@@ -3225,7 +3228,11 @@ class PdfDocument:
             hit = self._signature_hit_from_annot(page_index, annot)
             if hit is not None:
                 hits.append(hit)
-        return hits[-1] if hits else self._orphan_signature_hit_at(page_index, point)
+        if hits:
+            return hits[-1]
+        # Only recover stamps we embedded (tpe-sig-*); never treat arbitrary page
+        # images as signatures.
+        return self._orphan_signature_hit_at(page_index, point)
 
     def _orphan_signature_hit_at(
         self,
@@ -3236,13 +3243,10 @@ class PdfDocument:
         for xref, bbox in self._stamp_image_bboxes(page):
             if point not in bbox:
                 continue
-            png_bytes = b""
-            try:
-                extracted = self._doc.extract_image(xref)
-            except (RuntimeError, ValueError):
-                extracted = None
-            if extracted and extracted.get("image"):
-                png_bytes = extracted["image"]
+            owned = self._owned_signature_image(xref)
+            if owned is None:
+                continue
+            image_id, png_bytes = owned
             width, height = 1, 1
             if png_bytes:
                 try:
@@ -3254,13 +3258,61 @@ class PdfDocument:
             return SignatureStampHit(
                 page_index=page_index,
                 annot_xref=0,
-                image_id="",
+                image_id=image_id,
                 rect=bbox,
                 width=width,
                 height=height,
                 png_bytes=png_bytes,
                 image_xref=xref,
             )
+        return None
+
+    def _owned_signature_image(self, xref: int) -> tuple[str, bytes] | None:
+        """Return (image_id, png_bytes) only if *xref* is one of our stamps."""
+        if xref <= 0:
+            return None
+        # Prefer marker metadata that already points at this xref.
+        for page_index in range(len(self._doc)):
+            page = self._doc[page_index]
+            for annot in PdfDocument._iter_page_annots(page):
+                if not is_signature_annot(annot):
+                    continue
+                parsed = parse_signature_annot(
+                    (annot.info or {}).get("content") or ""
+                )
+                if parsed is None:
+                    continue
+                image_id, _w, _h, image_xref = parsed
+                if image_xref != xref:
+                    continue
+                png_bytes = self._signature_png_bytes(image_id, image_xref)
+                if png_bytes:
+                    return image_id, png_bytes
+        try:
+            extracted = self._doc.extract_image(xref)
+        except (RuntimeError, ValueError):
+            return None
+        data = extracted.get("image") if extracted else None
+        if not data:
+            return None
+        data_id = signature_image_id(data)
+        for name in list(self._doc.embfile_names() or []):
+            if not str(name).startswith(SIGNATURE_EMBFILE_PREFIX):
+                continue
+            try:
+                payload = self._doc.embfile_get(name)
+            except (RuntimeError, ValueError):
+                continue
+            if not payload:
+                continue
+            if payload == data or signature_image_id(payload) == data_id:
+                # Filename is tpe-sig-{id}.png
+                stem = str(name)
+                if stem.startswith(SIGNATURE_EMBFILE_PREFIX):
+                    stem = stem[len(SIGNATURE_EMBFILE_PREFIX) :]
+                if stem.lower().endswith(".png"):
+                    stem = stem[:-4]
+                return stem or data_id, payload
         return None
 
     def remove_signature_visual(
@@ -3302,19 +3354,27 @@ class PdfDocument:
         dest = self._signature_dest_rect(hit.page_index, rect)
         if dest is None or not image_bytes:
             raise ValueError("서명 위치가 페이지 밖입니다.")
-        if self._rects_match(dest, hit.rect, tol=8):
-            return
         if record_undo:
             self._record_undo_checkpoint()
         page = self._doc[hit.page_index]
         image_id = hit.image_id or signature_image_id(image_bytes)
         self._ensure_signature_embfile(image_id, image_bytes)
-        image_xref = page.insert_image(dest, stream=image_bytes, keep_proportion=False)
+        # Always wipe + re-draw. Skipping on "same rect" left a blank page when
+        # the prior visual was already gone (edit session / failed refresh).
         self._wipe_signature_cluster(
             page,
             hit.rect,
             extra_xref=hit.image_xref,
-            keep_rect=dest,
+        )
+        # Also clear near the new dest in case the stamp moved.
+        if not self._rects_match(dest, hit.rect, tol=2.0):
+            self._wipe_signature_cluster(page, dest)
+        image_xref = self._insert_signature_image(
+            page,
+            dest,
+            image_bytes,
+            image_id,
+            prefer_xref=None,
         )
         self._add_signature_marker(
             page,
@@ -3340,6 +3400,105 @@ class PdfDocument:
         names = list(self._doc.embfile_names() or [])
         if name not in names:
             self._doc.embfile_add(name, image_bytes, filename=name)
+
+    def _signature_xref_still_valid(self, xref: int) -> bool:
+        if xref <= 0:
+            return False
+        try:
+            extracted = self._doc.extract_image(xref)
+        except (RuntimeError, ValueError):
+            return False
+        return bool(extracted and extracted.get("image"))
+
+    def _find_reusable_signature_xref(self, image_id: str) -> int | None:
+        """Reuse an existing image XObject for the same signature bytes."""
+        if not image_id:
+            return None
+        for page_index in range(len(self._doc)):
+            page = self._doc[page_index]
+            for annot in PdfDocument._iter_page_annots(page):
+                if not is_signature_annot(annot):
+                    continue
+                parsed = parse_signature_annot(
+                    (annot.info or {}).get("content") or ""
+                )
+                if parsed is None:
+                    continue
+                annot_id, _w, _h, image_xref = parsed
+                if annot_id != image_id or not image_xref:
+                    continue
+                if self._signature_xref_still_valid(image_xref):
+                    return image_xref
+        return None
+
+    def _insert_signature_image(
+        self,
+        page,
+        dest: fitz.Rect,
+        image_bytes: bytes,
+        image_id: str,
+        *,
+        prefer_xref: int | None = None,
+    ) -> int:
+        """Draw the stamp from PNG bytes into *dest* (page.rect space)."""
+        _ = (prefer_xref, image_id)  # API kept for callers; stream path is authoritative.
+        xref = self._page_insert_image_stream(page, dest, image_bytes)
+        if not self._signature_draw_present(page, dest):
+            xref = self._page_insert_image_stream(page, dest, image_bytes)
+        return xref
+
+    @staticmethod
+    def _normalize_rect(rect: fitz.Rect) -> fitz.Rect:
+        return fitz.Rect(
+            min(rect.x0, rect.x1),
+            min(rect.y0, rect.y1),
+            max(rect.x0, rect.x1),
+            max(rect.y0, rect.y1),
+        )
+
+    def _page_insert_image_stream(self, page, dest: fitz.Rect, image_bytes: bytes) -> int:
+        """insert_image in page.rect space, including rotated pages.
+
+        On rotated pages MuPDF's insert_image treats the rect like mediabox
+        space, so a bottom-right overlay lands off-screen (looks like the stamp
+        vanished on Enter). Insert with rotation cleared using derotated coords,
+        and pass rotate=page.rotation so the pixels match the on-screen preview
+        after the page /Rotate flag is applied again.
+        """
+        dest = self._normalize_rect(fitz.Rect(dest))
+        rotation = int(page.rotation or 0) % 360
+        if rotation == 0:
+            return int(
+                page.insert_image(
+                    dest,
+                    stream=image_bytes,
+                    keep_proportion=False,
+                )
+            )
+        mediabox_dest = self._normalize_rect(fitz.Rect(dest) * page.derotation_matrix)
+        page.set_rotation(0)
+        try:
+            return int(
+                page.insert_image(
+                    mediabox_dest,
+                    stream=image_bytes,
+                    keep_proportion=False,
+                    rotate=rotation,
+                )
+            )
+        finally:
+            page.set_rotation(rotation)
+
+    def _signature_draw_present(self, page, dest: fitz.Rect) -> bool:
+        """True if a non-background image draw overlaps *dest*."""
+        seed = fitz.Rect(dest)
+        if seed.is_empty:
+            return False
+        seed += (-2, -2, 2, 2)
+        for _xref, bbox in self._stamp_image_bboxes(page):
+            if self._bbox_is_stamp_copy(bbox, seed):
+                return True
+        return False
 
     def _signature_png_bytes(self, image_id: str, image_xref: int | None) -> bytes:
         name = signature_embfile_name(image_id)
@@ -3441,11 +3600,36 @@ class PdfDocument:
         page,
         seed: fitz.Rect,
         keep_rect: fitz.Rect | None = None,
+        *,
+        extra_xref: int | None = None,
     ) -> None:
-        """Remove signature image draws. delete_image leaves a stretched 1x1 leftover."""
+        """Remove signature image draws. delete_image leaves a stretched 1x1 leftover.
+
+        Prefer get_image_bbox (page.rect space). Parsing the content cm matrix
+        alone is wrong for stamps inserted on /Rotate pages (rotated cm), which
+        made wipe miss the draw — delete did nothing and move looked like a copy.
+        """
         doc = page.parent
         if doc is None:
             return
+        remove_xrefs: set[int] = set()
+        if extra_xref and int(extra_xref) > 0:
+            remove_xrefs.add(int(extra_xref))
+        for xref, bbox in self._stamp_image_bboxes(page):
+            if keep_rect is not None and self._bbox_is_stamp_copy(bbox, keep_rect):
+                continue
+            if self._bbox_is_stamp_copy(bbox, seed):
+                remove_xrefs.add(int(xref))
+        remove_names: set[bytes] = set()
+        for item in page.get_images(full=True) or []:
+            if int(item[0]) not in remove_xrefs:
+                continue
+            name = item[7]
+            if not name:
+                continue
+            if isinstance(name, str):
+                name = name.encode("latin-1", errors="replace")
+            remove_names.add(name)
         for xref in list(page.get_contents() or []):
             try:
                 data = doc.xref_stream(xref)
@@ -3457,13 +3641,21 @@ class PdfDocument:
             out = data
             changed = False
             for match in reversed(matches):
-                a, b, c, d, e, f = (float(group) for group in match.groups()[:6])
-                rect = self._content_image_page_rect(page, a, b, c, d, e, f)
-                if rect.is_empty or self._is_page_background_bbox(page, rect):
-                    continue
-                if keep_rect is not None and self._bbox_is_stamp_copy(rect, keep_rect):
-                    continue
-                if not self._bbox_is_stamp_copy(rect, seed):
+                name = match.group(7)
+                remove = name in remove_names
+                if not remove and not remove_names:
+                    # Fallback for odd streams: matrix → page.rect (works when
+                    # /Rotate is 0 and the cm is axis-aligned).
+                    a, b, c, d, e, f = (float(group) for group in match.groups()[:6])
+                    rect = self._content_image_page_rect(page, a, b, c, d, e, f)
+                    if rect.is_empty or self._is_page_background_bbox(page, rect):
+                        continue
+                    if keep_rect is not None and self._bbox_is_stamp_copy(rect, keep_rect):
+                        continue
+                    if not self._bbox_is_stamp_copy(rect, seed):
+                        continue
+                    remove = True
+                if not remove:
                     continue
                 out = out[: match.start()] + out[match.end() :]
                 changed = True
@@ -3486,7 +3678,12 @@ class PdfDocument:
             return
         seed += (-12, -12, 12, 12)
         seed &= page.rect
-        self._remove_overlapping_image_draws(page, seed, keep_rect=keep_rect)
+        self._remove_overlapping_image_draws(
+            page,
+            seed,
+            keep_rect=keep_rect,
+            extra_xref=extra_xref,
+        )
         pending_annots = []
         for annot in PdfDocument._iter_page_annots(page):
             if not is_signature_annot(annot):

@@ -263,7 +263,7 @@ class _SignatureMenuButton(QPushButton):
     """Red menu row that opens the signature submenu beside itself."""
 
     def __init__(self, menu: QMenu) -> None:
-        super().__init__("서명 넣기(베타)")
+        super().__init__("서명 넣기")
         self._menu = menu
         self.setFlat(True)
         self.setAutoDefault(False)
@@ -448,6 +448,16 @@ class TinyApplication(QApplication):
                 action.blockSignals(True)
                 action.setChecked(checked)
                 action.blockSignals(False)
+        if self.windows:
+            self.windows[0]._app_settings.save()
+
+    def sync_signature_commit_on_outside_click(self, enabled: bool) -> None:
+        for window in self.windows:
+            apply = getattr(window, "_apply_signature_outside_commit", None)
+            if callable(apply):
+                apply(enabled)
+            else:
+                window._app_settings.signature_commit_on_outside_click = enabled
         if self.windows:
             self.windows[0]._app_settings.save()
 
@@ -1236,7 +1246,8 @@ class DocumentTab(QWidget):
 
   def _on_signature_stamp_committed(self) -> None:
     index = self.viewer.current_index()
-    self.thumbnails.refresh(index)
+    # Invalidate only — full refresh reselects the row and can jump scroll.
+    self.thumbnails.invalidate_thumbnails([index])
     self._notify_history_changed()
     window = self.window()
     if isinstance(window, MainWindow):
@@ -1246,12 +1257,12 @@ class DocumentTab(QWidget):
     window = self.window()
     if isinstance(window, MainWindow):
       window.statusBar().showMessage(message)
-    QMessageBox.warning(self, "서명 넣기(베타)", message)
+    QMessageBox.warning(self, "서명 넣기", message)
 
   def _on_signature_stamp_cancelled(self) -> None:
     window = self.window()
     if isinstance(window, MainWindow):
-      window.statusBar().showMessage("서명 넣기(베타)를 취소했습니다.")
+      window.statusBar().showMessage("서명 넣기를 취소했습니다.")
 
   def _on_signature_stamp_deleted(self) -> None:
     index = self.viewer.current_index()
@@ -1265,7 +1276,7 @@ class DocumentTab(QWidget):
     window = self.window()
     if isinstance(window, MainWindow):
       window.statusBar().showMessage(
-        "서명을 복사했습니다. Ctrl+V 또는 편집 → 서명 넣기(베타) → 클립보드로 다시 넣을 수 있습니다."
+        "서명을 복사했습니다. Ctrl+V 또는 편집 → 서명 넣기 → 클립보드로 다시 넣을 수 있습니다."
       )
       window._update_edit_actions()
 
@@ -1283,8 +1294,12 @@ class DocumentTab(QWidget):
       prepared.width,
       prepared.height,
     )
+    if self.viewer.signature_commit_on_outside_click():
+      confirm = "Enter·더블클릭·페이지 바깥 클릭으로 넣으세요."
+    else:
+      confirm = "Enter 또는 서명 더블클릭으로 넣으세요. (바깥 클릭으로는 확정되지 않습니다.)"
     return True, (
-      "페이지에 서명이 나타났습니다. 드래그로 위치를, 모서리로 크기를 조절한 뒤 Enter 또는 페이지의 다른 곳을 클릭해 넣으세요. "
+      f"페이지에 서명이 나타났습니다. 드래그로 위치를, 모서리로 크기를 조절한 뒤 {confirm} "
       "우클릭 또는 Delete로 지울 수 있습니다. Esc는 취소입니다."
     )
 
@@ -1596,6 +1611,8 @@ class DocumentTab(QWidget):
   def _on_rotate(self, indices: list[int], degrees: int) -> None:
     if not indices:
       return
+    # Open overlay keeps pre-rotate coords; committed stamps rotate with the page.
+    self.viewer.end_signature_session_for_geometry_change()
     self.document.rotate_pages(indices, degrees)
     self.thumbnails.invalidate_thumbnails(indices)
     if self.viewer.current_index() in indices:
@@ -1934,7 +1951,7 @@ class MainWindow(QMainWindow):
 
   def _show_signature_result(self, ok: bool, message: str) -> None:
     if not ok:
-      QMessageBox.information(self, "서명 넣기(베타)", message)
+      QMessageBox.information(self, "서명 넣기", message)
       return
     self.statusBar().showMessage(message)
 
@@ -1946,7 +1963,7 @@ class MainWindow(QMainWindow):
     self._close_signature_menus()
     tab = self._current_tab()
     if tab is None:
-      QMessageBox.information(self, "서명 넣기(베타)", "먼저 PDF를 여세요.")
+      QMessageBox.information(self, "서명 넣기", "먼저 PDF를 여세요.")
       return
     self._apply_clipboard_signature(tab)
 
@@ -1954,7 +1971,7 @@ class MainWindow(QMainWindow):
     self._close_signature_menus()
     tab = self._current_tab()
     if tab is None or tab.document.page_count <= 0:
-      QMessageBox.information(self, "서명 넣기(베타)", "먼저 PDF를 여세요.")
+      QMessageBox.information(self, "서명 넣기", "먼저 PDF를 여세요.")
       return
     path, _ = QFileDialog.getOpenFileName(
       self,
@@ -2210,6 +2227,20 @@ class MainWindow(QMainWindow):
     self._act_signature_from_file = QAction("파일 선택...", self)
     self._act_signature_from_file.triggered.connect(self._paste_signature_from_file)
     self._signature_menu.addAction(self._act_signature_from_file)
+    self._signature_menu.addSeparator()
+    self._act_signature_outside_commit = QAction("바깥 클릭으로 서명 등록 확정", self)
+    self._act_signature_outside_commit.setCheckable(True)
+    self._act_signature_outside_commit.setChecked(
+      self._app_settings.signature_commit_on_outside_click
+    )
+    self._act_signature_outside_commit.setToolTip(
+      "켜면 서명 편집 중 페이지의 다른 곳을 클릭해도 넣습니다. "
+      "끄면(기본) Enter 또는 서명 더블클릭으로만 확정합니다."
+    )
+    self._act_signature_outside_commit.toggled.connect(
+      self._toggle_signature_outside_commit
+    )
+    self._signature_menu.addAction(self._act_signature_outside_commit)
     self._act_signature_menu = QWidgetAction(self)
     self._act_signature_menu.setDefaultWidget(_SignatureMenuButton(self._signature_menu))
     edit_menu.addAction(self._act_signature_menu)
@@ -2638,6 +2669,9 @@ class MainWindow(QMainWindow):
   def _add_tab(self, document: PdfDocument, title: str | None = None) -> DocumentTab:
     tab = DocumentTab(document)
     tab.viewer.set_page_nav_side(self._app_settings.page_nav_side)
+    tab.viewer.set_signature_commit_on_outside_click(
+      self._app_settings.signature_commit_on_outside_click
+    )
     tab.viewer.page_nav_side_changed.connect(self._on_page_nav_side_changed)
     name = title or document.display_name
     index = self.tabs.addTab(tab, name)
@@ -2655,6 +2689,28 @@ class MainWindow(QMainWindow):
       widget = self.tabs.widget(index)
       if isinstance(widget, DocumentTab):
         widget.viewer.set_page_nav_side(self._app_settings.page_nav_side)
+
+  def _toggle_signature_outside_commit(self, checked: bool) -> None:
+    enabled = bool(checked)
+    self._app_settings.signature_commit_on_outside_click = enabled
+    self._app_settings.save()
+    app = QApplication.instance()
+    if isinstance(app, TinyApplication):
+      app.sync_signature_commit_on_outside_click(enabled)
+    else:
+      self._apply_signature_outside_commit(enabled)
+
+  def _apply_signature_outside_commit(self, enabled: bool) -> None:
+    self._app_settings.signature_commit_on_outside_click = enabled
+    action = getattr(self, "_act_signature_outside_commit", None)
+    if action is not None:
+      action.blockSignals(True)
+      action.setChecked(enabled)
+      action.blockSignals(False)
+    for index in range(self.tabs.count()):
+      widget = self.tabs.widget(index)
+      if isinstance(widget, DocumentTab):
+        widget.viewer.set_signature_commit_on_outside_click(enabled)
 
   def _new_tab(self) -> None:
     self._add_tab(PdfDocument(), "새 문서")

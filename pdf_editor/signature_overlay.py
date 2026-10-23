@@ -209,16 +209,25 @@ class SignatureStampOverlay(QWidget):
         event.accept()
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._commit_on_double_click
+        ):
+            self.commit_requested.emit()
         event.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if event.key() in (
-            Qt.Key.Key_Return,
-            Qt.Key.Key_Enter,
-            Qt.Key.Key_Escape,
-            Qt.Key.Key_Delete,
-            Qt.Key.Key_Backspace,
-        ):
-            event.ignore()
+        key = event.key()
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.commit_requested.emit()
+            event.accept()
+            return
+        if key == Qt.Key.Key_Escape:
+            self.cancel_requested.emit()
+            event.accept()
+            return
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.delete_requested.emit()
+            event.accept()
             return
         super().keyPressEvent(event)

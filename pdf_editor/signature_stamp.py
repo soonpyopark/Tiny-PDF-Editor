@@ -182,6 +182,7 @@ def prepare_signature_from_qimage(image: QImage) -> PreparedSignature | None:
     if image.isNull() or image.width() < 2 or image.height() < 2:
         return None
     rgba = knockout_white_rgba(_qimage_to_rgba(image))
+    rgba = reinforce_signature_ink(rgba)
     cropped = crop_alpha_bbox(rgba)
     if cropped is None:
         return None
@@ -221,6 +222,32 @@ def knockout_white_rgba(
     fade_factor = (white_threshold - luma).astype(np.float32) / span
     faded = np.clip(alpha.astype(np.float32) * fade_factor, 0, 255).astype(np.uint8)
     out[:, :, 3] = np.where(fade, np.minimum(out[:, :, 3], faded), out[:, :, 3])
+    return out
+
+
+def reinforce_signature_ink(rgba: np.ndarray) -> np.ndarray:
+    """Darken gray pencil/scan ink so the stamp stays visible after the overlay border is gone."""
+    out = np.array(rgba, copy=True)
+    if out.ndim != 3 or out.shape[2] < 4:
+        return out
+    rgb = out[:, :, :3].astype(np.int32)
+    alpha = out[:, :, 3]
+    luma = (299 * rgb[:, :, 0] + 587 * rgb[:, :, 1] + 114 * rgb[:, :, 2]) // 1000
+    chroma = rgb.max(axis=2) - rgb.min(axis=2)
+    # Gray-ish strokes that survived knockout but are still too light on white paper.
+    soft = (alpha >= 40) & (chroma <= MAX_CHROMA) & (luma >= 40) & (luma < WHITE_THRESHOLD)
+    if not np.any(soft):
+        return out
+    # Pull toward black; keep a little of the original tone.
+    factor = np.clip((luma.astype(np.float32) - 40.0) / 200.0, 0.15, 0.55)
+    strengthened = (rgb.astype(np.float32) * factor[:, :, None]).astype(np.uint8)
+    for channel in range(3):
+        plane = out[:, :, channel]
+        plane = np.where(soft, strengthened[:, :, channel], plane)
+        out[:, :, channel] = plane
+    # Boost thin/faint alpha so strokes do not disappear after rasterize.
+    thin = soft & (alpha < 200)
+    out[:, :, 3] = np.where(thin, np.maximum(alpha, 220), out[:, :, 3])
     return out
 
 
