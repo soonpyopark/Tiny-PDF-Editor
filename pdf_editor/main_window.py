@@ -23,6 +23,7 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
   QAction,
+  QActionGroup,
   QColor,
   QCursor,
   QDesktopServices,
@@ -436,12 +437,17 @@ class TinyApplication(QApplication):
     def sync_open_in_new_window(self, enabled: bool) -> None:
         for window in self.windows:
             window._app_settings.open_in_new_window = enabled
-            action = getattr(window, "_act_open_in_new_window", None)
-            if action is None:
-                continue
-            action.blockSignals(True)
-            action.setChecked(enabled)
-            action.blockSignals(False)
+            act_window = getattr(window, "_act_open_in_new_window", None)
+            act_tab = getattr(window, "_act_open_in_new_tab", None)
+            for action, checked in (
+                (act_window, enabled),
+                (act_tab, not enabled),
+            ):
+                if action is None:
+                    continue
+                action.blockSignals(True)
+                action.setChecked(checked)
+                action.blockSignals(False)
         if self.windows:
             self.windows[0]._app_settings.save()
 
@@ -2266,11 +2272,25 @@ class MainWindow(QMainWindow):
     view_menu.addAction(self._act_fullscreen)
     self.addAction(self._act_fullscreen)
 
+    view_menu.addSeparator()
+    self._open_target_group = QActionGroup(self)
+    self._open_target_group.setExclusive(True)
+
     self._act_open_in_new_window = QAction("새 창으로 열기", self)
     self._act_open_in_new_window.setCheckable(True)
-    self._act_open_in_new_window.setChecked(self._app_settings.open_in_new_window)
-    self._act_open_in_new_window.toggled.connect(self._toggle_open_in_new_window)
+    self._open_target_group.addAction(self._act_open_in_new_window)
+
+    self._act_open_in_new_tab = QAction("새 탭으로 열기", self)
+    self._act_open_in_new_tab.setCheckable(True)
+    self._open_target_group.addAction(self._act_open_in_new_tab)
+
+    if self._app_settings.open_in_new_window:
+      self._act_open_in_new_window.setChecked(True)
+    else:
+      self._act_open_in_new_tab.setChecked(True)
+    self._open_target_group.triggered.connect(self._on_open_target_changed)
     view_menu.addAction(self._act_open_in_new_window)
+    view_menu.addAction(self._act_open_in_new_tab)
 
     help_menu = self.menuBar().addMenu("도움말(&H)")
     act_update = QAction("업데이트 확인", self)
@@ -2714,12 +2734,13 @@ class MainWindow(QMainWindow):
         return False
     return True
 
-  def _toggle_open_in_new_window(self, checked: bool) -> None:
-    self._app_settings.open_in_new_window = bool(checked)
+  def _on_open_target_changed(self, action: QAction) -> None:
+    enabled = action is self._act_open_in_new_window
+    self._app_settings.open_in_new_window = enabled
     self._app_settings.save()
     app = QApplication.instance()
     if isinstance(app, TinyApplication):
-      app.sync_open_in_new_window(bool(checked))
+      app.sync_open_in_new_window(enabled)
 
   def _should_open_in_new_window(self) -> bool:
     return self._app_settings.open_in_new_window and not self._is_effectively_empty()

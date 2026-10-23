@@ -1180,6 +1180,11 @@ class PdfDocument:
         return any(ord(ch) > 0x2000 for ch in text)
 
     @staticmethod
+    def _insert_fontname_for_text(text: str) -> str:
+        """Reserved PDF font name for insert_text — no TTF embed (korea/helv)."""
+        return "korea" if PdfDocument._needs_cjk_font(text) else "helv"
+
+    @staticmethod
     def _cjk_font_candidates() -> tuple[tuple[str, Path], ...]:
         home = Path.home()
         if sys.platform == "win32":
@@ -1249,14 +1254,66 @@ class PdfDocument:
                 ) from exc
         return fontname, fontfile
 
+    # Hit-test padding / nearest-line limit (PDF points) for inline text edit.
+    _TEXT_LINE_HIT_PAD_X = 2.0
+    _TEXT_LINE_HIT_PAD_Y = 3.0
+    _TEXT_LINE_HIT_MAX_DIST = 8.0
+
+    @staticmethod
+    def _inflate_text_line_rect(bbox: fitz.Rect) -> fitz.Rect:
+        pad_x = PdfDocument._TEXT_LINE_HIT_PAD_X
+        pad_y = max(
+            PdfDocument._TEXT_LINE_HIT_PAD_Y,
+            float(bbox.height) * 0.25,
+        )
+        return fitz.Rect(
+            bbox.x0 - pad_x,
+            bbox.y0 - pad_y,
+            bbox.x1 + pad_x,
+            bbox.y1 + pad_y,
+        )
+
+    @staticmethod
+    def _distance_to_rect(point: fitz.Point, rect: fitz.Rect) -> float:
+        if rect.contains(point):
+            return 0.0
+        dx = 0.0
+        if point.x < rect.x0:
+            dx = rect.x0 - point.x
+        elif point.x > rect.x1:
+            dx = point.x - rect.x1
+        dy = 0.0
+        if point.y < rect.y0:
+            dy = rect.y0 - point.y
+        elif point.y > rect.y1:
+            dy = point.y - rect.y1
+        return (dx * dx + dy * dy) ** 0.5
+
+    @staticmethod
+    def _text_line_info_from_spans(
+        bbox: fitz.Rect,
+        spans: list,
+    ) -> dict | None:
+        text = "".join(span["text"] for span in spans)
+        if not text.strip():
+            return None
+        first = spans[0]
+        origin = first.get("origin", (bbox.x0, bbox.y1))
+        return {
+            "rect": (bbox.x0, bbox.y0, bbox.x1, bbox.y1),
+            "text": text,
+            "size": float(first.get("size", bbox.height)),
+            "color": int(first.get("color", 0)),
+            "origin": (float(origin[0]), float(origin[1])),
+        }
+
     def find_text_line_at(
         self, page_index: int, x: float, y: float
     ) -> dict | None:
         """Return the text line under page-space point (x, y), or None.
 
-        The result carries everything needed to overlay an inline editor and to
-        overwrite the line: bbox, text, representative font size/color, and the
-        text baseline origin.
+        Uses a padded hit box first, then the nearest line within a small
+        distance — so thin OCR lines and slightly off clicks still work.
         """
         if not (0 <= page_index < len(self._doc)):
             return None
@@ -1266,6 +1323,8 @@ class PdfDocument:
             data = page.get_text("dict")
         except Exception:
             return None
+
+        candidates: list[tuple[float, float, dict]] = []
         for block in data.get("blocks", []):
             if block.get("type", 0) != 0:
                 continue
@@ -1276,23 +1335,27 @@ class PdfDocument:
                 bbox = fitz.Rect(line["bbox"])
                 if bbox.is_empty or bbox.is_infinite:
                     continue
-                if not bbox.contains(point):
-                    continue
                 if self._rect_hits_page_number(page, bbox):
                     continue
-                text = "".join(span["text"] for span in spans)
-                if not text.strip():
+                info = self._text_line_info_from_spans(bbox, spans)
+                if info is None:
                     continue
-                first = spans[0]
-                origin = first.get("origin", (bbox.x0, bbox.y1))
-                return {
-                    "rect": (bbox.x0, bbox.y0, bbox.x1, bbox.y1),
-                    "text": text,
-                    "size": float(first.get("size", bbox.height)),
-                    "color": int(first.get("color", 0)),
-                    "origin": (float(origin[0]), float(origin[1])),
-                }
-        return None
+                hit = self._inflate_text_line_rect(bbox)
+                dist = self._distance_to_rect(point, hit)
+                max_dist = max(
+                    self._TEXT_LINE_HIT_MAX_DIST,
+                    float(bbox.height) * 0.6,
+                )
+                if dist > max_dist:
+                    continue
+                # Prefer closer hits; on a tie prefer the tighter (smaller) line.
+                area = abs(float(bbox.width) * float(bbox.height))
+                candidates.append((dist, area, info))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        return candidates[0][2]
 
     def _sample_background_color(
         self, page, rect: fitz.Rect
@@ -1373,36 +1436,36 @@ class PdfDocument:
         size: float,
         rgb: tuple[float, float, float],
     ) -> None:
-        """Draw *text* at baseline *origin* using a Unicode/CJK-capable font."""
-        fontname, fontfile = self._resolve_edit_font(text)
-        font = None
-        try:
-            font = fitz.Font(fontfile=fontfile) if fontfile else fitz.Font(fontname)
-        except Exception:
-            try:
-                font = fitz.Font("helv")
-            except Exception:
-                font = None
-        if font is not None:
-            try:
-                writer = fitz.TextWriter(page.rect)
-                writer.append(origin, text, font=font, fontsize=size)
-                writer.write_text(page, color=rgb, overlay=True)
-                return
-            except Exception:
-                pass
-        # Last-resort fallback for pure-ASCII text.
+        """Draw *text* at baseline *origin* without embedding a system TTF.
+
+        Uses PyMuPDF reserved names (``korea`` / ``helv``) so short typo fixes
+        do not inflate the PDF with Malgun Gothic (or similar) subsets.
+        """
+        fontname = self._insert_fontname_for_text(text)
         try:
             page.insert_text(
                 origin,
                 text,
                 fontsize=size,
                 color=rgb,
-                fontname="helv",
+                fontname=fontname,
                 overlay=True,
             )
+            return
         except Exception:
             pass
+        if fontname != "helv":
+            try:
+                page.insert_text(
+                    origin,
+                    text,
+                    fontsize=size,
+                    color=rgb,
+                    fontname="helv",
+                    overlay=True,
+                )
+            except Exception:
+                pass
 
     def apply_page_numbers(
         self,

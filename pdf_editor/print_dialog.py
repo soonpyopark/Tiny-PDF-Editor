@@ -8,7 +8,7 @@ from collections.abc import Iterator, Sequence
 from enum import Enum
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QPageSize, QPixmap, QResizeEvent, QShowEvent
+from PyQt6.QtGui import QPageLayout, QPageSize, QPixmap, QResizeEvent, QShowEvent
 from PyQt6.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt6.QtWidgets import (
     QDialog,
@@ -37,6 +37,7 @@ _UNIFIED_PRINT_KEY = r"Software\Microsoft\Print\UnifiedPrintDialog"
 _PREFER_LEGACY_VALUE = "PreferLegacyPrintDialog"
 _CACHE_RADIUS = 1
 _FIT_BTN_SIZE = (36, 24)
+_ORIENT_BTN_SIZE = (40, 24)
 
 
 class _PreviewFit(Enum):
@@ -118,8 +119,9 @@ class DocumentPrintDialog(QDialog):
         self._fit_mode = _PreviewFit.HEIGHT
         self._printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         self._printer.setDocName(document.display_name)
-        # Default to A4 so the preview matches typical KR/EU output paper.
+        # Default to A4 portrait so the preview matches typical KR/EU paper.
         self._printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+        self._printer.setPageOrientation(QPageLayout.Orientation.Portrait)
         count = document.page_count
         if page_indices is not None:
             pages = sorted({
@@ -149,8 +151,9 @@ class DocumentPrintDialog(QDialog):
         root.setSpacing(8)
 
         hint = QLabel(
-            "미리보기는 선택한 용지·여백에 맞춘 출력 모습입니다. "
-            "페이지가 많은 문서도 현재 페이지만 렌더합니다."
+            "미리보기는 용지 방향·여백에 맞춘 출력 모습입니다. "
+            "페이지가 많은 문서도 현재 페이지만 렌더합니다. "
+            "프린터·용지 상세는 「프린터 설정 및 인쇄」에서 고릅니다."
         )
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -196,15 +199,31 @@ class DocumentPrintDialog(QDialog):
         nav.addWidget(self._btn_fit_page)
 
         nav.addSpacing(8)
+
+        self._btn_portrait = QPushButton("세로")
+        self._btn_portrait.setFixedSize(*_ORIENT_BTN_SIZE)
+        self._btn_portrait.setCheckable(True)
+        self._btn_portrait.setToolTip("세로 방향 미리보기")
+        self._btn_portrait.clicked.connect(
+            lambda: self._set_orientation(QPageLayout.Orientation.Portrait)
+        )
+        nav.addWidget(self._btn_portrait)
+
+        self._btn_landscape = QPushButton("가로")
+        self._btn_landscape.setFixedSize(*_ORIENT_BTN_SIZE)
+        self._btn_landscape.setCheckable(True)
+        self._btn_landscape.setToolTip("가로 방향 미리보기")
+        self._btn_landscape.clicked.connect(
+            lambda: self._set_orientation(QPageLayout.Orientation.Landscape)
+        )
+        nav.addWidget(self._btn_landscape)
+
+        nav.addSpacing(8)
         self._paper_label = QLabel()
         self._paper_label.setStyleSheet("color: #666666;")
         nav.addWidget(self._paper_label)
 
         nav.addStretch(1)
-
-        self._btn_setup = QPushButton("프린터 설정...")
-        self._btn_setup.clicked.connect(self._configure_printer)
-        nav.addWidget(self._btn_setup)
         root.addLayout(nav)
 
         self._scroll = QScrollArea()
@@ -226,7 +245,7 @@ class DocumentPrintDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         print_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        print_btn.setText("인쇄")
+        print_btn.setText("프린터 설정 및 인쇄")
         print_btn.setDefault(True)
         cancel_btn = buttons.button(QDialogButtonBox.StandardButton.Cancel)
         cancel_btn.setText("취소")
@@ -234,6 +253,7 @@ class DocumentPrintDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
+        self._sync_orientation_buttons()
         self._refresh_preview()
 
     def showEvent(self, event: QShowEvent) -> None:
@@ -271,6 +291,27 @@ class DocumentPrintDialog(QDialog):
     def _set_fit_mode(self, mode: _PreviewFit) -> None:
         self._fit_mode = mode
         self._apply_fit()
+
+    def _current_orientation(self) -> QPageLayout.Orientation:
+        return self._printer.pageLayout().orientation()
+
+    def _sync_orientation_buttons(self) -> None:
+        landscape = self._current_orientation() == QPageLayout.Orientation.Landscape
+        self._btn_portrait.blockSignals(True)
+        self._btn_landscape.blockSignals(True)
+        self._btn_portrait.setChecked(not landscape)
+        self._btn_landscape.setChecked(landscape)
+        self._btn_portrait.blockSignals(False)
+        self._btn_landscape.blockSignals(False)
+
+    def _set_orientation(self, orientation: QPageLayout.Orientation) -> None:
+        if self._current_orientation() == orientation:
+            self._sync_orientation_buttons()
+            return
+        self._printer.setPageOrientation(orientation)
+        self._sync_orientation_buttons()
+        self._cache.clear()
+        self._refresh_preview()
 
     def _pixmap_for(self, page_index: int) -> QPixmap:
         paper_key = printer_paper_signature(self._printer)
@@ -364,18 +405,18 @@ class DocumentPrintDialog(QDialog):
         self._source_pixmap = pixmap
         self._apply_fit()
 
-    def _configure_printer(self) -> None:
-        with prefer_legacy_windows_print_dialog():
-            dialog = QPrintDialog(self._printer, self)
-            dialog.exec()
-        self._cache.clear()
-        self._refresh_preview()
-
     def _print(self) -> None:
         with prefer_legacy_windows_print_dialog():
             dialog = QPrintDialog(self._printer, self)
             if dialog.exec() != QPrintDialog.DialogCode.Accepted:
+                self._sync_orientation_buttons()
+                self._cache.clear()
+                self._refresh_preview()
                 return
+
+        # System dialog may have changed paper/orientation — keep UI in sync
+        # if the user cancels mid-print after accepting the dialog.
+        self._sync_orientation_buttons()
 
         total_guess = max(1, len(self._print_pages))
         progress = QProgressDialog("인쇄 중…", "취소", 0, total_guess, self)

@@ -90,8 +90,15 @@ def _set_page_contents(page, xrefs: list[int]) -> None:
 
 
 def wipe_ocr_layer(page) -> int:
-    """Remove only the previous tpe:ocr text streams. Do not redact."""
+    """Remove the previous tpe:ocr layer (legacy embedded font and/or boxes).
+
+    Legacy pages used an embedded ``/tpeocr`` font — strip those operators.
+    Current pages use reserved ``korea``/``helv`` (no TTF embed) marked by
+    invisible ``tpe:ocr`` annots; redact text only inside those boxes so the
+    scan image is left alone (``PDF_REDACT_IMAGE_NONE``).
+    """
     doc = page.parent
+    boxes = _ocr_boxes(page)
     try:
         contents = list(page.get_contents() or [])
     except Exception:
@@ -124,6 +131,30 @@ def wipe_ocr_layer(page) -> int:
             _set_page_contents(page, keep)
         except Exception:
             pass
+
+    if boxes:
+        for box in boxes:
+            try:
+                page.add_redact_annot(box, fill=None)
+            except Exception:
+                try:
+                    page.add_redact_annot(box)
+                except Exception:
+                    continue
+        try:
+            page.apply_redactions(
+                images=getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0)
+            )
+            removed = max(removed, len(boxes))
+        except TypeError:
+            try:
+                page.apply_redactions()
+                removed = max(removed, len(boxes))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     annots = [
         annot
         for annot in list(PdfDocument._iter_page_annots(page))
@@ -137,7 +168,7 @@ def wipe_ocr_layer(page) -> int:
                 annot.delete()
             except Exception:
                 pass
-    return max(removed, len(annots))
+    return max(removed, len(annots), len(boxes))
 
 
 def page_has_native_text(page) -> bool:
@@ -178,30 +209,22 @@ def _write_ocr_line(page, line: OcrLine, zoom: float) -> bool:
     )
     if box.is_empty or box.is_infinite:
         return False
-    _fontname, fontfile = PdfDocument._resolve_edit_font(text)
-    if not fontfile:
-        found = PdfDocument._find_installed_cjk_font()
-        if found:
-            _fontname, fontfile = found
-    if PdfDocument._needs_cjk_font(text) and not fontfile:
-        return False
+    # Reserved names (korea/helv): no system TTF embed → OCR stays small.
+    fontname = PdfDocument._insert_fontname_for_text(text)
     size = max(4.0, min(72.0, float(box.height) * 0.82))
     try:
-        font = fitz.Font(fontfile=fontfile) if fontfile else fitz.Font("helv")
-        width = float(font.text_length(text, fontsize=size))
+        measure = fitz.Font(fontname)
+        width = float(measure.text_length(text, fontsize=size))
         if width > box.width > 1:
             size = max(4.0, size * (box.width / width))
     except Exception:
         pass
-    # Fresh font resource name so a previous redact cannot reuse a broken CJK font.
     kwargs: dict[str, object] = {
         "fontsize": size,
-        "fontname": OCR_FONTNAME if fontfile else "helv",
+        "fontname": fontname,
         "render_mode": 3,
         "overlay": True,
     }
-    if fontfile:
-        kwargs["fontfile"] = fontfile
     origin = fitz.Point(box.x0, min(box.y1 - 0.8, box.y0 + size))
     try:
         page.insert_text(origin, text, **kwargs)
