@@ -87,14 +87,10 @@ ZOOM_PRESETS = [25, 50, 75, 100, 125, 150, 200, 250, 300, 350, 400, 500, 600]
 MAX_ZOOM_PERCENT = 600
 MAX_ZOOM = MAX_ZOOM_PERCENT / 100.0
 ZOOM_STEP_FACTOR = 1.1
-ARROW_SCROLL_STEP = 90
 WHEEL_SCROLL_MULTIPLIER = 1.5
 SMOOTH_SCROLL_DURATION_MS = 260
-READING_SCROLL_DURATION_MS = 320
-# Keep this fraction of the viewport visible so the eye can track across jumps.
-READING_VIEWPORT_OVERLAP = 0.15
-# When a page already fits the screen, advance by most of one page/row.
-READING_PAGE_ADVANCE = 0.90
+# Arrow / page-nav buttons: always 1/3 of the visible viewport height.
+VIEWPORT_SCROLL_FRACTION = 1.0 / 3.0
 PREVIEW_BACKGROUND = "#efefef"
 SPREAD_GAP_PX = 12
 PAGE_STACK_GAP_PX = 16
@@ -1327,13 +1323,13 @@ class PageViewer(QWidget):
 
         self._page_nav_up = self._make_page_nav_button(
             _vertical_nav_icon(True),
-            "페이지 위로 이동",
-            lambda: self.scroll_by_key(up=True, page=True),
+            "화면 높이의 1/3만큼 위로",
+            lambda: self.scroll_by_key(up=True, page=False),
         )
         self._page_nav_down = self._make_page_nav_button(
             _vertical_nav_icon(False),
-            "페이지 아래로 이동",
-            lambda: self.scroll_by_key(up=False, page=True),
+            "화면 높이의 1/3만큼 아래로",
+            lambda: self.scroll_by_key(up=False, page=False),
         )
 
         self._doc_scroll = QScrollBar(Qt.Orientation.Vertical)
@@ -2855,26 +2851,20 @@ class PageViewer(QWidget):
             if self.copy_selected_text():
                 event.accept()
                 return
-        if key in (Qt.Key.Key_Up, Qt.Key.Key_PageUp):
-            if key == Qt.Key.Key_PageUp:
-                self.scroll_by_key(up=True, page=True)
-            else:
-                self.scroll_by_key(up=True, page=False)
+        if key in (Qt.Key.Key_Up, Qt.Key.Key_Left):
+            self.scroll_by_key(up=True, page=False)
             event.accept()
             return
-        if key in (Qt.Key.Key_Down, Qt.Key.Key_PageDown):
-            if key == Qt.Key.Key_PageDown:
-                self.scroll_by_key(up=False, page=True)
-            else:
-                self.scroll_by_key(up=False, page=False)
+        if key in (Qt.Key.Key_Down, Qt.Key.Key_Right):
+            self.scroll_by_key(up=False, page=False)
             event.accept()
             return
-        if key == Qt.Key.Key_Left:
-            self.go_previous_page(scroll_to_bottom=True)
+        if key == Qt.Key.Key_PageUp:
+            self.scroll_by_key(up=True, page=True)
             event.accept()
             return
-        if key == Qt.Key.Key_Right:
-            self.go_next_page()
+        if key == Qt.Key.Key_PageDown:
+            self.scroll_by_key(up=False, page=True)
             event.accept()
             return
 
@@ -2921,35 +2911,10 @@ class PageViewer(QWidget):
         self._scroll_anim.setEndValue(target)
         self._scroll_anim.start()
 
-    def _reading_scroll_step_px(self) -> int:
-        """Vertical jump for page-nav / PageUp·Down, tuned for reading comfort.
-
-        - 너비 맞춤·페이지가 화면보다 긴 경우: 화면의 ~85%만 이동해 겹침을 남김
-        - 높이/화면 맞춤처럼 한 페이지가 거의 다 보일 때: 다음 페이지로 자연스럽게 넘김
-        """
+    def _viewport_third_step_px(self) -> int:
+        """Scroll step = 1/3 of the current viewport height (fit/zoom independent)."""
         viewport_h = max(1, self.scroll_area.viewport().height())
-        row_h = 0.0
-        if self._document and self._document.page_count > 0:
-            row_h = float(self._document_row_height(self._current_index))
-            if row_h > 0:
-                row_h += float(PAGE_STACK_GAP_PX)
-
-        fit = self._fit_mode
-        page_taller_than_view = row_h > viewport_h * 1.08
-        if fit == "width" or page_taller_than_view:
-            return max(48, int(viewport_h * (1.0 - READING_VIEWPORT_OVERLAP)))
-
-        if row_h > 0:
-            return max(
-                48,
-                int(
-                    min(
-                        row_h * READING_PAGE_ADVANCE,
-                        viewport_h * 0.95,
-                    )
-                ),
-            )
-        return max(48, int(viewport_h * (1.0 - READING_VIEWPORT_OVERLAP)))
+        return max(1, int(viewport_h * VIEWPORT_SCROLL_FRACTION))
 
     def _scroll_to_page_bottom(self) -> None:
         self._stop_scroll_animation()
@@ -3009,18 +2974,19 @@ class PageViewer(QWidget):
             )
 
     def scroll_by_key(self, *, up: bool, page: bool) -> None:
-        """Scroll the continuous page strip; neighboring pages stay in view."""
+        """Navigate the continuous strip.
+
+        - page=False: move by 1/3 of the visible viewport height (nav buttons, arrows)
+        - page=True: jump one page/row (PageUp / PageDown)
+        """
         if page:
-            step = self._reading_scroll_step_px()
-            self._scroll_vertically(
-                step if up else -step,
-                duration_ms=READING_SCROLL_DURATION_MS,
-            )
+            if up:
+                self.go_previous_page(scroll_to_bottom=True)
+            else:
+                self.go_next_page()
             return
-        self._handle_preview_wheel(
-            ARROW_SCROLL_STEP if up else -ARROW_SCROLL_STEP,
-            Qt.KeyboardModifier.NoModifier,
-        )
+        step = self._viewport_third_step_px()
+        self._scroll_vertically(step if up else -step)
 
     def _handle_preview_wheel(self, delta_y: int, modifiers: Qt.KeyboardModifier) -> bool:
         if modifiers & Qt.KeyboardModifier.ControlModifier:

@@ -1189,10 +1189,12 @@ class DocumentTab(QWidget):
 
     left_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Left), self)
     left_shortcut.activated.connect(
-      lambda: self.viewer.go_previous_page(scroll_to_bottom=True)
+      lambda: self.viewer.scroll_by_key(up=True, page=False)
     )
     right_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Right), self)
-    right_shortcut.activated.connect(self.viewer.go_next_page)
+    right_shortcut.activated.connect(
+      lambda: self.viewer.scroll_by_key(up=False, page=False)
+    )
 
     first_page = QShortcut(QKeySequence("Ctrl+Shift+Left"), self)
     first_page.activated.connect(lambda: self.viewer.set_current_index(0))
