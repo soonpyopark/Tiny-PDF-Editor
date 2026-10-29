@@ -96,6 +96,51 @@ class InkAnnotationRenderTests(unittest.TestCase):
         self.assertGreater(dark_on, dark_off + 200)
         document.close()
 
+    def test_underline_is_drawn_under_text(self) -> None:
+        src = fitz.open()
+        page = src.new_page(width=400, height=200)
+        page.insert_text((72, 100), "Underline me", fontsize=24)
+        hits = page.search_for("Underline me")
+        self.assertTrue(hits)
+        annot = page.add_underline_annot(hits)
+        annot.set_colors(stroke=(1, 0, 0))
+        annot.update()
+        text_rect = fitz.Rect(hits[0])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "underline.pdf"
+            src.save(path)
+            src.close()
+            document = PdfDocument()
+            document.open_file(str(path))
+            zoom = 2.0
+            pix = document.render_page_pixmap(0, zoom, annots=True)
+            # Red underline stroke near the bottom of the text box.
+            y_top = int(text_rect.y0 * zoom)
+            y_mid = int(((text_rect.y0 + text_rect.y1) / 2) * zoom)
+            y_bottom = int(text_rect.y1 * zoom) + 4
+            x0 = int(text_rect.x0 * zoom)
+            x1 = int(text_rect.x1 * zoom)
+            n = pix.n
+            stride = pix.stride
+            samples = pix.samples
+
+            def red_count(y0: int, y1: int) -> int:
+                total = 0
+                for y in range(max(0, y0), min(pix.height, y1)):
+                    row = y * stride
+                    for x in range(max(0, x0), min(pix.width, x1)):
+                        i = row + x * n
+                        r, g, b = samples[i], samples[i + 1], samples[i + 2]
+                        if r > 150 and g < 100 and b < 100:
+                            total += 1
+                return total
+
+            below = red_count(y_mid, y_bottom + 6)
+            above = red_count(y_top - 6, y_mid)
+            self.assertGreater(below, 10)
+            self.assertGreater(below, above)
+            document.close()
+
 
 if __name__ == "__main__":
     unittest.main()

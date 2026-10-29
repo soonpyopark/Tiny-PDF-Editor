@@ -2958,6 +2958,166 @@ class PdfDocument:
         warnings = fitz.TOOLS.mupdf_warnings(reset=True).lower()
         return any(token in warnings for token in ("corrupt", "format error", "cannot read"))
 
+    # Match Qt highlight overlay (pdf_editor.highlight_colors.HIGHLIGHT_OVERLAY_ALPHA).
+    _MARKUP_HIGHLIGHT_ALPHA = 115.0 / 255.0
+    # Skip Invisible | Hidden | NoView — same as Tiny's metadata annots.
+    _ANNOT_SKIP_FLAGS = 1 | 2 | 32
+    # Drawn with Tiny geometry (underline under the line); never MuPDF AP.
+    _MARKUP_ANNOT_TYPES = {fitz.PDF_ANNOT_HIGHLIGHT, fitz.PDF_ANNOT_UNDERLINE}
+
+    @staticmethod
+    def _blend_rgba_onto_rgb_pixmap(base: fitz.Pixmap, overlay: fitz.Pixmap) -> None:
+        """Alpha-composite *overlay* (RGBA, positioned via x/y) onto RGB *base*."""
+        if base.n < 3 or overlay.n < 4:
+            return
+        ox, oy = int(overlay.x), int(overlay.y)
+        ow, oh = overlay.width, overlay.height
+        bw, bh = base.width, base.height
+        base_n = base.n
+        over_n = overlay.n
+        base_stride = base.stride
+        over_stride = overlay.stride
+        base_buf = base.samples_mv
+        over_buf = overlay.samples
+        for row in range(oh):
+            by = oy + row
+            if by < 0 or by >= bh:
+                continue
+            base_row = by * base_stride
+            over_row = row * over_stride
+            for col in range(ow):
+                bx = ox + col
+                if bx < 0 or bx >= bw:
+                    continue
+                oi = over_row + col * over_n
+                alpha = over_buf[oi + 3]
+                if alpha == 0:
+                    continue
+                bi = base_row + bx * base_n
+                if alpha == 255:
+                    base_buf[bi] = over_buf[oi]
+                    base_buf[bi + 1] = over_buf[oi + 1]
+                    base_buf[bi + 2] = over_buf[oi + 2]
+                    continue
+                inv = 255 - alpha
+                base_buf[bi] = (over_buf[oi] * alpha + base_buf[bi] * inv) // 255
+                base_buf[bi + 1] = (
+                    over_buf[oi + 1] * alpha + base_buf[bi + 1] * inv
+                ) // 255
+                base_buf[bi + 2] = (
+                    over_buf[oi + 2] * alpha + base_buf[bi + 2] * inv
+                ) // 255
+
+    @staticmethod
+    def _fill_rect_blend(
+        base: fitz.Pixmap,
+        rect: fitz.Rect,
+        rgb: tuple[float, float, float],
+        alpha: float,
+    ) -> None:
+        if base.n < 3 or alpha <= 0:
+            return
+        x0 = max(0, int(rect.x0))
+        y0 = max(0, int(rect.y0))
+        x1 = min(base.width, int(rect.x1 + 0.999))
+        y1 = min(base.height, int(rect.y1 + 0.999))
+        if x1 <= x0 or y1 <= y0:
+            return
+        a = max(0.0, min(1.0, float(alpha)))
+        inv = 1.0 - a
+        cr = max(0, min(255, int(rgb[0] * 255)))
+        cg = max(0, min(255, int(rgb[1] * 255)))
+        cb = max(0, min(255, int(rgb[2] * 255)))
+        n = base.n
+        stride = base.stride
+        buf = base.samples_mv
+        for y in range(y0, y1):
+            row = y * stride
+            for x in range(x0, x1):
+                i = row + x * n
+                buf[i] = int(cr * a + buf[i] * inv)
+                buf[i + 1] = int(cg * a + buf[i + 1] * inv)
+                buf[i + 2] = int(cb * a + buf[i + 2] * inv)
+
+    @staticmethod
+    def _stroke_horizontal_line(
+        base: fitz.Pixmap,
+        x0: float,
+        x1: float,
+        y: float,
+        rgb: tuple[float, float, float],
+        *,
+        thickness: int,
+    ) -> None:
+        if base.n < 3 or thickness <= 0:
+            return
+        yi = int(round(y))
+        half = max(0, thickness // 2)
+        rect = fitz.Rect(x0, yi - half, x1, yi - half + thickness)
+        PdfDocument._fill_rect_blend(base, rect, rgb, alpha=1.0)
+
+    def _composite_page_annotations(
+        self,
+        page,
+        pix: fitz.Pixmap,
+        zoom: float,
+    ) -> None:
+        """Draw annotations onto *pix* without MuPDF underline AP quirks.
+
+        Highlight/Underline use Tiny's geometry (underline under the glyph box).
+        Ink and other visible annots are composited from their appearance pixmaps.
+        """
+        matrix = fitz.Matrix(zoom, zoom)
+        for annot in PdfDocument._iter_page_annots(page):
+            try:
+                annot_type = annot.type[0] if annot.type else -1
+                flags = int(annot.flags or 0)
+            except (RuntimeError, ValueError, TypeError):
+                continue
+            if flags & self._ANNOT_SKIP_FLAGS:
+                continue
+            if annot_type in self._MARKUP_ANNOT_TYPES:
+                colors = annot.colors or {}
+                stroke = colors.get("stroke") or colors.get("fill")
+                if annot_type == fitz.PDF_ANNOT_HIGHLIGHT:
+                    rgb = tuple(float(v) for v in (stroke or (1.0, 1.0, 0.0))[:3])
+                    for quad in self._highlight_annot_quad_rects(annot):
+                        self._fill_rect_blend(
+                            pix,
+                            fitz.Rect(
+                                quad.x0 * zoom,
+                                quad.y0 * zoom,
+                                quad.x1 * zoom,
+                                quad.y1 * zoom,
+                            ),
+                            rgb,
+                            self._MARKUP_HIGHLIGHT_ALPHA,
+                        )
+                else:
+                    rgb = tuple(float(v) for v in (stroke or (1.0, 0.0, 0.0))[:3])
+                    thickness = max(1, int(round(2 * zoom)))
+                    for quad in self._highlight_annot_quad_rects(annot):
+                        y_bottom = quad.y1 * zoom
+                        self._stroke_horizontal_line(
+                            pix,
+                            quad.x0 * zoom,
+                            quad.x1 * zoom,
+                            y_bottom,
+                            rgb,
+                            thickness=thickness,
+                        )
+                continue
+            try:
+                appearance = annot.get_pixmap(matrix=matrix, alpha=True)
+            except Exception:
+                continue
+            if appearance is None or appearance.width < 1 or appearance.height < 1:
+                continue
+            try:
+                self._blend_rgba_onto_rgb_pixmap(pix, appearance)
+            finally:
+                appearance = None
+
     def render_page_pixmap(
         self,
         index: int,
@@ -2970,6 +3130,8 @@ class PdfDocument:
 
         Annotations default on so Ink signatures, stamps, and form widgets stay
         visible. Callers that need a clean page (OCR) pass annots=False.
+        Highlight/underline use Tiny geometry (not MuPDF's AP), so underlines
+        stay under the text.
         """
         if self.rendering_paused and not ignore_pause:
             raise RuntimeError("rendering paused")
@@ -2977,8 +3139,12 @@ class PdfDocument:
         matrix = fitz.Matrix(zoom, zoom)
         try:
             fitz.TOOLS.mupdf_warnings(reset=True)
-            pix = page.get_pixmap(matrix=matrix, alpha=False, annots=annots)
+            # Never ask MuPDF to paint Highlight/Underline AP (underline often
+            # lands above glyphs). Composite annots ourselves when requested.
+            pix = page.get_pixmap(matrix=matrix, alpha=False, annots=False)
             if pix is not None and pix.width > 1 and pix.height > 1:
+                if annots:
+                    self._composite_page_annotations(page, pix, zoom)
                 fitz.TOOLS.mupdf_warnings(reset=True)
                 return pix
             if self._render_failed_after_mupdf():
@@ -3046,9 +3212,11 @@ class PdfDocument:
         matrix = fitz.Matrix(scale, scale)
         try:
             fitz.TOOLS.mupdf_warnings(reset=True)
-            pix = page.get_pixmap(matrix=matrix, alpha=False, annots=True)
+            pix = page.get_pixmap(matrix=matrix, alpha=False, annots=False)
             if self._render_failed_after_mupdf():
                 return self._blank_page_pixmap(page.rect.width, page.rect.height, scale)
+            if pix is not None and pix.width > 1 and pix.height > 1:
+                self._composite_page_annotations(page, pix, scale)
             return pix
         except Exception:
             fitz.TOOLS.mupdf_warnings(reset=True)
@@ -3932,10 +4100,8 @@ class PdfDocument:
         )
         saved: list[str] = []
         zoom = max(0.1, float(dpi) / 72.0)
-        matrix = fitz.Matrix(zoom, zoom)
         for index in valid:
-            page = self._doc[index]
-            pix = page.get_pixmap(matrix=matrix, alpha=False, annots=True)
+            pix = self.render_page_pixmap(index, zoom, annots=True)
             try:
                 filename = folder_path / f"{stem}_{index + 1}.png"
                 pix.save(str(filename))
