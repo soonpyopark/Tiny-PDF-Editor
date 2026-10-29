@@ -60,8 +60,6 @@ from pdf_editor.highlight_colors import (
     DEFAULT_UNDERLINE_COLOR_ID,
     HIGHLIGHT_RGB,
     UNDERLINE_RGB,
-    highlight_qcolor_from_rgb,
-    markup_qcolor_from_rgb,
     preferred_highlight_rgb,
     preferred_underline_rgb,
     set_preferred_highlight_color_id,
@@ -2760,31 +2758,11 @@ class PageViewer(QWidget):
         )
 
     def _apply_text_highlights_overlay(self) -> None:
-        if not self._document or self._document.page_count == 0:
-            for canvas in self._iter_known_canvases():
-                canvas.set_text_highlights([])
-                canvas.set_text_underlines([])
-            return
-        zoom = self._effective_zoom()
-        for page, canvas in self._mounted.items():
-            highlight_overlays: list[tuple[QRect, QColor]] = []
-            for rect, rgb in self._document.get_page_text_highlight_overlays(page, zoom):
-                highlight_overlays.append(
-                    (
-                        QRect(
-                            int(rect.x0),
-                            int(rect.y0),
-                            max(1, int(rect.x1 - rect.x0)),
-                            max(1, int(rect.y1 - rect.y0)),
-                        ),
-                        highlight_qcolor_from_rgb(rgb),
-                    )
-                )
-            underline_overlays: list[tuple[tuple[float, float, float, float], QColor]] = []
-            for line, rgb in self._document.get_page_text_underline_overlays(page, zoom):
-                underline_overlays.append((line, markup_qcolor_from_rgb(rgb)))
-            canvas.set_text_highlights(highlight_overlays)
-            canvas.set_text_underlines(underline_overlays)
+        # Page pixmap already includes PDF annotations (Ink, Highlight, Underline).
+        # Skip Qt overlays so markups are not painted twice.
+        for canvas in self._iter_known_canvases():
+            canvas.set_text_highlights([])
+            canvas.set_text_underlines([])
 
     def showEvent(self, event) -> None:
         super().showEvent(event)

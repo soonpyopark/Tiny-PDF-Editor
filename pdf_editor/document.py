@@ -2963,9 +2963,14 @@ class PdfDocument:
         index: int,
         zoom: float = 1.0,
         *,
-        annots: bool = False,
+        annots: bool = True,
         ignore_pause: bool = False,
     ) -> fitz.Pixmap:
+        """Rasterize a page for preview/print.
+
+        Annotations default on so Ink signatures, stamps, and form widgets stay
+        visible. Callers that need a clean page (OCR) pass annots=False.
+        """
         if self.rendering_paused and not ignore_pause:
             raise RuntimeError("rendering paused")
         page = self._doc[index]
@@ -3041,7 +3046,7 @@ class PdfDocument:
         matrix = fitz.Matrix(scale, scale)
         try:
             fitz.TOOLS.mupdf_warnings(reset=True)
-            pix = page.get_pixmap(matrix=matrix, alpha=False, annots=False)
+            pix = page.get_pixmap(matrix=matrix, alpha=False, annots=True)
             if self._render_failed_after_mupdf():
                 return self._blank_page_pixmap(page.rect.width, page.rect.height, scale)
             return pix
