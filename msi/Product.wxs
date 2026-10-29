@@ -33,12 +33,13 @@
 
     <!--
       앱을 닫아도 인쇄 감시(print-watch)가 Tiny PDF Editor.exe로 남을 수 있다.
+      (표시 이름: Tiny PDF Editor - 인쇄 도우미)
       설치·업그레이드 전에 종료해 File In Use / Shutting down 실패를 막는다.
     -->
     <util:CloseApplication
       Id="CloseTinyPdfEditor"
       Target="Tiny PDF Editor.exe"
-      Description="Tiny PDF Editor"
+      Description="Tiny PDF Editor (앱 및 인쇄 도우미)"
       CloseMessage="yes"
       EndSessionMessage="yes"
       RebootPrompt="no"

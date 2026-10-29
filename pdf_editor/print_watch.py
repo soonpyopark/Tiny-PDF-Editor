@@ -19,7 +19,7 @@ from pdf_editor.virtual_printer import (
     spool_file,
     watch_lock_file,
 )
-from pdf_editor.version import APP_NAME
+from pdf_editor.version import PRINT_HELPER_DISPLAY_NAME
 
 
 class PrintSpoolWatcher(QObject):
@@ -132,7 +132,8 @@ class _PrintWatchHolder(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle(APP_NAME)
+        # Shown in Files In Use / task manager app list — not the main editor.
+        self.setWindowTitle(PRINT_HELPER_DISPLAY_NAME)
         self.setWindowFlags(
             Qt.WindowType.Tool
             | Qt.WindowType.FramelessWindowHint
@@ -152,6 +153,9 @@ class _PrintWatchHolder(QWidget):
 def run_print_watch_app(app: QApplication) -> int:
     if not printer_is_installed():
         return 0
+    # Keep ApplicationName as APP_NAME for shared QSettings; only the
+    # visible label distinguishes this helper from the main editor.
+    app.setApplicationDisplayName(PRINT_HELPER_DISPLAY_NAME)
     icon = load_app_icon()
     if not icon.isNull():
         app.setWindowIcon(icon)
