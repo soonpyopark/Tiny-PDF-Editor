@@ -2917,6 +2917,25 @@ class PdfDocument:
         self._touch()
         return True
 
+    @staticmethod
+    def _search_hit_display_rect(page, hit: fitz.Quad | fitz.Rect) -> fitz.Rect:
+        """Map MuPDF search geometry into page.rect (on-screen) space.
+
+        PPT→PDF pages often keep content in unrotated mediabox space while
+        ``/Rotate`` makes ``page.rect`` landscape. ``search_for`` then returns
+        boxes that miss the rendered glyphs unless multiplied by
+        ``page.rotation_matrix``.
+        """
+        rotation = int(page.rotation or 0) % 360
+        if isinstance(hit, fitz.Quad):
+            mapped = hit * page.rotation_matrix if rotation else hit
+            rect = mapped.rect
+        else:
+            rect = fitz.Rect(hit)
+            if rotation:
+                rect = rect * page.rotation_matrix
+        return PdfDocument._normalize_rect(rect)
+
     def search_text(self, query: str) -> list[SearchHit]:
         needle = query.strip()
         if not needle:
@@ -2924,8 +2943,13 @@ class PdfDocument:
         hits: list[SearchHit] = []
         for page_index in range(len(self._doc)):
             page = self._doc[page_index]
-            for rect in page.search_for(needle):
-                hits.append(SearchHit(page_index, rect))
+            for quad in page.search_for(needle, quads=True):
+                hits.append(
+                    SearchHit(
+                        page_index,
+                        self._search_hit_display_rect(page, quad),
+                    )
+                )
         return hits
 
     @staticmethod
