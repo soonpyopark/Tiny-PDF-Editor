@@ -380,25 +380,33 @@ class PageNumberDialog(QDialog):
         self._prefix_combo.currentTextChanged.connect(self._update_preview)
         self._suffix_combo.currentTextChanged.connect(self._update_preview)
 
+        # Outer width (spin arrows included) matches 접두사/접미사 combos.
+        field_width = max(
+            self._prefix_combo.minimumWidth(),
+            self._suffix_combo.minimumWidth(),
+        )
+        self._prefix_combo.setFixedWidth(field_width)
+        self._suffix_combo.setFixedWidth(field_width)
+
         page_count = max(1, self._document.page_count)
         self._start_page_spin = QSpinBox()
         self._start_page_spin.setRange(1, page_count)
         self._start_page_spin.setValue(1)
-        self._start_page_spin.setFixedWidth(72)
+        self._start_page_spin.setFixedWidth(field_width)
         self._start_page_spin.valueChanged.connect(self._on_start_page_changed)
         form.addRow("쪽 번호 시작 페이지:", self._start_page_spin)
 
         self._end_page_spin = QSpinBox()
         self._end_page_spin.setRange(1, page_count)
         self._end_page_spin.setValue(page_count)
-        self._end_page_spin.setFixedWidth(72)
+        self._end_page_spin.setFixedWidth(field_width)
         self._end_page_spin.valueChanged.connect(self._on_end_page_changed)
         form.addRow("쪽 번호 끝 페이지:", self._end_page_spin)
 
         self._start_number_spin = QSpinBox()
         self._start_number_spin.setRange(1, 9999)
         self._start_number_spin.setValue(1)
-        self._start_number_spin.setFixedWidth(72)
+        self._start_number_spin.setFixedWidth(field_width)
         self._start_number_spin.valueChanged.connect(self._update_preview)
         form.addRow("시작 번호:", self._start_number_spin)
 
@@ -406,7 +414,7 @@ class PageNumberDialog(QDialog):
         for size in PAGE_NUMBER_SIZES:
             self._size_combo.addItem(str(size), size)
         self._size_combo.setCurrentIndex(PAGE_NUMBER_SIZES.index(DEFAULT_PAGE_NUMBER_SIZE))
-        self._size_combo.setFixedWidth(72)
+        self._size_combo.setFixedWidth(field_width)
         form.addRow("쪽 번호 크기:", self._size_combo)
 
         self._color_btn = self._make_swatch_button("쪽 번호 색상")
