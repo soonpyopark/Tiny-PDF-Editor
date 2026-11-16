@@ -9,6 +9,8 @@
     "neo:restart": "npm --prefix neo-app run dev:restart",
     "neo:stop": "npm --prefix neo-app run dev:stop",
     "build:engine": "npm --prefix neo-app run build:engine",
-    "build:release": "npm --prefix neo-app run build:release"
+    "build:release": "npm --prefix neo-app run build:release",
+    "update:all": "npm --prefix neo-app run update:all",
+    "build:update_all": "npm --prefix neo-app run build:update_all"
   }
 }

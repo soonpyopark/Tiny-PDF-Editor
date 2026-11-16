@@ -16,6 +16,9 @@ NAS4USB 류 앱을 만들 때 쓰는 Electron 기본 프레임. 로그인·회�
 | `npm run dev:stop` | 포트·Electron 프로세스를 모두 정리하고 종료 |
 | `npm run build:release` | Windows MSI + portable zip → `release/` |
 | `npm run build:release:mac` | macOS dmg → `release/` (macOS 에서만 실행 가능) |
+| `npm run update:all` | npm(메이저 포함 `@latest`)·Electron·Python 엔진 패키지 최신화. 옵션: `--skip-git` `--skip-npm` `--skip-python` `--skip-majors` `--build` |
+| `npm run build:update_all` | 최신화 + `build:release` (Windows). `update_all.bat` 으로도 실행 가능 (로그: `.cache/logs/update-all.log`) |
+| `npm run build:update_all:mac` | 최신화 + `build:release:mac` (macOS) |
 
 `npm run check:identity` 는 Default Framework 와 식별자(UpgradeCode·appId·포트 등)가 겹치지 않는지 검사합니다. 두 릴리스 빌드가 시작할 때 자동으로 실행됩니다.
 

@@ -17,6 +17,9 @@
     "build:engine": "node scripts/build-engine.mjs",
     "build:release": "node scripts/build-release.mjs",
     "build:release:mac": "node scripts/build-release-mac.mjs",
+    "update:all": "node scripts/update-all.mjs",
+    "build:update_all": "update_all.bat _inner && npm run build:release",
+    "build:update_all:mac": "node scripts/update-all.mjs && npm run build:release:mac",
     "start": "npm run build && electron .",
     "stamp": "node scripts/sync-build-stamp.mjs"
   },
