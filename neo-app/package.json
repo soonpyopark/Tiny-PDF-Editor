@@ -1,0 +1,94 @@
+{
+  "name": "tiny-pdf-editor-neo-app",
+  "productName": "DefaultFrame",
+  "version": "1.0.0",
+  "description": "Electron + React base frame: login, top bar, settings (general / server / IP allowlist / members / backup), update check, release builds.",
+  "main": "main.js",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "npm run prepare:icons && electron .",
+    "dev:stop": "node scripts/dev-process.mjs stop",
+    "dev:restart": "node scripts/dev-process.mjs restart",
+    "dev:re": "npm run dev:restart",
+    "prepare:icons": "node scripts/prepare-icons.mjs",
+    "build": "npm run prepare:icons && vite build",
+    "build:release": "node scripts/build-release.mjs",
+    "build:release:mac": "node scripts/build-release-mac.mjs",
+    "start": "npm run build && electron .",
+    "stamp": "node scripts/sync-build-stamp.mjs"
+  },
+  "keywords": [
+    "electron",
+    "react",
+    "frame",
+    "boilerplate"
+  ],
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@vitejs/plugin-react": "^6.1.2",
+    "electron": "^44.10.0",
+    "electron-builder": "^26.15.3",
+    "png-to-ico": "^3.0.2",
+    "postcss": "^8.5.31",
+    "rcedit": "^5.0.2",
+    "sharp": "^0.35.5",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.3.4"
+  },
+  "dependencies": {
+    "jszip": "^3.10.2",
+    "node-forge": "^1.4.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "build": {
+    "appId": "com.defaultframe.app",
+    "productName": "DefaultFrame",
+    "icon": "build/icon.png",
+    "directories": {
+      "output": ".dist-build"
+    },
+    "files": [
+      "main.js",
+      "preload.cjs",
+      "electron/**/*",
+      "shared/**/*",
+      "dist/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "identity": null,
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dir"
+        }
+      ]
+    }
+  }
+}

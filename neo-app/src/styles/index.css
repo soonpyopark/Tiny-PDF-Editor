@@ -1,0 +1,68 @@
+@import 'tailwindcss';
+@config '../../tailwind.config.js';
+
+@layer base {
+  /*
+   * Accent theme defaults (환경설정 → 일반 → 테마 색상 overwrites them at runtime).
+   * Values are `r g b` channels so Tailwind's `/opacity` modifiers keep working.
+   * Derived from #57534e (DEFAULT_ACCENT_COLOR) by shared/theme.js — change the palette there.
+   */
+  :root {
+    --app-accent: 87 83 78;
+    --app-accent-hover: 71 68 64;
+    --app-accent-soft: 238 238 237;
+    --app-accent-soft-hover: 225 224 223;
+    --app-accent-border: 196 195 193;
+    --app-accent-text: 48 46 43;
+    --app-sidebar: 25 31 47;
+    --app-sidebar-hover: 57 68 84;
+  }
+
+  html,
+  body,
+  #root {
+    @apply h-full w-full overflow-hidden;
+  }
+
+  body,
+  #root {
+    height: 100dvh;
+  }
+
+  body {
+    @apply bg-app-surface text-slate-800;
+  }
+
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']) {
+    cursor: pointer;
+  }
+}
+
+/* Slim pill scrollbars (Chromium). */
+:root {
+  --app-scroll-thumb: rgb(15 23 42 / 0.28);
+  --app-scroll-thumb-hover: rgb(15 23 42 / 0.46);
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--app-scroll-thumb);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--app-scroll-thumb-hover);
+  background-clip: padding-box;
+}

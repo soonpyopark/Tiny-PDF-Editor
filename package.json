@@ -5,6 +5,10 @@
   "description": "Tiny PDF Editor desktop app",
   "scripts": {
     "dev": "python main.py",
+    "neo:install": "npm --prefix neo-app install",
+    "neo": "npm --prefix neo-app run dev",
+    "neo:restart": "npm --prefix neo-app run dev:restart",
+    "neo:stop": "npm --prefix neo-app run dev:stop",
     "sync-version": "node scripts/sync-version.mjs",
     "build": "node scripts/sync-version.mjs && node scripts/build-dist.mjs",
     "build:dist:exe": "node scripts/sync-version.mjs && node scripts/build-dist.mjs",

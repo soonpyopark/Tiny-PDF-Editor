@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Per-user MSI (no admin rights needed) for the Electron app.
+  Built by scripts/build-release.mjs with:
+    -d AppName=… -d AppId=… -d ExeName=… -d ProductVersion=x.y.z.n -d ProductCode={guid}
+    -d StageDir=<absolute path of the unpacked app> -d InstallerDir=<this folder>
+
+  Mutable state (settings, members, backups) lives in %APPDATA% — never inside
+  the install folder — so upgrades and uninstalls cannot wipe it.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package
+    Name="$(AppName)"
+    Manufacturer="$(AppName)"
+    Version="$(ProductVersion)"
+    ProductCode="$(ProductCode)"
+    UpgradeCode="7C3E5B9A-2D41-4F6E-8A17-5B0D9E2C4F63"
+    Scope="perUser"
+    Compressed="yes">
+
+    <SummaryInformation Description="$(AppName)" />
+
+    <!-- A new ProductCode + AllowSameVersionUpgrades lets every build replace the previous one. -->
+    <MajorUpgrade
+      AllowSameVersionUpgrades="yes"
+      Schedule="afterInstallInitialize"
+      DowngradeErrorMessage="A newer version of $(AppName) is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="AppIcon.ico" SourceFile="$(StageDir)\app-icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+
+    <!-- Keep pinned taskbar shortcuts across MSI upgrades (still remove on uninstall). -->
+    <InstallExecuteSequence>
+      <RemoveShortcuts Condition="Installed AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(InstallerDir)\License.rtf" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLFOLDER" Name="$(AppName)" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="$(AppName)" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder" />
+
+    <Feature Id="ProductFeature" Title="$(AppName)" Level="1">
+      <Files Directory="INSTALLFOLDER" Include="$(StageDir)\**" />
+
+      <Component
+        Id="StartMenuShortcut"
+        Directory="ApplicationProgramsFolder"
+        Guid="2B6F1A44-8C3D-4E57-9A02-71D5C8E3B610">
+        <Shortcut
+          Id="StartMenuShortcutLink"
+          Name="$(AppName)"
+          Description="$(AppName)"
+          Target="[INSTALLFOLDER]$(ExeName)"
+          WorkingDirectory="INSTALLFOLDER"
+          Icon="AppIcon.ico">
+          <!-- Same AUMID as app.setAppUserModelId — required for taskbar pin icon after reboot. -->
+          <ShortcutProperty Key="System.AppUserModel.ID" Value="$(AppId)" />
+        </Shortcut>
+        <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\$(AppName)"
+          Name="StartMenuShortcut"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+
+      <Component
+        Id="DesktopShortcut"
+        Directory="DesktopFolder"
+        Guid="9E0D7C25-4B81-47A9-B3F6-0A52D1C8E974">
+        <Shortcut
+          Id="DesktopShortcutLink"
+          Name="$(AppName)"
+          Description="$(AppName)"
+          Target="[INSTALLFOLDER]$(ExeName)"
+          WorkingDirectory="INSTALLFOLDER"
+          Icon="AppIcon.ico">
+          <ShortcutProperty Key="System.AppUserModel.ID" Value="$(AppId)" />
+        </Shortcut>
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\$(AppName)"
+          Name="DesktopShortcut"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </Feature>
+  </Package>
+</Wix>

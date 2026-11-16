@@ -26,6 +26,7 @@ Tiny PDF Editor - neo/
   scripts/               배포판·아이콘 빌드 스크립트
   ocr/                   OCR 모델 (배포판에 포함)
   tests/                 테스트
+  neo-app/               Neo 화면 (Electron + React 19 + Tailwind CSS 4), 독립 실행 가능
 ```
 
 ## 실행 화면
@@ -252,6 +253,20 @@ python main.py
 
 의존성 (`requirements.txt`): PyMuPDF, PyQt6, openpyxl, ko-pii, numpy, Pillow, onnxruntime.
 OCR 모델 가중치는 배포 빌드 시 `scripts/ensure-ocr-models.mjs`로 받습니다.
+
+### Neo 화면 실행 (neo-app)
+
+이 저장소만으로 Neo 화면을 실행할 수 있습니다. 다른 프로젝트는 필요 없습니다.
+
+```bash
+npm run neo:install   # 최초 1회 (neo-app 의존성 설치)
+npm run neo           # 실행 (Electron 창 + 같은 포트의 개발 서버)
+npm run neo:restart   # 중지 후 재기동
+npm run neo:stop      # 3001 포트 · Electron 정리 후 종료
+```
+
+- 편집 엔진은 이 저장소의 `pdf_editor/engine.py`입니다. 경로는 `neo-app`에서 두 단계 위로 자동으로 잡힙니다.
+- Python은 PyMuPDF가 설치된 64비트 Python을 찾습니다. 직접 지정하려면 환경 변수 `TINY_PDF_PYTHON`을 씁니다.
 
 ### 엔진 프로토콜 (Neo 화면용)
 

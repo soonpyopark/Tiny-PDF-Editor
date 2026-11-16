@@ -14,3 +14,12 @@ __pycache__/
 .venv/
 venv/
 ocr/models/
+
+# Neo 앱 (neo-app) 설치·실행 산출물
+neo-app/node_modules/
+neo-app/dist/
+neo-app/.dist-build/
+neo-app/.dev-userdata/
+neo-app/dev-run.log
+neo-app/data/sessions.json
+neo-app/data/login-audit.json

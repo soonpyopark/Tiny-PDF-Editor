@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.dist-build/
+.dev-userdata/
+release/
+
+# Runtime data (settings, members, backups) — never commit
+data/
+.env
+.env.*
+!.env.example
+
+*.log
+.DS_Store
+Thumbs.db
