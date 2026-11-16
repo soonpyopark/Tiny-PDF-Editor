@@ -1008,6 +1008,19 @@ export function register() {
    * 파일 하나를 PDF로 바꾼다. 렌더러가 한 개씩 부르므로 진행 표시와 중지가 된다.
    * 같은 이름이 있고 덮어쓰기가 아니면 "이름 (2).pdf" 식으로 피한다 (원본 _destination_for).
    */
+  defineApi('pdf.hwpConvertQuick', 'user', async (body) => {
+    const source = String(body?.source || '').trim();
+    if (!source || !isHwpPath(source) || !fs.existsSync(source)) {
+      throw new ApiError('HWP/HWPX 파일을 찾을 수 없습니다.');
+    }
+    // 임시 폴더에 변환 (사용자 상호작용 없음)
+    const tempFolder = os.tmpdir();
+    const stemName = path.basename(source, path.extname(source));
+    const target = uniquePdfPath(tempFolder, stemName);
+    const result = await engineOp({ op: 'hwpConvert', path: source, output: target });
+    return { path: result.path };
+  });
+
   defineApi('pdf.hwpConvertOne', 'user', async (body) => {
     const source = String(body?.source || '').trim();
     if (!source || !isHwpPath(source) || !fs.existsSync(source)) {
