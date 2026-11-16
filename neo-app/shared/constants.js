@@ -11,10 +11,16 @@ export const APP_NAME = 'Tiny PDF Editor - NEO';
  * the AppUserModelID on Start Menu / Desktop shortcuts). Keeps taskbar pins
  * and their icons stable across reboot and upgrades.
  */
-export const APP_ID = 'com.defaultframe.app';
+export const APP_ID = 'com.tinypdfeditor.neo';
 
 /** File-system friendly name used in installer / archive file names. */
-export const APP_FILE_NAME = 'DefaultFrame';
+export const APP_FILE_NAME = 'TinyPDFEditor-NEO';
+
+/**
+ * 이전 이름(템플릿 시절 `DefaultFrame`)의 사용자 데이터 폴더 이름.
+ * 처음 실행할 때 한 번만 새 폴더로 복사한다 (main.js migrateLegacyUserData).
+ */
+export const LEGACY_USER_DATA_NAME = 'DefaultFrame';
 
 /**
  * 앱 표시 버전 (점 구분 4단, 예: `1.0.0.0`). All In One Tools 와 같은 표기 규칙.
@@ -26,7 +32,7 @@ export const APP_VERSION = '1.0.0.0';
  * Package build id (YYMMDD_HHMMSS). Rewritten by `npm run build:release*`
  * (scripts/sync-build-stamp.mjs); matches the suffix of the produced files.
  */
-export const APP_BUILD_STAMP = '261029_165448';
+export const APP_BUILD_STAMP = '261117_000848';
 
 /** Default web server port (Electron window + LAN browsers share it). */
 export const DEFAULT_PORT = 3001;

@@ -162,7 +162,7 @@ export default function ServerSettingsPanel() {
 
   const handleDownloadCa = async () => {
     try {
-      saveBlob(await apiDownload('server.caDownload'), 'DefaultFrame-ca.crt');
+      saveBlob(await apiDownload('server.caDownload'), 'TinyPDFEditor-NEO-ca.crt');
       void reload();
     } catch (err) {
       void dialog.alert({

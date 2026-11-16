@@ -8,8 +8,16 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { BrowserWindow, clipboard, dialog, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, shell } from 'electron';
 import { ApiError, currentWindowId, defineApi } from '../api/registry.js';
+import {
+  disablePrinter,
+  enablePrinter,
+  launcherCommand,
+  launcher as appLauncher,
+  printerInstalled,
+  printerSupported,
+} from '../printService.js';
 
 // neo-app/electron/modules/ 기준 두 단계 위가 Tiny PDF Editor - neo 루트(pdf_editor 패키지가 있는 곳).
 const engineRoot =
@@ -28,8 +36,13 @@ const OPEN_FILTERS_WITH_ALL = [{ name: '전체', extensions: ['*'] }, ...OPEN_FI
 const RECENT_LIMIT = 12;
 const recentPath = path.join(os.homedir(), '.tiny-pdf-editor-neo', 'recent.json');
 
-/** @type {{ cmd: string, prefix: string[] } | null} */
-let pythonCommand = null;
+/**
+ * 엔진을 띄우는 방법.
+ *   - 패키지 앱: resources/engine/tiny-pdf-engine(.exe) (PyInstaller 로 동결, Python 설치 불필요)
+ *   - 개발 실행: 시스템 Python 의 `python -m pdf_editor.engine`
+ * @type {{ cmd: string, prefix: string[], cwd: string, frozen: boolean } | null}
+ */
+let engineCommand = null;
 /**
  * 창(windowId)마다 엔진 자식 프로세스 하나와 요청 큐를 가진다.
  * 한 창의 문서가 다른 창의 문서와 섞이지 않도록 나눈다.
@@ -184,6 +197,32 @@ function passwordMap(raw) {
   );
 }
 
+function frozenEngineExe() {
+  const explicit = String(process.env.TINY_PDF_ENGINE ?? '').trim();
+  if (explicit) return explicit;
+  if (!app.isPackaged) return '';
+  const name = process.platform === 'win32' ? 'tiny-pdf-engine.exe' : 'tiny-pdf-engine';
+  return path.join(process.resourcesPath, 'engine', name);
+}
+
+function resolveEngine() {
+  if (engineCommand) return engineCommand;
+  const frozen = frozenEngineExe();
+  if (frozen) {
+    if (!fs.existsSync(frozen)) {
+      throw new ApiError(`PDF 엔진 파일을 찾지 못했습니다: ${frozen}`);
+    }
+    engineCommand = { cmd: frozen, prefix: [], cwd: path.dirname(frozen), frozen: true };
+    return engineCommand;
+  }
+  const python = resolvePython();
+  engineCommand = { cmd: python.cmd, prefix: python.prefix, cwd: engineRoot, frozen: false };
+  return engineCommand;
+}
+
+/** @type {{ cmd: string, prefix: string[] } | null} */
+let pythonCommand = null;
+
 function resolvePython() {
   if (pythonCommand) return pythonCommand;
   /** @type {{ cmd: string, prefix: string[], probe: string[] }[]} */
@@ -232,16 +271,16 @@ function sessionFor(windowId) {
 
 function ensureEngine(session) {
   if (session.child && !session.child.killed && session.child.exitCode == null) return;
-  const python = resolvePython();
+  const engine = resolveEngine();
   session.stderrTail = '';
-  const child = spawn(python.cmd, [...python.prefix, '-u', '-m', 'pdf_editor.engine'], {
-    cwd: engineRoot,
+  const engineArgs = engine.frozen ? [] : [...engine.prefix, '-u', '-m', 'pdf_editor.engine'];
+  const child = spawn(engine.cmd, engineArgs, {
+    cwd: engine.cwd,
     windowsHide: true,
     env: {
       ...process.env,
       PYTHONIOENCODING: 'utf-8',
       PYTHONUNBUFFERED: '1',
-      QT_QPA_PLATFORM: 'offscreen',
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -388,7 +427,7 @@ async function openPath(filePath, password) {
 export function register() {
   defineApi('pdf.status', 'user', async () => {
     try {
-      resolvePython();
+      resolveEngine();
       await engineOp({ op: 'ping' });
       // 시작 시 빈 문서 탭을 만들지 판단하려고 현재 문서 상태를 함께 돌려준다.
       const info = await engineOp({ op: 'info' });
@@ -1202,12 +1241,31 @@ export function register() {
     });
   });
 
-  defineApi('pdf.assocStatus', 'user', async () => engineOp({ op: 'assocStatus' }));
+  // 파일 연결은 엔진이 아니라 이 앱(Neo) 실행 파일을 가리켜야 하므로 실행 명령을 함께 넘긴다.
+  const assocLauncher = () => ({ exe: appLauncher().exe, command: launcherCommand() });
+  defineApi('pdf.assocStatus', 'user', async () => engineOp({ op: 'assocStatus', launcher: assocLauncher() }));
   defineApi('pdf.assocRegister', 'user', async (body) =>
-    engineOp({ op: 'assocRegister', openSettings: Boolean(body?.openSettings ?? true) }),
+    engineOp({
+      op: 'assocRegister',
+      openSettings: Boolean(body?.openSettings ?? true),
+      launcher: assocLauncher(),
+    }),
   );
-  defineApi('pdf.assocUnregister', 'user', async () => engineOp({ op: 'assocUnregister' }));
-  defineApi('pdf.printerStatus', 'user', async () => engineOp({ op: 'printerStatus' }));
-  defineApi('pdf.printerInstall', 'user', async () => engineOp({ op: 'printerInstall' }));
-  defineApi('pdf.printerUninstall', 'user', async () => engineOp({ op: 'printerUninstall' }));
+  defineApi('pdf.assocUnregister', 'user', async () =>
+    engineOp({ op: 'assocUnregister', launcher: assocLauncher() }),
+  );
+
+  // 가상 프린터: 설치·제거·감시 등록은 엔진(Python) 없이 앱이 직접 한다. (printService.js)
+  defineApi('pdf.printerStatus', 'user', async () => ({
+    supported: printerSupported(),
+    installed: printerSupported() ? printerInstalled() : false,
+  }));
+  defineApi('pdf.printerInstall', 'user', async () => {
+    await enablePrinter();
+    return { installed: true };
+  });
+  defineApi('pdf.printerUninstall', 'user', async () => {
+    await disablePrinter();
+    return { installed: false };
+  });
 }

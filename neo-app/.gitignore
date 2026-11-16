@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .dist-build/
+.engine-build/
 .dev-userdata/
 release/
 

@@ -31,7 +31,24 @@ def _winreg() -> Any:
     return winreg
 
 
+# 엔진이 별도 프로세스로 돌 때 sys.executable 은 엔진 실행 파일이다.
+# 연결해야 할 대상은 그 엔진을 띄운 앱(Neo)이므로, 앱이 넘겨 준 실행 파일/명령을 쓴다.
+_launcher_exe: Path | None = None
+_launcher_command: str | None = None
+
+
+def set_launcher(exe: str | None, command: str | None = None) -> None:
+    """Point the association at the host app instead of this process."""
+    global _launcher_exe, _launcher_command
+    raw = str(exe or "").strip()
+    _launcher_exe = Path(raw) if raw else None
+    prefix = str(command or "").strip()
+    _launcher_command = prefix or None
+
+
 def exe_path() -> Path:
+    if _launcher_exe is not None:
+        return _launcher_exe
     return Path(sys.executable).resolve()
 
 
@@ -44,7 +61,8 @@ def _applications_key() -> str:
 
 
 def _open_command() -> str:
-    return f'"{exe_path()}" "%1"'
+    prefix = _launcher_command or f'"{exe_path()}"'
+    return f'{prefix} "%1"'
 
 
 def _default_icon_value() -> str:

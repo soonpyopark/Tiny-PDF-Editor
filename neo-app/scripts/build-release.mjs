@@ -3,8 +3,10 @@
  * npm run build:release  (Windows)
  *
  * One build, one stamp, two artifacts in release/:
- *   DefaultFrame_<YYMMDD_HHMMSS>_<arch>.msi            per-user installer
- *   DefaultFrame_portable_<YYMMDD_HHMMSS>_<arch>.zip   unzip-and-run (data beside the exe)
+ *   TinyPDFEditor-NEO_<YYMMDD_HHMMSS>_<arch>.msi            per-user installer
+ *   TinyPDFEditor-NEO_portable_<YYMMDD_HHMMSS>_<arch>.zip   unzip-and-run (data beside the exe)
+ *
+ * The PDF engine (Python) is frozen first (scripts/build-engine.mjs) and shipped in resources/engine.
  *
  * Needs WiX CLI 4+ (winget install WiXToolset.WiXCLI; wix extension add -g WixToolset.UI.wixext).
  */
@@ -13,6 +15,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { APP_ID } from '../shared/constants.js';
+import { buildEngine } from './build-engine.mjs';
 import {
   APP_FILE_NAME,
   APP_NAME,
@@ -29,6 +32,17 @@ import {
 } from './build-common.mjs';
 
 const log = (message) => console.log(`[release] ${message}`);
+
+/** electron-builder 가 만든 메인 exe 이름 (package.json build.productName). */
+const PRODUCT_NAME = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')).build.productName;
+
+function findMainExe(dir) {
+  const names = fs.readdirSync(dir);
+  return (
+    names.find((name) => name === `${PRODUCT_NAME}.exe`) ??
+    names.find((name) => name.toLowerCase().endsWith('.exe') && !/uninstall|crashpad/i.test(name))
+  );
+}
 
 function resolveWix() {
   const probe = (command) => spawnSync(command, ['--version'], { encoding: 'utf8' }).status === 0;
@@ -75,7 +89,7 @@ function buildPortableZip(unpackedDir, suffix) {
       '='.repeat(24),
       '',
       `1. 이 폴더 전체를 원하는 위치(USB 등)에 복사합니다.`,
-      `2. ${APP_FILE_NAME}.exe 를 실행합니다.`,
+      `2. ${PRODUCT_NAME}.exe 를 실행합니다.`,
       `3. 설정·회원·백업은 이 폴더의 data/ 에 저장됩니다. (폴더를 통째로 옮기면 그대로 따라갑니다)`,
       `4. 기본 로그인: admin / admin1234  (최초 로그인 후 변경하세요)`,
       `5. LAN 접속은 환경설정 → 서버 관리 에서 허용합니다. (Windows 방화벽 허용이 필요할 수 있음)`,
@@ -98,11 +112,7 @@ async function stampWindowsExe(unpackedDir) {
     log('stampWindowsExe: build/icon.ico missing — skipped');
     return;
   }
-  const exeName =
-    fs.readdirSync(unpackedDir).find((name) => name === `${APP_FILE_NAME}.exe`) ??
-    fs
-      .readdirSync(unpackedDir)
-      .find((name) => name.toLowerCase().endsWith('.exe') && !/uninstall|crashpad/i.test(name));
+  const exeName = findMainExe(unpackedDir);
   if (!exeName) {
     log('stampWindowsExe: main exe not found — skipped');
     return;
@@ -128,10 +138,7 @@ function buildMsi(unpackedDir, suffix) {
   fs.cpSync(unpackedDir, stage, { recursive: true });
   fs.copyFileSync(path.join(projectRoot, 'build', 'icon.ico'), path.join(stage, 'app-icon.ico'));
 
-  const exeName = fs
-    .readdirSync(stage)
-    .find((name) => name === `${APP_FILE_NAME}.exe`) ??
-    fs.readdirSync(stage).find((name) => name.toLowerCase().endsWith('.exe') && !/uninstall|crashpad/i.test(name));
+  const exeName = findMainExe(stage);
   if (!exeName) throw new Error(`Main executable not found in ${stage}`);
 
   const outPath = path.join(RELEASE_DIR, `${APP_FILE_NAME}${suffix}.msi`);
@@ -149,6 +156,7 @@ function buildMsi(unpackedDir, suffix) {
     '-d', `StageDir=${stage}`,
     '-d', `InstallerDir=${path.join(projectRoot, 'installer')}`,
     '-ext', 'WixToolset.UI.wixext',
+    '-ext', 'WixToolset.Util.wixext',
     '-o', outPath,
   ];
   log(`> wix ${args.join(' ')}`);
@@ -172,6 +180,8 @@ async function main() {
 
   ensureDir(RELEASE_DIR);
   buildRenderer();
+  // 사용자 PC 에 Python 이 없어도 되도록 엔진을 동결해 resources/engine 으로 싣는다.
+  buildEngine();
 
   const unpackedRoot = path.join(STAGING_DIR, 'release');
   packageElectron('win', arch, unpackedRoot);

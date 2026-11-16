@@ -9,7 +9,8 @@
   the install folder — so upgrades and uninstalls cannot wipe it.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Package
     Name="$(AppName)"
     Manufacturer="$(AppName)"
@@ -31,9 +32,35 @@
     <Icon Id="AppIcon.ico" SourceFile="$(StageDir)\app-icon.ico" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
 
+    <!--
+      The print watcher (print-watch.mjs, ELECTRON_RUN_AS_NODE) deliberately outlives the app so
+      printing keeps working while the app is closed. It runs from this exe, so an upgrade or
+      uninstall must stop it (and the app) first, otherwise the files are "in use".
+      CloseMessage asks the app nicely first; TerminateProcess ends whatever is left (the
+      windowless watcher has no window to ask).
+    -->
+    <util:CloseApplication
+      Id="CloseApp"
+      Target="$(ExeName)"
+      CloseMessage="yes"
+      RebootPrompt="no"
+      TerminateProcess="0" />
+
+    <!--
+      After install/upgrade restart the watcher right away, so printing works before the next
+      login. It exits by itself when the virtual printer is not installed (fresh install: the
+      app installs the printer on first launch).
+    -->
+    <CustomAction
+      Id="LaunchPrintWatch"
+      Directory="INSTALLFOLDER"
+      ExeCommand="&quot;[INSTALLFOLDER]$(ExeName)&quot; --print-watch"
+      Return="asyncNoWait" />
+
     <!-- Keep pinned taskbar shortcuts across MSI upgrades (still remove on uninstall). -->
     <InstallExecuteSequence>
       <RemoveShortcuts Condition="Installed AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="LaunchPrintWatch" After="InstallFinalize" Condition="NOT REMOVE" />
     </InstallExecuteSequence>
 
     <ui:WixUI Id="WixUI_Minimal" />

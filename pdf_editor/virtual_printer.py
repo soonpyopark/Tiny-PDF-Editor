@@ -132,7 +132,7 @@ def set_watch_at_logon(enabled: bool) -> None:
         winreg.CloseKey(key)
 
 
-def install_virtual_printer(*, with_cups: bool = False) -> None:
+def install_virtual_printer(*, with_cups: bool = False, manage_logon: bool = True) -> None:
     if is_macos():
         from pdf_editor.macos_virtual_printer import (
             install_virtual_printer as mac_install,
@@ -169,10 +169,12 @@ Add-Printer -Name $name -DriverName $driver -PortName $port
         )
     # 로그인 시 백그라운드 감시만 등록한다.
     # launch_watch_if_needed()는 앱 UI 경로(_ensure_virtual_printer)에서 한다.
-    set_watch_at_logon(True)
+    # manage_logon=False: Run 키는 이 프로세스(엔진)가 아니라 호스트 앱(Neo)이 직접 쓴다.
+    if manage_logon:
+        set_watch_at_logon(True)
 
 
-def uninstall_virtual_printer() -> None:
+def uninstall_virtual_printer(*, manage_logon: bool = True) -> None:
     if is_macos():
         from pdf_editor.macos_virtual_printer import (
             uninstall_virtual_printer as mac_uninstall,
@@ -197,7 +199,8 @@ if ($portObj) {{
 }}
 """
     _run_powershell(script)
-    set_watch_at_logon(False)
+    if manage_logon:
+        set_watch_at_logon(False)
 
 
 def next_output_pdf() -> Path:

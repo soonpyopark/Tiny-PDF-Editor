@@ -29,4 +29,14 @@ contextBridge.exposeInMainWorld('frame', {
     return () => ipcRenderer.removeListener('frame:closeRequest', listener);
   },
   respondClose: (proceed) => ipcRenderer.send('frame:closeResponse', proceed === true),
+  /**
+   * 앱 밖에서 넘어온 파일(인쇄 PDF, 연결 프로그램으로 연 파일)을 받는다.
+   * 구독하면 준비됐다고 메인에 알리고, 그동안 쌓인 경로도 이어서 받는다.
+   */
+  onOpenPaths: (handler) => {
+    const listener = (_event, paths) => handler(Array.isArray(paths) ? paths : []);
+    ipcRenderer.on('frame:openPaths', listener);
+    ipcRenderer.send('frame:openPathsReady');
+    return () => ipcRenderer.removeListener('frame:openPaths', listener);
+  },
 });

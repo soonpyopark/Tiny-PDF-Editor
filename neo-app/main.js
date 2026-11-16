@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { APP_ID, APP_NAME } from './shared/constants.js';
+import { APP_ID, APP_NAME, LEGACY_USER_DATA_NAME } from './shared/constants.js';
 import { registerCoreApi } from './electron/api/coreApi.js';
 import { startBackupScheduler, stopBackupScheduler } from './electron/backupService.js';
 import { setAppContext } from './electron/context.js';
@@ -12,6 +12,14 @@ import { createServerManager } from './electron/httpServer.js';
 import { ensureBootstrapAdmin } from './electron/membersService.js';
 import { registerModules } from './electron/modules/index.js';
 import { disposeEngineSession } from './electron/modules/pdf.js';
+import {
+  WATCH_FLAG,
+  ensurePrintService,
+  handOffToLightWatcher,
+  keepWatchAfterQuit,
+  pathsFromArgv,
+  watchInProcess,
+} from './electron/printService.js';
 import { runtime } from './electron/runtime.js';
 import { getSettings } from './electron/settingsService.js';
 import { createSplashWindow, registerSplashIpc, toggleAboutSplash } from './electron/splash.js';
@@ -25,6 +33,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 for (const stream of [process.stdout, process.stderr]) stream?.on?.('error', () => undefined);
 
 const isDev = !app.isPackaged;
+
+// 테스트·진단 전용: 원격 디버깅 포트를 연다. 평소에는 설정하지 않는다.
+if (process.env.TINY_DEBUG_PORT) {
+  app.commandLine.appendSwitch('remote-debugging-port', String(process.env.TINY_DEBUG_PORT));
+}
 
 // Must run before any window / Jump List work so pinned taskbar icons keep the
 // same identity (and icon) after reboot. Matches MSI ShortcutProperty AUMID.
@@ -55,6 +68,8 @@ function resolveStorage() {
     app.setPath('userData', path.join(exeDir, 'data-cache'));
   }
 
+  if (!override && !isDev && !portable) migrateLegacyUserData();
+
   const stateRoot = override
     ? path.resolve(override)
     : isDev
@@ -64,6 +79,23 @@ function resolveStorage() {
         : path.join(app.getPath('userData'), 'data');
 
   return { stateRoot, portable, exeDir };
+}
+
+/**
+ * 앱 이름이 바뀌어도(`DefaultFrame` → 지금 이름) 설정·회원·백업이 사라지지 않게
+ * 이전 userData 의 data 폴더를 새 위치로 한 번만 복사한다. 이전 폴더는 지우지 않는다.
+ */
+function migrateLegacyUserData() {
+  try {
+    const target = path.join(app.getPath('userData'), 'data');
+    const legacy = path.join(app.getPath('appData'), LEGACY_USER_DATA_NAME, 'data');
+    if (fs.existsSync(target) || !fs.existsSync(legacy)) return;
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.cpSync(legacy, target, { recursive: true });
+    console.log('[migrate] copied legacy data:', legacy, '->', target);
+  } catch (err) {
+    console.warn('[migrate] legacy data copy failed:', err);
+  }
 }
 
 const storage = resolveStorage();
@@ -100,20 +132,39 @@ let splash = null;
 /** 문서 창이 같은 앱 서버를 가리키도록 기본 주소를 기억한다. */
 let appUrlBase = '';
 
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
-  app.whenReady().then(() => {
-    dialog.showMessageBoxSync({
-      type: 'info',
-      title: APP_NAME,
-      message: '프로그램이 이미 실행 중입니다.',
-      buttons: ['확인'],
-    });
-    app.exit(0);
-  });
+/**
+ * `<앱> --print-watch` — 로그인 Run 키가 띄우는 모드. 창도 단일 인스턴스 락도 쓰지 않는다.
+ * 인쇄 감시는 가벼운 Node 프로세스(print-watch.mjs)가 맡고, 이 프로세스는 곧바로 끝난다.
+ */
+const printWatchMode = process.argv.includes(WATCH_FLAG);
+
+const gotLock = printWatchMode ? true : app.requestSingleInstanceLock();
+if (printWatchMode) {
+  app.whenReady().then(runPrintWatchMode).catch(() => app.exit(1));
+} else if (!gotLock) {
+  // 이미 실행 중인 앱이 second-instance 로 이 프로세스의 인자(열 파일 경로)를 받는다.
+  // 인쇄·파일 열기 때마다 뜨는 일이므로 대화상자 없이 조용히 끝낸다.
+  app.exit(0);
 } else {
-  app.on('second-instance', focusMainWindow);
+  app.on('second-instance', (_event, argv, workingDirectory) => {
+    focusMainWindow();
+    deliverExternalPaths(pathsFromArgv(argv, workingDirectory));
+  });
+  // macOS: Finder/Dock 으로 파일을 열면 open-file 이 온다.
+  app.on('open-file', (event, filePath) => {
+    event.preventDefault();
+    deliverExternalPaths([filePath]);
+  });
   app.whenReady().then(boot).catch(fatal);
+}
+
+function runPrintWatchMode() {
+  if (handOffToLightWatcher()) {
+    app.exit(0);
+    return;
+  }
+  // 가벼운 감시자를 못 띄우면 이 프로세스가 직접 감시한다 (인쇄 경로를 포기하지 않는다).
+  watchInProcess();
 }
 
 function focusMainWindow() {
@@ -121,6 +172,31 @@ function focusMainWindow() {
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
+}
+
+/* -------------------------------------------------------------------------- */
+/* 외부에서 넘어온 파일 (인쇄 PDF, 더블클릭/연결 프로그램, 명령줄)           */
+/* -------------------------------------------------------------------------- */
+
+/** 렌더러가 받을 준비가 되기 전에 온 경로를 잠시 쌓아 둔다. */
+/** @type {string[]} */
+const pendingOpenPaths = [];
+/** 메인 창 렌더러가 frame:openPaths 를 받을 준비가 됐는지. */
+let rendererOpenReady = false;
+
+/** @param {string[]} paths */
+function deliverExternalPaths(paths) {
+  const list = paths.filter((item) => typeof item === 'string' && item);
+  if (!list.length) return;
+  console.log('[open] external paths:', list.join(' | '));
+  pendingOpenPaths.push(...list);
+  flushOpenPaths();
+}
+
+function flushOpenPaths() {
+  if (!rendererOpenReady || !mainWindow || mainWindow.isDestroyed()) return;
+  const batch = pendingOpenPaths.splice(0);
+  if (batch.length) mainWindow.webContents.send('frame:openPaths', batch);
 }
 
 /** @param {unknown} error */
@@ -183,7 +259,11 @@ async function boot() {
   setupMenu();
   registerIpc();
   appUrlBase = info.appUrl;
-  createMainWindow(info.appUrl);
+  // 시작 인자(인쇄 PDF, 연결 프로그램으로 연 파일)의 첫 경로는 창 주소로, 나머지는 준비 뒤 전달한다.
+  const startupPaths = pathsFromArgv(process.argv);
+  createMainWindow(info.appUrl, startupPaths[0] ?? '');
+  if (startupPaths.length > 1) deliverExternalPaths(startupPaths.slice(1));
+  if (startupPaths.length) console.log('[open] startup paths:', startupPaths.join(' | '));
   trayController = createTrayController({
     resolveIconPath,
     getMainWindow: () => mainWindow,
@@ -192,6 +272,8 @@ async function boot() {
   });
   trayController.create();
   startBackupScheduler();
+  // 가상 프린터 + 백그라운드 인쇄 감시. 창이 뜬 뒤에 하므로 시작 속도에 영향이 없다.
+  void ensurePrintService().catch((err) => console.warn('[print] ensure failed:', err));
 
   app.on('activate', () => {
     focusMainWindow();
@@ -226,9 +308,18 @@ function openExternalSafe(url) {
   if (/^(https?:|mailto:)/i.test(url)) void shell.openExternal(url);
 }
 
-/** @param {string} appUrl */
-function createMainWindow(appUrl) {
-  mainWindow = createAppWindow(appUrl, { main: true, windowId: 'main' });
+/**
+ * @param {string} appUrl
+ * @param {string} [openPath] 시작할 때 바로 열 파일
+ */
+function createMainWindow(appUrl, openPath = '') {
+  let url = appUrl;
+  if (openPath) {
+    const parsed = new URL(appUrl);
+    parsed.searchParams.set('open', openPath);
+    url = parsed.toString();
+  }
+  mainWindow = createAppWindow(url, { main: true, windowId: 'main' });
 }
 
 /**
@@ -346,6 +437,8 @@ function createAppWindow(appUrl, { main, windowId }) {
     if (main) {
       if (closeReason) console.log('[close-debug] renderer reloaded, drop pending close =', closeReason);
       closeReason = null;
+      // 새로 로드되는 렌더러는 다시 준비 신호를 보낼 때까지 경로를 받을 수 없다.
+      rendererOpenReady = false;
       return;
     }
     const waiter = pendingDocCloseWaiters.get(webContentsId);
@@ -557,6 +650,13 @@ function registerIpc() {
   ipcMain.handle('frame:showAboutSplash', () => toggleAboutSplash({ iconPath: resolveIconPath() }));
   registerSplashIpc();
 
+  /** 메인 창 렌더러가 frame:openPaths 를 받을 준비를 마쳤다. 쌓아 둔 경로를 보낸다. */
+  ipcMain.on('frame:openPathsReady', (event) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return;
+    rendererOpenReady = true;
+    flushOpenPaths();
+  });
+
   /** 보기 > 새 창으로 열기: 파일 경로를 가진 새 문서 창을 연다. */
   ipcMain.handle('frame:openDocumentWindow', (_event, filePath) =>
     openDocumentWindow(String(filePath ?? '').trim()),
@@ -593,6 +693,8 @@ app.on('before-quit', (event) => {
   stopBackupScheduler();
   trayController?.destroy();
   trayController = null;
+  // 앱을 끈 직후에도 인쇄 PDF 가 열리도록 백그라운드 감시자가 살아 있게 한다.
+  keepWatchAfterQuit();
   if (!serverManager) return;
 
   // Release the port before the process exits.

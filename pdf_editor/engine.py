@@ -129,6 +129,15 @@ def _prepare_signature(data: bytes) -> tuple[bytes, int, int]:
     return buf.getvalue(), int(width), int(height)
 
 
+def _apply_launcher(req: dict[str, Any]) -> None:
+    """파일 연결 대상을 엔진이 아니라 앱(Neo) 실행 파일로 맞춘다."""
+    from pdf_editor.windows_file_assoc import set_launcher
+
+    launcher = req.get("launcher")
+    if isinstance(launcher, dict):
+        set_launcher(launcher.get("exe"), launcher.get("command"))
+
+
 def _rect_list(rect: fitz.Rect) -> list[float]:
     return [float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)]
 
@@ -895,10 +904,12 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
     if op == "assocStatus":
         from pdf_editor.windows_file_assoc import is_pdf_association_registered, is_windows
 
+        _apply_launcher(req)
         return opened, {"windows": is_windows(), "registered": is_pdf_association_registered()}
     if op == "assocRegister":
         from pdf_editor.windows_file_assoc import open_pdf_default_apps_settings, register_pdf_association
 
+        _apply_launcher(req)
         register_pdf_association()
         if req.get("openSettings"):
             open_pdf_default_apps_settings()
@@ -906,6 +917,7 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
     if op == "assocUnregister":
         from pdf_editor.windows_file_assoc import unregister_pdf_association
 
+        _apply_launcher(req)
         unregister_pdf_association()
         return opened, {"registered": False}
     if op == "printerStatus":
@@ -916,16 +928,15 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
             "installed": printer_is_installed() if supports_virtual_printer() else False,
         }
     if op == "printerInstall":
-        from pdf_editor.virtual_printer import install_virtual_printer, set_watch_at_logon
+        from pdf_editor.virtual_printer import install_virtual_printer
 
-        install_virtual_printer()
-        set_watch_at_logon(True)
+        # 로그인 감시(Run 키)는 호스트 앱(Neo)이 자기 실행 파일로 직접 등록한다.
+        install_virtual_printer(manage_logon=False)
         return opened, {"installed": True}
     if op == "printerUninstall":
-        from pdf_editor.virtual_printer import set_watch_at_logon, uninstall_virtual_printer
+        from pdf_editor.virtual_printer import uninstall_virtual_printer
 
-        uninstall_virtual_printer()
-        set_watch_at_logon(False)
+        uninstall_virtual_printer(manage_logon=False)
         return opened, {"installed": False}
     if op == "pageRect":
         _require_open(opened)

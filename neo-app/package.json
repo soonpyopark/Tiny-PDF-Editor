@@ -1,8 +1,8 @@
 {
   "name": "tiny-pdf-editor-neo-app",
-  "productName": "DefaultFrame",
+  "productName": "Tiny PDF Editor - NEO",
   "version": "1.0.0",
-  "description": "Electron + React base frame: login, top bar, settings (general / server / IP allowlist / members / backup), update check, release builds.",
+  "description": "Tiny PDF Editor NEO: Electron + React UI over a bundled Python PDF engine, with a virtual PDF printer.",
   "main": "main.js",
   "type": "module",
   "private": true,
@@ -13,6 +13,7 @@
     "dev:re": "npm run dev:restart",
     "prepare:icons": "node scripts/prepare-icons.mjs",
     "build": "npm run prepare:icons && vite build",
+    "build:engine": "node scripts/build-engine.mjs",
     "build:release": "node scripts/build-release.mjs",
     "build:release:mac": "node scripts/build-release-mac.mjs",
     "start": "npm run build && electron .",
@@ -44,8 +45,8 @@
     "react-dom": "^19.3.1"
   },
   "build": {
-    "appId": "com.defaultframe.app",
-    "productName": "DefaultFrame",
+    "appId": "com.tinypdfeditor.neo",
+    "productName": "Tiny PDF Editor - NEO",
     "icon": "build/icon.png",
     "directories": {
       "output": ".dist-build"
@@ -67,6 +68,14 @@
       {
         "from": "build/icon.ico",
         "to": "icon.ico"
+      },
+      {
+        "from": ".engine-build/dist/tiny-pdf-engine",
+        "to": "engine"
+      },
+      {
+        "from": "electron/print",
+        "to": "print"
       }
     ],
     "win": {

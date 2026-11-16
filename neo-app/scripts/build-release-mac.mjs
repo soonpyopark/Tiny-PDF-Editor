@@ -2,7 +2,7 @@
 /**
  * npm run build:release:mac  (macOS only)
  *
- * Produces release/DefaultFrame_<YYMMDD_HHMMSS>_<arch>.dmg
+ * Produces release/TinyPDFEditor-NEO_<YYMMDD_HHMMSS>_<arch>.dmg
  * (arch = this Mac's architecture: arm64 on Apple Silicon, x64 on Intel).
  *
  * The app is ad-hoc signed (`codesign --sign -`): enough to launch on Apple

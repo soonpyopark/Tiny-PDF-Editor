@@ -126,7 +126,7 @@ function windowIndices(center, facingMode, count) {
  *   initialPath?: string,
  *   onDocChange?: (tabKey: string, state: { name: string, open: boolean, modified: boolean, fullscreen: boolean }) => void,
  *   onOpenInNewTab?: (filePath: string) => void,
- *   onRegisterControls?: (tabKey: string, controls: { confirmClose: () => Promise<boolean>, closeDoc: () => void } | null) => void,
+ *   onRegisterControls?: (tabKey: string, controls: { confirmClose: () => Promise<boolean>, closeDoc: () => void, openPath: (filePath: string) => Promise<void> } | null) => void,
  * }} props
  */
 export default function EditorPage({
@@ -1397,11 +1397,15 @@ export default function EditorPage({
   // 창 닫기 요청은 DocumentTabs 가 모든 탭을 차례로 확인한 뒤 처리한다. 여기서는 이 탭의 확인 함수만 등록한다.
   const closeDocRef = useRef(null);
   closeDocRef.current = closeDoc;
+  // 앱 밖에서 넘어온 파일도 메뉴의 '열기'와 같은 라우팅(빈 문서면 여기, 아니면 새 창/새 탭)을 탄다.
+  const openFileTargetRef = useRef(null);
+  openFileTargetRef.current = openFileTarget;
   useEffect(() => {
     if (!onRegisterControls) return undefined;
     onRegisterControls(tabKey, {
       confirmClose: () => confirmCloseRef.current(),
       closeDoc: () => closeDocRef.current?.(),
+      openPath: (filePath) => openFileTargetRef.current?.(filePath),
     });
     return () => onRegisterControls(tabKey, null);
     // eslint-disable-next-line react-hooks/exhaustive-deps

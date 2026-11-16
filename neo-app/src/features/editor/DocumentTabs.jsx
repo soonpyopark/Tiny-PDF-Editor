@@ -133,6 +133,27 @@ export default function DocumentTabs() {
     });
   }, []);
 
+  // 앱 밖에서 넘어온 파일(인쇄 PDF, 연결 프로그램으로 연 파일): 활성 탭의 열기 라우팅에 맡긴다.
+  // 빈 문서면 그 자리에, 아니면 설정에 따라 새 창/새 탭으로 열린다. 여러 개면 차례로 연다.
+  useEffect(() => {
+    const frame = window.frame;
+    if (!frame?.onOpenPaths) return undefined;
+    let chain = Promise.resolve();
+    return frame.onOpenPaths((paths) => {
+      chain = chain.then(async () => {
+        for (const filePath of paths) {
+          try {
+            await controlsRef.current.get(activeRef.current)?.openPath(filePath);
+          } catch {
+            // 한 파일이 실패해도 나머지는 계속 연다.
+          }
+          // 새 탭이 활성 탭으로 바뀔 시간을 준 뒤 다음 파일로 간다.
+          await new Promise((resolve) => setTimeout(resolve, 80));
+        }
+      });
+    });
+  }, []);
+
   // 전체화면에서는 탭 줄을 숨긴다 (원본: tabBar().hide()). 탭 아래 본문만 보인다.
   const fullscreen = useFullscreen();
 
