@@ -19,7 +19,6 @@ const PYI_DIST = path.join(BUILD_DIR, "pyinstaller-dist");
 const PYI_WORK = path.join(BUILD_DIR, "pyinstaller-work");
 const MANIFEST_PATH = path.join(BUILD_DIR, "latest-release.json");
 const BRANDING_DIR = path.join(ROOT, "pdf_editor", "branding");
-const SOURCE_LOGO = path.join(ROOT, "assets", "source_logo.png");
 const APP_ICON = path.join(BRANDING_DIR, "app_icon.ico");
 const PDF_FILE_ICON = path.join(BRANDING_DIR, "pdf_file_icon.ico");
 const APP_LOGO = path.join(BRANDING_DIR, "app_logo.png");

@@ -151,6 +151,11 @@ def format_file_size(num_bytes: int) -> str:
     return f"{num_bytes / 1024:.0f} KB"
 
 
+# 본문 오른쪽 경계(세로 선)를 넘는 선택 사각형을 잘라낼 최대 초과폭(pt).
+# 이보다 크게 넘는 것은 본문 밖의 실제 내용일 수 있어 건드리지 않는다.
+_BODY_EDGE_TRIM_PT = 24.0
+
+
 class PdfDocument:
     """In-memory PDF with page insert, delete, rotate, and export operations."""
 
@@ -1808,6 +1813,41 @@ class PdfDocument:
         return (int(round(PdfDocument._word_visual_y(word) / 6.0)), 0)
 
     @staticmethod
+    def _drop_detached_words(words: list) -> list:
+        """Remove words split off from their line by a wide horizontal gap.
+
+        OCR layers often carry stray marks or margin noise on the same visual row
+        as body text. Line selection would stretch over them, so a word cluster
+        separated by more than about two word heights from the line's main text
+        is treated as not part of the selectable text.
+        """
+        if len(words) < 2:
+            return list(words)
+        rows: dict[tuple[int, int], list] = {}
+        for word in words:
+            rows.setdefault(PdfDocument._word_line_id(word), []).append(word)
+        detached: set[int] = set()
+        for row in rows.values():
+            if len(row) < 2:
+                continue
+            row.sort(key=lambda item: float(item[0]))
+            heights = sorted(float(item[3] - item[1]) for item in row)
+            threshold = max(heights[len(heights) // 2] * 2.0, 1.0)
+            clusters: list[list] = [[row[0]]]
+            for prev, cur in zip(row, row[1:]):
+                if float(cur[0]) - float(prev[2]) > threshold:
+                    clusters.append([cur])
+                else:
+                    clusters[-1].append(cur)
+            if len(clusters) < 2:
+                continue
+            main = max(clusters, key=lambda c: sum(len(str(item[4])) for item in c))
+            for cluster in clusters:
+                if cluster is not main:
+                    detached.update(id(item) for item in cluster)
+        return [word for word in words if id(word) not in detached]
+
+    @staticmethod
     def _word_sort_key(word) -> tuple[int, float, int]:
         return (
             int(round(PdfDocument._word_visual_y(word) / 6.0)),
@@ -1944,7 +1984,43 @@ class PdfDocument:
         )
 
     @staticmethod
-    def _markup_quads_from_words(words: list) -> list[fitz.Quad]:
+    def _body_column_right(words: list) -> float | None:
+        """Right edge of the body text column, from line ends of the page's words.
+
+        Uses the 90th percentile of the line-end x of lines with 3+ words, so one
+        short or stray line does not decide the edge. Returns None if too few lines.
+        """
+        rows: dict[tuple[int, int], list] = {}
+        for word in words:
+            rows.setdefault(PdfDocument._word_line_id(word), []).append(word)
+        ends = sorted(
+            max(float(item[2]) for item in row)
+            for row in rows.values()
+            if len(row) >= 3
+        )
+        if len(ends) < 3:
+            return None
+        return ends[int(0.9 * (len(ends) - 1))]
+
+    @staticmethod
+    def _page_body_right(page) -> float | None:
+        return PdfDocument._body_column_right(PdfDocument._drop_detached_words(page.get_text("words")))
+
+    @staticmethod
+    def _clip_quad_right(x0: float, x1: float, clip_right: float | None) -> float:
+        """Trim a word's right edge to the body column when it only overshoots slightly.
+
+        OCR word boxes can run a little past the visible text. A large overshoot is
+        left alone so real wide content is never cut.
+        """
+        if clip_right is None or x1 <= clip_right:
+            return x1
+        if x1 - clip_right > _BODY_EDGE_TRIM_PT:
+            return x1
+        return max(x0, clip_right)
+
+    @staticmethod
+    def _markup_quads_from_words(words: list, clip_right: float | None = None) -> list[fitz.Quad]:
         """Build highlight quads as one continuous band per text line.
 
         Per-word boxes leave vertical gaps and jagged top/bottom edges; merging
@@ -1962,7 +2038,9 @@ class PdfDocument:
                 return
             x0 = min(word[0] for word in words_on_line)
             y0 = min(word[1] for word in words_on_line)
-            x1 = max(word[2] for word in words_on_line)
+            x1 = PdfDocument._clip_quad_right(
+                x0, max(word[2] for word in words_on_line), clip_right
+            )
             y1 = max(word[3] for word in words_on_line)
             quads.append(PdfDocument._quad_from_rect(fitz.Rect(x0, y0, x1, y1)))
 
@@ -1980,9 +2058,10 @@ class PdfDocument:
     def _markup_highlight_rects_from_words(
         words: list,
         zoom: float,
+        clip_right: float | None = None,
     ) -> list[tuple[float, float, float, float]]:
         rects: list[tuple[float, float, float, float]] = []
-        for quad in PdfDocument._markup_quads_from_words(words):
+        for quad in PdfDocument._markup_quads_from_words(words, clip_right):
             rect = quad.rect
             rects.append(
                 (
@@ -1995,8 +2074,8 @@ class PdfDocument:
         return rects
 
     @staticmethod
-    def _word_quads_from_words(words: list) -> list[fitz.Quad]:
-        return PdfDocument._markup_quads_from_words(words)
+    def _word_quads_from_words(words: list, clip_right: float | None = None) -> list[fitz.Quad]:
+        return PdfDocument._markup_quads_from_words(words, clip_right)
 
     def get_text_block_selection(
         self,
@@ -2009,7 +2088,7 @@ class PdfDocument:
         if not (0 <= page_index < len(self._doc)):
             return None, [], "", []
         page = self._doc[page_index]
-        words = page.get_text("words")
+        words = self._drop_detached_words(page.get_text("words"))
         if not words:
             return None, [], "", []
 
@@ -2066,7 +2145,9 @@ class PdfDocument:
 
         selected.sort(key=word_key)
         page_rect = fitz.Rect(selected[0][:4])
-        highlight_rects = self._markup_highlight_rects_from_words(selected, zoom)
+        highlight_rects = self._markup_highlight_rects_from_words(
+            selected, zoom, self._body_column_right(words)
+        )
         for x, y, w, h in highlight_rects:
             page_rect |= fitz.Rect(x / zoom, y / zoom, (x + w) / zoom, (y + h) / zoom)
         return page_rect, highlight_rects, self._selection_text_from_words(selected), selected
@@ -2105,7 +2186,7 @@ class PdfDocument:
         if not words:
             return False
 
-        quads = self._word_quads_from_words(words)
+        quads = self._word_quads_from_words(words, self._page_body_right(page))
 
         if record_undo:
             self._record_undo_checkpoint()
@@ -2732,7 +2813,7 @@ class PdfDocument:
         selected_words: list | tuple | None = None,
     ) -> list[fitz.Quad]:
         words = self._words_for_markup_in_rect(page, page_rect, selected_words)
-        return self._word_quads_from_words(words)
+        return self._word_quads_from_words(words, self._page_body_right(page))
 
     def add_text_underline(
         self,
@@ -4109,6 +4190,9 @@ class PdfDocument:
         *,
         base_name: str | None = None,
         dpi: int = 150,
+        image_format: str = "png",
+        jpeg_quality: int = 92,
+        include_annotations: bool = True,
     ) -> list[str]:
         if not indices:
             raise ValueError("보낼 페이지를 선택하세요.")
@@ -4124,11 +4208,15 @@ class PdfDocument:
         )
         saved: list[str] = []
         zoom = max(0.1, float(dpi) / 72.0)
+        ext = "jpg" if image_format.lower() in ("jpg", "jpeg") else "png"
         for index in valid:
-            pix = self.render_page_pixmap(index, zoom, annots=True)
+            pix = self.render_page_pixmap(index, zoom, annots=include_annotations)
             try:
-                filename = folder_path / f"{stem}_{index + 1}.png"
-                pix.save(str(filename))
+                filename = folder_path / f"{stem}_{index + 1}.{ext}"
+                if ext == "jpg":
+                    pix.save(str(filename), jpg_quality=max(1, min(100, jpeg_quality)))
+                else:
+                    pix.save(str(filename))
                 saved.append(str(filename))
             finally:
                 pix = None

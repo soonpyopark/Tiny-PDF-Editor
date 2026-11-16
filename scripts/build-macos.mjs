@@ -16,7 +16,6 @@ const BUILD_DIR = path.join(ROOT, ".build");
 const PYI_DIST = path.join(BUILD_DIR, "pyinstaller-dist-macos");
 const PYI_WORK = path.join(BUILD_DIR, "pyinstaller-work-macos");
 const BRANDING_DIR = path.join(ROOT, "pdf_editor", "branding");
-const SOURCE_LOGO = path.join(ROOT, "assets", "source_logo.png");
 const APP_ICON_ICNS = path.join(BRANDING_DIR, "app_icon.icns");
 const PDF_FILE_ICON_ICNS = path.join(BRANDING_DIR, "pdf_file_icon.icns");
 const APP_ICON_PNG = path.join(BRANDING_DIR, "app_icon.png");

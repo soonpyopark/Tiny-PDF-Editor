@@ -247,11 +247,23 @@ def _knockout_guide_backdrop(image: Image.Image) -> Image.Image:
     return Image.fromarray(data[top : bottom + 1, left : right + 1])
 
 
-def _fit_artwork(icon: Image.Image, size: int) -> Image.Image:
+def _fit_artwork(icon: Image.Image, size: int, *, fill: bool = False) -> Image.Image:
     canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     fitted = icon.convert("RGBA")
     width, height = fitted.size
     if width <= 0 or height <= 0:
+        return canvas
+    if fill:
+        # App / taskbar icon: trim outer bezel so the mark (T) reads larger, then
+        # stretch into a true square.
+        inset = 0.22
+        left = int(round(width * inset))
+        top = int(round(height * inset))
+        right = max(left + 1, width - left)
+        bottom = max(top + 1, height - top)
+        fitted = fitted.crop((left, top, right, bottom))
+        fitted = fitted.resize((size, size), Image.Resampling.LANCZOS)
+        canvas.paste(fitted, (0, 0), fitted)
         return canvas
     scale = min(size / width, size / height)
     new_size = (
@@ -284,7 +296,7 @@ def _source_art(kind: str) -> Image.Image | None:
 def render_windows_app(size: int, *, compact: bool | None = None) -> Image.Image:
     art = _source_art("app")
     if art is not None:
-        return _fit_artwork(art, size)
+        return _round_corners(_fit_artwork(art, size, fill=True))
     compact = size <= 48 if compact is None else compact
     plate = _vertical_gradient(size, WIN_TOP, WIN_BOT)
     mask = _squircle_mask(size, 0.225)
@@ -303,6 +315,18 @@ def render_windows_app(size: int, *, compact: bool | None = None) -> Image.Image
     )
     canvas.putalpha(ImageChops_darker_alpha(canvas, mask))
     return canvas
+
+
+CORNER_RADIUS_RATIO = 0.07  # 살짝 둥근 모서리 (작업표시줄·바탕화면 아이콘)
+
+
+def _round_corners(image: Image.Image, radius: float = CORNER_RADIUS_RATIO) -> Image.Image:
+    """Slightly round the outer corners by intersecting alpha with a rounded-rect mask."""
+    out = image.convert("RGBA")
+    mask = _squircle_mask(out.size[0], radius)
+    alpha = np.minimum(np.array(out.getchannel("A")), np.array(mask.convert("L")))
+    out.putalpha(Image.fromarray(alpha.astype(np.uint8), "L"))
+    return out
 
 
 def ImageChops_darker_alpha(image: Image.Image, mask: Image.Image) -> Image.Image:
@@ -337,7 +361,11 @@ def _draw_block_t(
 def render_windows_file(size: int, *, compact: bool | None = None) -> Image.Image:
     art = _source_art("file")
     if art is not None:
-        return _fit_artwork(art, size)
+        return _round_corners(_fit_artwork(art, size))
+    return _round_corners(_render_windows_file_plain(size, compact=compact))
+
+
+def _render_windows_file_plain(size: int, *, compact: bool | None = None) -> Image.Image:
     compact = size <= 48 if compact is None else compact
     canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)

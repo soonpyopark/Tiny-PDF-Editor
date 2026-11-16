@@ -11,7 +11,6 @@ import numpy as np
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = ROOT / "assets" / "source_logo.png"
 OUT_DIR = ROOT / "pdf_editor" / "branding"
 ICON_OVERRIDES_DIR = ROOT / "assets" / "icon_overrides"
 ICON_CHECK_DIR = ROOT / ".cache" / "icon_check"
@@ -21,14 +20,6 @@ _WHITE_BG_THRESHOLD = 232
 _ICON_CROP_PADDING = 4
 
 _ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
-
-
-def find_source() -> Path:
-    if SOURCE.is_file():
-        return SOURCE
-    raise FileNotFoundError(
-        "Source logo not found. Place it at assets/source_logo.png",
-    )
 
 
 def _is_checkerboard_gray(red: int, green: int, blue: int) -> bool:
@@ -48,7 +39,7 @@ def _crop_alpha(data: np.ndarray, *, padding: int = _ICON_CROP_PADDING) -> Image
     height, width = data.shape[:2]
     rows, cols = np.where(data[:, :, 3] > 0)
     if len(rows) == 0:
-        raise ValueError("Could not detect the inner icon in assets/source_logo.png")
+        raise ValueError("Could not detect the inner icon in the source image")
 
     top = max(0, int(rows.min()) - padding)
     bottom = min(height - 1, int(rows.max()) + padding)
