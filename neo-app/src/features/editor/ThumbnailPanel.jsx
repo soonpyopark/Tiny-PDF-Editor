@@ -315,11 +315,21 @@ export default function ThumbnailPanel({
     event.dataTransfer.dropEffect = event.dataTransfer.types.includes('Files') ? 'copy' : 'move';
   }
 
-  function onDropAt(event, targetIndex) {
+  async function onDropAt(event, targetIndex) {
     event.preventDefault();
     setDragOverIndex(null);
-    // Sandboxed renderer cannot read File.path; open Tiny's insert dialog instead.
+    // Sandboxed renderer cannot read File.path; use Preload's pathForFile.
     if (event.dataTransfer.files?.length) {
+      const files = Array.from(event.dataTransfer.files);
+      const paths = await Promise.all(
+        files.map((file) => window.frame?.pathForFile?.(file) || null),
+      );
+      const validPaths = paths.filter(Boolean);
+      if (validPaths.length) {
+        onAction({ type: 'insertFiles', paths: validPaths, targetIndex });
+        return;
+      }
+      // pathForFile 를 쓸 수 없으면 파일 선택 대화상자로
       onAction({ type: 'insertFiles', targetIndex });
       return;
     }
@@ -368,7 +378,7 @@ export default function ThumbnailPanel({
           event.preventDefault();
           setDragOverIndex(pageCount);
         }}
-        onDrop={(event) => onDropAt(event, pageCount)}
+        onDrop={(event) => void onDropAt(event, pageCount)}
         onDragLeave={() => setDragOverIndex(null)}
       >
         {!docOpen ? (
@@ -401,7 +411,7 @@ export default function ThumbnailPanel({
                   onContextMenu={(event) => openMenu(event, index)}
                   onDragStart={(event) => onDragStart(event, index)}
                   onDragOver={(event) => onDragOverItem(event, index)}
-                  onDrop={(event) => onDropAt(event, index)}
+                  onDrop={(event) => void onDropAt(event, index)}
                   className={`mb-2 block w-full rounded-md border p-1 text-left ${
                     isSelected
                       ? 'border-[#d93025] bg-[#ebebeb]'
