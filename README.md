@@ -7,13 +7,13 @@ Neo는 Tiny PDF Editor의 새로운 프론트엔드입니다. 메뉴, 썸네일,
 ## 기술 스택
 
 - **프론트엔드**: Electron, React 19, Tailwind CSS 4
-- **백엔드 엔진**: Python 3, PyMuPDF (렌더링·편집·압축·레닥션·암호)
+- **백엔드 엔진**: Python 3, PyMuPDF (렌더링·편집·압축·레닥션·암호). 배포판에는 PyInstaller로 동결한 엔진이 들어 있어 사용자 PC에 Python이 필요 없습니다.
 - **추가 기능**:
   - **OCR**: PP-OCRv5 ONNX (onnxruntime) — 인터넷 없이 로컬 추론
   - **개인정보 제거**: ko-pii — 한국어 개인정보 검출 및 레닥션
   - **형광펜/밑줄**: Excel 내보내기 (openpyxl)
   - **한글 변환** (Windows): 한컴 한글 COM (별도 설치 필요)
-  - **가상 프린터** (Windows): Microsoft Print to PDF / (macOS): CUPS
+  - **가상 프린터** (Windows): Microsoft Print to PDF 기반. 인쇄하면 앱이 꺼져 있어도 Neo에서 열립니다. (macOS 흐름은 아직 이식되지 않았습니다.)
 
 ---
 

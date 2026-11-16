@@ -1,7 +1,8 @@
-"""Headless JSON-line entry for the Default Framework Neo UI.
+"""Headless PDF engine for Tiny PDF Editor Neo.
 
-One JSON object per stdin line, one JSON object per stdout line. This does not
-start the PyQt editor. ``main.py`` and the virtual-printer watch stay as they are.
+One JSON object per stdin line, one JSON object per stdout line. The Electron
+host (``neo-app``) owns the UI, the virtual printer and the print-spool watcher;
+this process only does document work.
 """
 
 from __future__ import annotations
@@ -226,7 +227,7 @@ def _page_number_options(raw: dict | None) -> PageNumberOptions:
 
 
 def _export_folder_name(display_name: str) -> str:
-    """export_images_dialog.sanitize_export_folder_name 과 같은 규칙 (Qt 모듈을 엔진에 들이지 않으려고 복제)."""
+    """내보내기 폴더 이름에서 Windows 금지 문자를 치환한다."""
     base = str(display_name or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
     lower = base.lower()
     for ext in (".pdf", ".png", ".jpg", ".jpeg"):
@@ -920,24 +921,6 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
         _apply_launcher(req)
         unregister_pdf_association()
         return opened, {"registered": False}
-    if op == "printerStatus":
-        from pdf_editor.virtual_printer import printer_is_installed, supports_virtual_printer
-
-        return opened, {
-            "supported": supports_virtual_printer(),
-            "installed": printer_is_installed() if supports_virtual_printer() else False,
-        }
-    if op == "printerInstall":
-        from pdf_editor.virtual_printer import install_virtual_printer
-
-        # 로그인 감시(Run 키)는 호스트 앱(Neo)이 자기 실행 파일로 직접 등록한다.
-        install_virtual_printer(manage_logon=False)
-        return opened, {"installed": True}
-    if op == "printerUninstall":
-        from pdf_editor.virtual_printer import uninstall_virtual_printer
-
-        uninstall_virtual_printer(manage_logon=False)
-        return opened, {"installed": False}
     if op == "pageRect":
         _require_open(opened)
         index = int(req.get("index") or 0)

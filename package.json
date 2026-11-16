@@ -2,24 +2,13 @@
   "name": "tiny-pdf-editor",
   "version": "1.2.0",
   "private": true,
-  "description": "Tiny PDF Editor desktop app",
+  "description": "Tiny PDF Editor Neo (Electron + Python engine)",
   "scripts": {
-    "dev": "python main.py",
     "neo:install": "npm --prefix neo-app install",
     "neo": "npm --prefix neo-app run dev",
     "neo:restart": "npm --prefix neo-app run dev:restart",
     "neo:stop": "npm --prefix neo-app run dev:stop",
-    "sync-version": "node scripts/sync-version.mjs",
-    "build": "node scripts/sync-version.mjs && node scripts/build-dist.mjs",
-    "build:dist:exe": "node scripts/sync-version.mjs && node scripts/build-dist.mjs",
-    "build:dist:exe:update": "node scripts/sync-version.mjs && node scripts/build-dist.mjs --update",
-    "build:msi": "node scripts/build-msi.mjs",
-    "build:dist:msi": "node scripts/build-msi.mjs",
-    "build:dist:portable": "node scripts/build-portable.mjs",
-    "build:release": "node scripts/build-release.mjs",
-    "upgrade:release-deps": "node scripts/upgrade-release-deps.mjs",
-    "build:dist:macos": "node scripts/sync-version.mjs && node scripts/build-macos.mjs",
-    "update:all": "node scripts/update-all.mjs",
-    "build:update_all": "update_all.bat _inner build"
+    "build:engine": "npm --prefix neo-app run build:engine",
+    "build:release": "npm --prefix neo-app run build:release"
   }
 }

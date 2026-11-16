@@ -1,20 +1,12 @@
-"""Prepare a clipboard signature image and compute a page placement rect."""
+"""Signature stamp helpers: white knockout, ink reinforcement and page placement rects."""
 
 from __future__ import annotations
 
 import hashlib
-import io
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import pymupdf as fitz
 import numpy as np
-from PIL import Image
-
-# Qt 는 클립보드·미리보기(데스크톱 PyQt 앱) 함수에서만 쓴다. Neo 엔진은 이 모듈의
-# 순수 함수(배치·투명화 등)만 쓰므로, 여기서는 import 하지 않아 PyQt6 없이도 불러올 수 있다.
-if TYPE_CHECKING:
-    from PyQt6.QtGui import QImage, QPixmap
 
 DEFAULT_WIDTH_RATIO = 0.22
 MAX_HEIGHT_RATIO = 0.35
@@ -24,13 +16,6 @@ FADE_START = 198
 MAX_CHROMA = 24
 SIGNATURE_ANNOT_TITLE = "tpe:sig"
 SIGNATURE_EMBFILE_PREFIX = "tpe-sig-"
-
-
-@dataclass(frozen=True)
-class PreparedSignature:
-    png_bytes: bytes
-    width: int
-    height: int
 
 
 @dataclass(frozen=True)
@@ -92,126 +77,6 @@ def parse_signature_annot(content: str) -> tuple[str, int, int, int | None] | No
     except ValueError:
         image_xref = None
     return image_id, width, height, image_xref
-
-
-def clipboard_has_image() -> bool:
-    return clipboard_image() is not None
-
-
-def _image_from_clipboard_mime(mime) -> QImage | None:
-    from PyQt6.QtGui import QImage
-
-    formats = [str(fmt) for fmt in mime.formats()]
-    image_formats = [fmt for fmt in formats if fmt.lower().startswith("image/")]
-    preferred = (
-        "image/png",
-        "image/jpeg",
-        "image/jpg",
-        "image/bmp",
-        "image/gif",
-        "image/webp",
-        "image/tiff",
-    )
-    ordered = [fmt for fmt in preferred if fmt in image_formats]
-    ordered.extend(fmt for fmt in image_formats if fmt not in ordered)
-    for fmt in ordered:
-        data = mime.data(fmt)
-        if data is None or data.isEmpty():
-            continue
-        image = QImage()
-        if image.loadFromData(bytes(data)) and not image.isNull():
-            return image
-    return None
-
-
-def clipboard_image() -> QImage | None:
-    from PyQt6.QtWidgets import QApplication
-
-    clipboard = QApplication.clipboard()
-    if clipboard is None:
-        return None
-    image = clipboard.image()
-    if not image.isNull():
-        return image
-    pixmap = clipboard.pixmap()
-    if not pixmap.isNull():
-        converted = pixmap.toImage()
-        if not converted.isNull():
-            return converted
-    mime = clipboard.mimeData()
-    if mime is None:
-        return None
-    return _image_from_clipboard_mime(mime)
-
-
-def prepare_signature_from_clipboard() -> PreparedSignature | None:
-    image = clipboard_image()
-    if image is None:
-        return None
-    return prepare_signature_from_qimage(image)
-
-
-def prepare_signature_from_path(path: str) -> PreparedSignature | None:
-    from PyQt6.QtGui import QImage
-
-    image = QImage(path)
-    if image.isNull():
-        try:
-            with Image.open(path) as pil:
-                rgba = pil.convert("RGBA")
-                buf = io.BytesIO()
-                rgba.save(buf, format="PNG")
-            image = QImage()
-            if not image.loadFromData(buf.getvalue(), "PNG"):
-                return None
-        except (OSError, ValueError):
-            return None
-    if image.isNull():
-        return None
-    return prepare_signature_from_qimage(image)
-
-
-def copy_signature_png_to_clipboard(png_bytes: bytes) -> bool:
-    from PyQt6.QtCore import QByteArray, QMimeData
-    from PyQt6.QtGui import QImage
-    from PyQt6.QtWidgets import QApplication
-
-    if not png_bytes:
-        return False
-    image = QImage()
-    if not image.loadFromData(png_bytes, "PNG") or image.isNull():
-        return False
-    clipboard = QApplication.clipboard()
-    if clipboard is None:
-        return False
-    mime = QMimeData()
-    mime.setImageData(image)
-    mime.setData("image/png", QByteArray(png_bytes))
-    clipboard.setMimeData(mime)
-    return True
-
-
-def prepare_signature_from_qimage(image: QImage) -> PreparedSignature | None:
-    if image.isNull() or image.width() < 2 or image.height() < 2:
-        return None
-    rgba = knockout_white_rgba(_qimage_to_rgba(image))
-    rgba = reinforce_signature_ink(rgba)
-    cropped = crop_alpha_bbox(rgba)
-    if cropped is None:
-        return None
-    png_bytes = _rgba_to_png_bytes(cropped)
-    height, width = cropped.shape[:2]
-    if width < 2 or height < 2 or not png_bytes:
-        return None
-    return PreparedSignature(png_bytes=png_bytes, width=width, height=height)
-
-
-def pixmap_from_png_bytes(data: bytes) -> QPixmap:
-    from PyQt6.QtGui import QPixmap
-
-    pixmap = QPixmap()
-    pixmap.loadFromData(data, "PNG")
-    return pixmap
 
 
 def knockout_white_rgba(
@@ -476,24 +341,3 @@ def _image_aspect(image_width: int, image_height: int) -> float:
     width = max(1, int(image_width))
     height = max(1, int(image_height))
     return width / height
-
-
-def _qimage_to_rgba(image: QImage) -> np.ndarray:
-    from PyQt6.QtCore import QBuffer, QByteArray, QIODevice
-    from PyQt6.QtGui import QImage
-
-    converted = image.convertToFormat(QImage.Format.Format_RGBA8888)
-    buffer = QByteArray()
-    qbuf = QBuffer(buffer)
-    qbuf.open(QIODevice.OpenModeFlag.WriteOnly)
-    converted.save(qbuf, "PNG")
-    qbuf.close()
-    pil = Image.open(io.BytesIO(bytes(buffer))).convert("RGBA")
-    return np.array(pil)
-
-
-def _rgba_to_png_bytes(rgba: np.ndarray) -> bytes:
-    image = Image.fromarray(rgba, "RGBA")
-    buf = io.BytesIO()
-    image.save(buf, format="PNG")
-    return buf.getvalue()

@@ -1,17 +1,19 @@
-# 배포판 사용 안내
+# 배포판 사용 안내 (Neo)
 
-버전·파일 이름 규칙은 `README.md`와 동일합니다.
-(`Tiny PDF Editor v{버전}_YYMMDD_HHMMSS…`)
+빌드 방법과 산출물 이름은 `neo-app/README.md`를 참고하세요.
+산출물은 `neo-app/release/`에 만들어집니다.
+
+- `TinyPDFEditor-NEO_<YYMMDD_HHMMSS>_<arch>.msi`
+- `TinyPDFEditor-NEO_portable_<YYMMDD_HHMMSS>_<arch>.zip`
 
 릴리스 다운로드: https://github.com/soonpyopark/Tiny-PDF-Editor/releases
 
 ## Windows — 설치판 (MSI)
 
-1. `npm run build:dist:msi` 또는 `npm run build:release`로 `msi/` 폴더에 설치 파일을 만듭니다.
-2. `msi/Tiny PDF Editor v{버전}_YYMMDD_HHMMSS.msi`를 더블 클릭해 설치합니다.
-3. 관리자 권한 없이 **현재 사용자** 계정에 설치됩니다 (`%LocalAppData%`).
-4. 설치 시 PDF 파일 연결(HKCU 레지스트리)과 시작 메뉴·바탕화면 바로가기가 등록됩니다.
-5. 가상 프린터는 MSI에서 등록하지 않습니다. 앱을 처음 실행하면(또는 `파일` → `가상 프린터...`) 등록됩니다.
+1. `npm run build:release`로 `neo-app/release/`에 MSI를 만듭니다.
+2. MSI를 더블 클릭해 설치합니다. 관리자 권한 없이 **현재 사용자** 계정에 설치됩니다 (`%LocalAppData%`).
+3. 설치 시 시작 메뉴·바탕화면 바로가기가 등록되고, 설치 직후 인쇄 감시가 시작됩니다.
+4. 앱을 처음 실행하면 가상 프린터 `Tiny PDF Editor`가 등록됩니다. (이후 `파일` → `가상 프린터...`에서 켜고 끌 수 있습니다.)
 
 WiX CLI 7 이상이 필요합니다.
 
@@ -22,59 +24,49 @@ wix eula accept wix7
 
 ## Windows — 포터블 zip
 
-1. `npm run build:dist:portable` 또는 `npm run build:release`로 `msi/`에
-   `Tiny PDF Editor v{버전}_YYMMDD_HHMMSS_portable.zip`을 만듭니다. (7-Zip 필요)
-2. zip을 압축 해제한 뒤, 폴더 안의 `.exe`를 실행합니다.
-3. Python 설치 없이 Windows에서 바로 실행됩니다.
-4. exe와 `_internal` 폴더는 **같은 위치**에 두어야 합니다.
+1. `npm run build:release`로 `neo-app/release/`에 `..._portable_....zip`을 만듭니다.
+2. zip을 **폴더째** 압축 해제한 뒤 폴더 안의 `.exe`를 실행합니다.
+3. Python 설치가 필요 없습니다. PDF 엔진(`resources/engine/tiny-pdf-engine.exe`)이 함께 들어 있습니다.
+4. exe와 `resources` 폴더는 **같은 위치**에 두어야 합니다. exe만 따로 복사하면 실행되지 않습니다.
+5. USB에서도 폴더째 복사해 실행할 수 있습니다.
 
-## Windows — 포터블 실행 (dist 폴더 배포)
+## 인쇄 (가상 프린터)
 
-1. `npm run build:dist:exe`로 `dist/`에 포터블 폴더를 만듭니다.
-2. 배포 **폴더 전체**를 USB 또는 원하는 위치에 복사합니다.
-3. 폴더 안의 `Tiny PDF Editor v{버전}_YYMMDD_HHMMSS.exe`를 더블 클릭합니다.
-
-압축 해제가 필요 없는 폴더 배포도 가능합니다. 폴더 구조를 그대로 유지한 채 실행하세요.
+- 다른 프로그램에서 `Tiny PDF Editor` 프린터로 인쇄하면 PDF가 Neo에서 열립니다.
+- 앱이 **꺼져 있어도** 동작합니다. Chromium 없이 도는 가벼운 백그라운드 감시가 스풀 파일을 가져와 앱을 실행합니다.
+- 앱을 종료한 직후에도 감시는 유지됩니다. Windows 로그인 시 자동으로 다시 시작됩니다. (HKCU Run: `TinyPDFEditorPrintWatch`)
+- 앱이 켜져 있으면 새 탭(설정에 따라 새 창)으로 열립니다. 비어 있는 문서가 열려 있으면 그 자리에서 열립니다.
+- 인쇄 결과는 `Downloads`에 `Tiny 인쇄 <YYMMDD_HHMMSS>.pdf`로 옮겨집니다.
+- 가상 프린터를 끄면 감시와 로그인 자동 시작도 함께 해제됩니다.
 
 ## macOS — DMG / .app
 
-1. `npm run build:dist:macos`로 `dist/`에 `.app`, `.dmg`를 만듭니다. (Apple Silicon, 서명·공증 없음)
-   DMG 파일명의 `YYMMDD_HHMMSS`가 앱의 `APP_BUILD_STAMP`와 같아 업데이트 확인에 사용됩니다.
-2. DMG를 연 뒤 `Tiny PDF Editor.app`을 **응용 프로그램**으로 드래그합니다.
-3. 최초 실행 시 Gatekeeper 경고가 나오면 앱을 Control-클릭 → **열기**, 또는 **시스템 설정 → 개인정보 보호 및 보안**에서 허용합니다.
-4. 최초 실행 시 인쇄 대화상자 **PDF** 메뉴에 `Tiny PDF Editor`가 등록됩니다. (`파일` → `가상 프린터...`)
-
-macOS에서는 다음 기능이 Windows 전용입니다.
-
-- HWP/HWPX → PDF 변환 (한컴 한글 의존)
-- PDF 파일 연결 메뉴
-
-## USB 사용 (Windows)
-
-- `dist` 안의 최신 빌드 폴더 또는 포터블 zip 압축 해제 폴더를 통째로 USB에 복사합니다.
-- USB에서도 exe와 `_internal` 폴더가 **같은 위치**에 있어야 합니다.
-- exe만 따로 복사하면 실행되지 않습니다.
+- `npm run build:release:mac`(macOS에서만 실행 가능)으로 DMG를 만들 수 있습니다.
+- **현재 macOS 빌드는 PDF 엔진을 포함하지 않고, 가상 프린터(PDF Services/CUPS) 흐름도 Neo로 이식되지 않았습니다.**
+  macOS 배포 전에 별도 작업이 필요합니다.
+- 최초 실행 시 Gatekeeper 경고가 나오면 앱을 Control-클릭 → **열기**, 또는 **시스템 설정 → 개인정보 보호 및 보안**에서 허용합니다.
+- HWP/HWPX → PDF 변환, PDF 파일 연결 메뉴는 Windows 전용입니다.
 
 ## 시스템 요구 사항
 
 - Windows 10 이상 (64비트)
-- macOS 12 이상, Apple Silicon (arm64)
 - 일반 기능은 오프라인 사용 가능
 - 업데이트 확인만 인터넷 필요 (GitHub Releases)
 - 한글 쪽 번호·텍스트 덮어쓰기: 시스템에 설치된 한글 글꼴 필요
-  (Windows 맑은 고딕 등, macOS Apple SD Gothic Neo). 글꼴은 배포판에 포함하지 않습니다.
+  (Windows 맑은 고딕 등). 글꼴은 배포판에 포함하지 않습니다.
 - HWP/HWPX (Windows): 한컴 한글 2020/2022/2024 설치 필요
 
 ## 주의 사항
 
-- Windows Defender / macOS Gatekeeper에서 처음 실행 시 경고가 나올 수 있습니다. 직접 빌드한 배포본이라면 안내된 방법으로 실행을 허용하세요.
+- Windows Defender(SmartScreen)에서 처음 실행 시 경고가 나올 수 있습니다. 직접 빌드한 배포본이라면 안내된 방법으로 실행을 허용하세요.
 - 편집한 PDF는 **파일 → 저장** 또는 **다른 이름으로 저장**으로 저장하세요.
 - **개인정보 제거**는 원본 텍스트를 삭제하는 레닥션입니다. 자동 탐지는 완전하지 않으니 저장 전 결과를 확인하세요.
 - `*.msi`, `*_portable.zip` 등 대용량 산출물은 Git에 올리지 마세요 (100MB 제한).
+- 예전 Tiny(PyQt) 버전의 `Tiny PDF Editor` 프린터와 로그인 감시 항목은 그대로 재사용됩니다. 이전 버전 exe가 지워졌다면 Neo를 한 번 실행하면 로그인 감시 항목이 복구됩니다.
 
 ## 라이선스
 
-소스 코드는 MIT입니다. 배포판 재배포 시 `LICENSE`의 서드파티 고지(PyMuPDF, PyQt6 등)를 함께 제공하세요.
+소스 코드는 MIT입니다. 배포판 재배포 시 `LICENSE`의 서드파티 고지(PyMuPDF, Electron 등)를 함께 제공하세요.
 
 ## 문의
 

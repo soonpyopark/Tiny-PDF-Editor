@@ -2,7 +2,7 @@
  * 가상 프린터 스풀 계약 (Electron 에 의존하지 않는 순수 Node 모듈).
  *
  * 앱(main process)과 가벼운 백그라운드 감시자(print-watch.mjs, ELECTRON_RUN_AS_NODE)가
- * 같은 코드를 쓰도록 한 곳에 둔다. 값과 타이밍은 원본 Tiny(PyQt) 계약 그대로다.
+ * 같은 코드를 쓰도록 한 곳에 둔다. 값과 타이밍은 기존 Tiny 인쇄 계약 그대로다.
  *
  *   프린터 "Tiny PDF Editor"(드라이버 Microsoft Print To PDF)의 파일 포트
  *     = %LOCALAPPDATA%\Tiny PDF Editor\print-spool\tiny-print.pdf

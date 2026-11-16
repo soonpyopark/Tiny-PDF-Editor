@@ -26,8 +26,7 @@ SOFTWARE.
 Third-Party Components (배포판 / exe·MSI·포터블 zip·.app·DMG 포함 시)
 ================================================================================
 
-Tiny PDF Editor 배포판(Windows exe·MSI·`_portable.zip`의 `_internal` 폴더,
-macOS `.app` 번들)에는 아래 오픈소스 라이브러리가 함께 포함됩니다. 소스
+Tiny PDF Editor Neo 배포판(Windows MSI·`_portable.zip`, macOS `.app`/DMG)에는 아래 오픈소스 라이브러리가 함께 포함됩니다. 소스
 코드(MIT)와 달리, **실행 파일을 블로그·웹·USB·GitHub Releases 등으로
 재배포**할 때는 각 라이브러리 라이선스도 준수해야 합니다.
 
@@ -45,44 +44,45 @@ macOS `.app` 번들)에는 아래 오픈소스 라이브러리가 함께 포함�
      (소스 제공 의무 등)을 확인하세요. 상업적 재배포 시 Artifex 상용
      라이선스가 필요할 수 있습니다.
 
-2. PyQt6
-   - License: GNU General Public License v3.0 (GPL-3.0)
-     또는 The Qt Company Commercial License
-   - Website: https://www.riverbankcomputing.com/software/pyqt/
-   - GUI(창, 메뉴, 썸네일, 미리보기, 대화상자) 및 **인쇄(Qt Print Support)**에
-     사용됩니다.
-   - GPL-3.0 조건 하에서 배포판을 배포하는 경우, 해당 조건을 확인하세요.
-     상업적 재배포 시 Qt 상용 라이선스가 필요할 수 있습니다.
+2. Electron / Chromium / Node.js
+   - License: MIT License (Electron, Node.js), BSD-3-Clause 등 (Chromium 및 포함된 구성 요소)
+   - Website: https://www.electronjs.org/
+   - 데스크톱 창, 메뉴, 인쇄 스풀 감시 등 앱 셸에 사용됩니다. 배포판의
+     `LICENSES.chromium.html`과 `LICENSE.electron.txt`에 상세 고지가 들어 있습니다.
 
-3. openpyxl
+3. React / Tailwind CSS / Vite 등 프런트엔드 라이브러리
+   - License: MIT License (각 패키지의 라이선스는 `neo-app/package.json` 의존성 참고)
+   - 화면(메뉴, 썸네일, 본문, 대화상자)을 구성합니다.
+
+4. openpyxl
    - License: MIT License
    - Website: https://openpyxl.readthedocs.io/
    - 형광펜·밑줄 목록을 Excel(`.xlsx`)로 보낼 때 사용됩니다.
 
-4. ko-pii
+5. ko-pii
    - License: MIT License
    - Website: https://github.com/Marker-Inc-Korea/ko-pii
    - 한국어 개인정보(PII) 검출에 사용됩니다.
      「보안 → 개인정보 제거」의 탐지 엔진입니다.
    - Marker Inc.에 감사드립니다.
 
-5. Python 및 PyInstaller 번들 구성 요소
+6. Python 및 PyInstaller 번들 구성 요소 (배포판 `resources/engine`)
    - Python 인터프리터 및 표준 라이브러리: Python Software Foundation License (PSF)
    - PyInstaller로 묶인 기타 의존성: 각 프로젝트의 라이선스(PSF, LGPL, BSD 등)를
      따릅니다.
 
-6. NumPy / Pillow
+7. NumPy / Pillow
    - NumPy: BSD 3-Clause License — OCR 전처리 및 빌드 과정에서 사용됩니다.
    - Pillow (PIL): HPND License — 이미지 처리·브랜딩 아이콘 생성·OCR 전처리에
      사용됩니다.
    - Website: https://numpy.org/ , https://python-pillow.org/
 
-7. onnxruntime
+8. onnxruntime
    - License: MIT License
    - Website: https://onnxruntime.ai/
    - 스캔 PDF OCR 추론에 사용됩니다. 배포판에 함께 포함됩니다.
 
-8. Paddle PP-OCRv5 ONNX 모델 (배포판 `ocr/models`)
+9. Paddle PP-OCRv5 ONNX 모델 (배포판 `ocr/models`)
    - License: Apache License 2.0
    - det: https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx
    - rec: https://huggingface.co/PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx
@@ -90,7 +90,7 @@ macOS `.app` 번들)에는 아래 오픈소스 라이브러리가 함께 포함�
      `rec_korean.yml`)를 배포판에 포함합니다. PaddlePaddle 런타임은 포함하지
      않습니다.
 
-9. Windows HWP 변환 헬퍼 (배포판 `pdf_editor/vendor/` 또는 `_internal`에 포함될 수 있음)
+10. Windows HWP 변환 헬퍼 (배포판 `pdf_editor/vendor/` 또는 `_internal`에 포함될 수 있음)
    - `hwp_to_pdf_helper.exe`: Tiny PDF Editor용 로컬 헬퍼 (소스: `tools/hwp_to_pdf_helper/`).
      Windows에서 한컴 한글 COM을 통해 HWP/HWPX를 PDF로 변환합니다.
    - `FilePathCheckerModule.dll`: 한컴 자동화 경로 검증용 모듈. 배포 시 함께
@@ -124,15 +124,13 @@ macOS `.app` 번들)에는 아래 오픈소스 라이브러리가 함께 포함�
 배포 시 권장 사항
 ================================================================================
 
-- 포터블 배포 패키지에 본 LICENSE 파일, README.md, DISTRIBUTE.md를 함께
-  포함하세요. (`npm run build:dist:exe` / `build:dist:portable` /
-  `build:dist:macos` 빌드 시 자동 복사됩니다.)
-- MSI·포터블 zip·GitHub Releases·GitLab로 배포할 때도 본 LICENSE의
-  서드파티 고지를 명시하는 것을 권장합니다.
-- MSI 설치 과정의 사용권 계약(`msi/License.rtf`)에는
+- MSI·포터블 zip·GitHub Releases·GitLab로 배포할 때 본 LICENSE 파일,
+  README.md, DISTRIBUTE.md를 함께 제공하고 서드파티 고지를 명시하는 것을
+  권장합니다.
+- MSI 설치 과정의 사용권 계약(`neo-app/installer/License.rtf`)에는
   https://note4all.tistory.com 이 표시됩니다. 상세 서드파티 고지는
   본 LICENSE 파일을 따릅니다.
 - 본 저장소의 MIT 라이선스는 Tiny PDF Editor **소스 코드**에 적용됩니다.
-  배포판 재배포 시 MIT만으로는 PyMuPDF·PyQt6 의무가 대체되지 않습니다.
+  배포판 재배포 시 MIT만으로는 PyMuPDF(AGPL-3.0) 등의 의무가 대체되지 않습니다.
 - 대용량 빌드 산출물(`*.msi`, `*_portable.zip`)은
   저장소에 커밋하지 마세요.

@@ -330,7 +330,7 @@ export default function ThumbnailPanel({
       const raw = event.dataTransfer.getData('application/x-tiny-pages');
       const indices = JSON.parse(raw || '[]');
       if (Array.isArray(indices) && indices.length) {
-        // 원본 PyQt의 _adjusted_move_target 로직을 정확히 복사
+        // 드래그 이동 목표 위치 보정 로직 (원본 Tiny 동작과 동일)
         const movedIndices = indices.map(Number);
         const selected = [...movedIndices].sort((a, b) => a - b);
         
