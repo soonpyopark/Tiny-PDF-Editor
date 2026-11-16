@@ -7,7 +7,7 @@
  * The bearer token lives in localStorage ("로그인 유지") or sessionStorage.
  */
 
-const TOKEN_KEY = 'frame.token';
+const TOKEN_KEY = 'tinypdfneo.token';
 
 export class ApiRequestError extends Error {
   /**

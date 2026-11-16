@@ -13,6 +13,7 @@
     "dev:re": "npm run dev:restart",
     "prepare:icons": "node scripts/prepare-icons.mjs",
     "build": "npm run prepare:icons && vite build",
+    "check:identity": "node scripts/check-identity.mjs",
     "build:engine": "node scripts/build-engine.mjs",
     "build:release": "node scripts/build-release.mjs",
     "build:release:mac": "node scripts/build-release-mac.mjs",

@@ -41,7 +41,7 @@ npm install
 
 ```bash
 npm run neo:install   # 최초 1회 (neo-app 의존성 설치)
-npm run neo           # 실행 (Electron 창 + 개발 서버 @3001)
+npm run neo           # 실행 (Electron 창 + 개발 서버 @3021)
 npm run neo:restart   # 중지 후 재기동
 npm run neo:stop      # 정리 후 종료
 ```

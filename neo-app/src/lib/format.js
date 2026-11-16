@@ -12,6 +12,18 @@ export function formatBytes(bytes) {
   return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`;
 }
 
+/**
+ * 항상 MB 로 표시한다 (예: `12.34 MB`). 용량 줄이기 전후 비교처럼 두 값을 같은 단위로 보여 줄 때 쓴다.
+ * 0.01 MB 미만의 아주 작은 값은 `0.00 MB` 대신 `<0.01 MB` 로 보여 준다.
+ * @param {number} bytes
+ */
+export function formatMb(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '-';
+  const mb = bytes / (1024 * 1024);
+  if (bytes > 0 && mb < 0.01) return '<0.01 MB';
+  return `${mb.toFixed(2)} MB`;
+}
+
 /** @param {number | string | Date | null | undefined} value */
 export function formatDateTime(value) {
   if (value == null) return '-';

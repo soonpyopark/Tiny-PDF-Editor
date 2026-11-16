@@ -1,6 +1,7 @@
 import { normalizeAllowedIpCidrs } from './ipCidrCore.js';
 
-export const IP_ALLOWLIST_KIND = 'default-frame-ip-allowlist';
+/** Neo's own file kind: a Default Framework export must not be importable here. */
+export const IP_ALLOWLIST_KIND = 'tiny-pdf-editor-neo-ip-allowlist';
 export const IP_ALLOWLIST_VERSION = 1;
 
 /**
@@ -32,8 +33,8 @@ export function parseIpAllowlistPayload(text) {
   if (Array.isArray(parsed)) {
     list = parsed;
   } else if (parsed && typeof parsed === 'object') {
-    if (parsed.kind != null && !String(parsed.kind).endsWith('ip-allowlist')) {
-      throw new Error('접근 가능 IP 대역 파일이 아닙니다.');
+    if (parsed.kind != null && String(parsed.kind) !== IP_ALLOWLIST_KIND) {
+      throw new Error('이 프로그램에서 내보낸 접근 가능 IP 대역 파일이 아닙니다.');
     }
     if (!('allowedIpCidrs' in parsed)) throw new Error('allowedIpCidrs 항목이 없습니다.');
     list = parsed.allowedIpCidrs;
@@ -54,5 +55,5 @@ export function ipAllowlistExportFilename(date = new Date()) {
   const stamp = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(
     date.getHours(),
   )}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
-  return `default-frame-ip-allowlist-${stamp}.json`;
+  return `${IP_ALLOWLIST_KIND}-${stamp}.json`;
 }

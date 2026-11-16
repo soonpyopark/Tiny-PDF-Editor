@@ -17,12 +17,6 @@ export const APP_ID = 'com.tinypdfeditor.neo';
 export const APP_FILE_NAME = 'TinyPDFEditor-NEO';
 
 /**
- * 이전 이름(템플릿 시절 `DefaultFrame`)의 사용자 데이터 폴더 이름.
- * 처음 실행할 때 한 번만 새 폴더로 복사한다 (main.js migrateLegacyUserData).
- */
-export const LEGACY_USER_DATA_NAME = 'DefaultFrame';
-
-/**
  * 앱 표시 버전 (점 구분 4단, 예: `1.0.0.0`). All In One Tools 와 같은 표기 규칙.
  * Git 태그는 `v1.0.0-0`(하이픈), package.json 은 `1.0.0-0` 형식을 쓴다.
  */
@@ -32,10 +26,14 @@ export const APP_VERSION = '1.0.0.0';
  * Package build id (YYMMDD_HHMMSS). Rewritten by `npm run build:release*`
  * (scripts/sync-build-stamp.mjs); matches the suffix of the produced files.
  */
-export const APP_BUILD_STAMP = '261117_003149';
+export const APP_BUILD_STAMP = '261117_004927';
 
-/** Default web server port (Electron window + LAN browsers share it). */
-export const DEFAULT_PORT = 3001;
+/**
+ * Default web server port (Electron window + LAN browsers share it).
+ * Neo's own port: the Default Framework template uses 3001, and `dev:stop` / browser
+ * storage are per port, so the two apps must not share a default.
+ */
+export const DEFAULT_PORT = 3021;
 
 /** Default administrator credentials (seeded on first run). */
 export const DEFAULT_ADMIN_ID = 'admin';

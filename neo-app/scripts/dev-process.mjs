@@ -94,6 +94,37 @@ function getProjectElectronPids() {
   }
 }
 
+/**
+ * 이 프로젝트 폴더에서 실행된 프로세스인지(실행 파일·명령줄에 프로젝트 경로가 있는지) 확인한다.
+ * 같은 PC 의 다른 앱(예: Default Framework, 설치된 Neo)이 포트를 쓰고 있어도 죽이지 않기 위해서다.
+ * @param {number} pid
+ */
+function isOwnedByProject(pid) {
+  const marker = projectRoot.toLowerCase();
+  try {
+    if (isWin) {
+      const raw = execFileSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid)}" | ` +
+            'Select-Object CommandLine,ExecutablePath | ConvertTo-Json -Compress',
+        ],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+      ).trim();
+      if (!raw) return false;
+      const info = JSON.parse(raw);
+      return `${info.CommandLine ?? ''} ${info.ExecutablePath ?? ''}`.toLowerCase().includes(marker);
+    }
+    const cmd = execSync(`ps -p ${Number(pid)} -o command=`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    return cmd.toLowerCase().includes(marker);
+  } catch {
+    return false;
+  }
+}
+
 /** @param {number} pid */
 function killPidTree(pid) {
   if (pid === process.pid) return;
@@ -128,8 +159,17 @@ async function waitForPortFree(port, timeoutMs = 15_000) {
 async function stopDev() {
   const port = resolvePort();
   const electronPids = getProjectElectronPids();
-  const portPids = getListeningPids(port);
+  const listening = getListeningPids(port);
+  const portPids = listening.filter(isOwnedByProject);
+  const foreignPids = listening.filter((pid) => !portPids.includes(pid));
   const targets = [...new Set([...electronPids, ...portPids])];
+
+  if (foreignPids.length > 0) {
+    console.warn(
+      `[dev:stop] Port ${port} is held by PID(s) ${foreignPids.join(', ')} which do not belong to this project ` +
+        '(another app or an installed copy). Leaving them running.',
+    );
+  }
 
   if (targets.length === 0) {
     console.log(`[dev:stop] Nothing is running (port ${port} is free).`);

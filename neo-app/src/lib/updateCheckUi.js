@@ -3,7 +3,7 @@ import { UPDATE_REPO } from '../../shared/constants.js';
 import { isUpdateAvailable, resolveUpdateKind, versionLabel } from '../../shared/updateCheck.js';
 import { openExternalUrl } from './openExternal.js';
 
-const SKIPPED_UPDATE_KEY = 'frame.skippedUpdateNotice';
+const SKIPPED_UPDATE_KEY = 'tinypdfneo.skippedUpdateNotice';
 
 const releasesPage = () => (UPDATE_REPO ? `https://github.com/${UPDATE_REPO}/releases` : '');
 

@@ -7,6 +7,11 @@
 
   Mutable state (settings, members, backups) lives in %APPDATA% — never inside
   the install folder — so upgrades and uninstalls cannot wipe it.
+
+  IDENTITY: UpgradeCode and the component GUIDs below belong to Tiny PDF Editor NEO only.
+  They must never equal another product's (the Default Framework template uses different
+  ones): a shared UpgradeCode makes one MSI replace the other. `npm run check:identity`
+  enforces this and runs at the start of every release build.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
@@ -16,7 +21,7 @@
     Manufacturer="$(AppName)"
     Version="$(ProductVersion)"
     ProductCode="$(ProductCode)"
-    UpgradeCode="7C3E5B9A-2D41-4F6E-8A17-5B0D9E2C4F63"
+    UpgradeCode="DD3EA488-DB69-410F-8BD0-B40B5C274874"
     Scope="perUser"
     Compressed="yes">
 
@@ -82,7 +87,7 @@
       <Component
         Id="StartMenuShortcut"
         Directory="ApplicationProgramsFolder"
-        Guid="2B6F1A44-8C3D-4E57-9A02-71D5C8E3B610">
+        Guid="1F6B34EF-B85C-49F9-B6A3-09889AED87FC">
         <Shortcut
           Id="StartMenuShortcutLink"
           Name="$(AppName)"
@@ -106,7 +111,7 @@
       <Component
         Id="DesktopShortcut"
         Directory="DesktopFolder"
-        Guid="9E0D7C25-4B81-47A9-B3F6-0A52D1C8E974">
+        Guid="202E7B2C-41C4-4FEA-A7E2-EF926D4F7646">
         <Shortcut
           Id="DesktopShortcutLink"
           Name="$(AppName)"

@@ -32,8 +32,20 @@ export function artifactSuffix(stamp, arch) {
  * @param {string} [stamp]
  */
 export function beginBuild(stamp = formatBuildTimestamp()) {
+  assertDistinctIdentity();
   writeBuildStamp(stamp);
   return stamp;
+}
+
+/**
+ * 릴리스를 만들기 전에 Neo 의 식별자(UpgradeCode·appId·포트 등)가 Default Framework 와
+ * 겹치지 않는지 확인한다. 겹치면 설치본이 서로를 덮어쓰므로 빌드를 중단한다.
+ */
+export function assertDistinctIdentity() {
+  const result = spawnSync(process.execPath, [path.join(__dirname, 'check-identity.mjs')], { stdio: 'inherit' });
+  if (result.status !== 0) {
+    throw new Error('식별자 검사 실패: Default Framework 와 겹치는 값을 고친 뒤 다시 빌드하세요.');
+  }
 }
 
 /**

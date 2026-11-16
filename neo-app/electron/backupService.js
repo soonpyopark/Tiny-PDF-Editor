@@ -31,6 +31,24 @@ function stampOf(date = new Date()) {
   )}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
+/**
+ * 백업 zip 이 이 프로그램(Tiny PDF Editor NEO)이 만든 것인지 manifest 로 확인한다.
+ * 같은 템플릿에서 나온 다른 앱(예: Default Framework)의 백업을 가져오거나 복원해
+ * 설정·회원 정보를 덮어쓰는 일을 막는다.
+ * @param {JSZip} zip
+ */
+async function assertOwnBackup(zip) {
+  const entry = zip.file(MANIFEST_NAME);
+  if (!entry) throw new Error('이 프로그램의 백업 파일이 아닙니다.');
+  let app = '';
+  try {
+    app = String(JSON.parse(await entry.async('string'))?.app ?? '');
+  } catch {
+    // fall through: treated as foreign
+  }
+  if (app !== APP_FILE_NAME) throw new Error('이 프로그램의 백업 파일이 아닙니다.');
+}
+
 /** @param {string} fileName */
 function assertBackupName(fileName) {
   const name = String(fileName ?? '');
@@ -152,7 +170,7 @@ export async function importBackup(buffer) {
   const zip = await JSZip.loadAsync(buffer).catch(() => {
     throw new Error('올바른 백업 파일(zip)이 아닙니다.');
   });
-  if (!zip.file(MANIFEST_NAME)) throw new Error('이 프로그램의 백업 파일이 아닙니다.');
+  await assertOwnBackup(zip);
 
   await fsp.mkdir(backupDir(), { recursive: true });
   const target = uniqueBackupPath(`backup_${stampOf()}_imported`);
@@ -175,7 +193,7 @@ export async function importBackup(buffer) {
 export async function restoreBackup(fileName) {
   const source = path.join(backupDir(), assertBackupName(fileName));
   const zip = await JSZip.loadAsync(await fsp.readFile(source));
-  if (!zip.file(MANIFEST_NAME)) throw new Error('이 프로그램의 백업 파일이 아닙니다.');
+  await assertOwnBackup(zip);
 
   await runBackup('prerestore');
 

@@ -22,6 +22,10 @@ winget install WiXToolset.WiXCLI
 wix eula accept wix7
 ```
 
+### 이전 Neo 설치본이 있는 경우 (한 번만)
+
+2026-11-17 이전에 만든 Neo MSI는 Default Framework와 **같은 UpgradeCode**를 쓰던 빌드입니다. 이후 빌드는 Neo 전용 UpgradeCode를 쓰므로, 새 MSI는 그 설치본을 업그레이드하지 않고 같은 폴더에 따로 설치하려 합니다. 먼저 이전 Neo를 **설정 → 앱**에서 제거한 뒤 새 MSI를 설치하세요. 설정·회원·백업은 `%APPDATA%`에 있어 제거해도 남습니다. 새 빌드부터는 이 단계가 필요 없습니다.
+
 ## Windows — 포터블 zip
 
 1. `npm run build:release`로 `neo-app/release/`에 `..._portable_....zip`을 만듭니다.

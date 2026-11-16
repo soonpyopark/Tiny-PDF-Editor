@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useDialog } from '../../context/DialogContext.jsx';
 import { api as apiRaw, engineScope } from '../../lib/apiClient.js';
+import { formatMb } from '../../lib/format.js';
 import { useFullscreen } from '../../lib/fullscreen.js';
 import Toast from '../../components/common/Toast.jsx';
 import { useRegisterEditorCommands } from './editorCommands.jsx';
@@ -1014,10 +1015,9 @@ export default function EditorPage({
       const result = await api('pdf.reduceSize', options);
       setBusy('');
       await applyDocResult(result, pageIndex);
-      const beforeKb = Math.round((result.before || 0) / 1024);
-      const afterKb = Math.round((result.after || 0) / 1024);
-      appendTerminal(`완료: ${beforeKb}KB → ${afterKb}KB`);
-      void dialog.alert({ title: '용량 줄이기', body: `${beforeKb}KB → ${afterKb}KB` });
+      const sizeText = `${formatMb(result.before || 0)} → ${formatMb(result.after || 0)}`;
+      appendTerminal(`완료: ${sizeText}`);
+      void dialog.alert({ title: '용량 줄이기', body: sizeText });
     } catch (err) {
       setBusy('');
       const message = err instanceof Error ? err.message : '용량을 줄이지 못했습니다.';

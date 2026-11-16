@@ -1,0 +1,31 @@
+---
+description: Tiny PDF Editor NEO 와 Default Framework 는 별개 프로젝트 — 식별자·데이터·프로세스를 절대 공유하지 않는다
+alwaysApply: true
+---
+
+# Neo 와 Default Framework 는 각자 운영된다
+
+`D:\My_Cursor\Default Framework` 와 이 저장소(Tiny PDF Editor - NEO)는 같은 템플릿에서 나왔지만
+**서로 다른 제품**이다. 한쪽을 설치·실행·종료·백업·복원해도 다른 쪽에는 아무 영향이 없어야 한다.
+
+## 공유 금지 (같으면 실제로 서로를 망가뜨린다)
+
+| 항목 | 위치 | 겹치면 생기는 일 |
+|---|---|---|
+| MSI `UpgradeCode`, 컴포넌트 `Guid` | `neo-app/installer/Product.wxs` | 한쪽 MSI 설치가 다른 쪽을 "업그레이드"로 교체 |
+| `APP_ID`, `APP_NAME`, `APP_FILE_NAME`, `productName` | `shared/constants.js`, `package.json` | userData 폴더·단일 인스턴스 락·작업표시줄 고정·로그인 자동 실행 공유 |
+| `DEFAULT_PORT` | `shared/constants.js` | `dev:stop` 이 상대 앱을 종료, 브라우저 localStorage 혼합 |
+| 백업 `manifest.app`, IP 목록 `kind` | `backupService.js`, `ipAllowlistIo.js` | 상대 앱 파일을 가져와 설정·회원 정보를 덮어씀 |
+| 브라우저 저장소 키 | `src/lib/apiClient.js`, `updateCheckUi.js` | 같은 origin 에서 로그인 토큰 공유 |
+
+## 하지 말 것
+
+- Default Framework 의 데이터 폴더(예: `%APPDATA%\DefaultFrame`)를 **읽거나 복사하는 이전(migration) 코드**를 넣지 않는다.
+- 상대 앱 프로세스를 포트 번호만 보고 종료하지 않는다. 종료는 **이 프로젝트 경로에서 뜬 프로세스**로 제한한다.
+- 새 GUID·포트·키가 필요하면 새로 만든다. 템플릿에서 값을 복사하면 그대로 충돌한다.
+- Default Framework 저장소(`D:\My_Cursor\Default Framework`) 파일은 이 저장소 작업 중 수정하지 않는다.
+
+## 확인
+
+식별자를 건드렸으면 `npm --prefix neo-app run check:identity` 를 실행한다.
+`build:release` / `build:release:mac` 은 시작할 때 자동으로 실행하며, 겹치면 빌드를 멈춘다.

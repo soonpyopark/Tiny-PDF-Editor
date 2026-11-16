@@ -17,10 +17,12 @@ NAS4USB 류 앱을 만들 때 쓰는 Electron 기본 프레임. 로그인·회�
 | `npm run build:release` | Windows MSI + portable zip → `release/` |
 | `npm run build:release:mac` | macOS dmg → `release/` (macOS 에서만 실행 가능) |
 
+`npm run check:identity` 는 Default Framework 와 식별자(UpgradeCode·appId·포트 등)가 겹치지 않는지 검사합니다. 두 릴리스 빌드가 시작할 때 자동으로 실행됩니다.
+
 산출물 이름: `TinyPDFEditor-NEO_<YYMMDD_HHMMSS>_<arch>.msi`, `TinyPDFEditor-NEO_portable_<stamp>_<arch>.zip`, `TinyPDFEditor-NEO_<stamp>_<arch>.dmg`.
 
 기본 로그인: `admin` / `admin1234` (로그인 후 회원 관리에서 변경).
-기본 포트 3001, 기본 접속 범위는 이 PC(127.0.0.1) 만. 환경설정 > 서버 관리에서 변경.
+기본 포트 3021, 기본 접속 범위는 이 PC(127.0.0.1) 만. 환경설정 > 서버 관리에서 변경.
 
 ## 구조
 

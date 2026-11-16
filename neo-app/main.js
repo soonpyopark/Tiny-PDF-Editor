@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { APP_ID, APP_NAME, LEGACY_USER_DATA_NAME } from './shared/constants.js';
+import { APP_ID, APP_NAME } from './shared/constants.js';
 import { registerCoreApi } from './electron/api/coreApi.js';
 import { startBackupScheduler, stopBackupScheduler } from './electron/backupService.js';
 import { setAppContext } from './electron/context.js';
@@ -68,8 +68,6 @@ function resolveStorage() {
     app.setPath('userData', path.join(exeDir, 'data-cache'));
   }
 
-  if (!override && !isDev && !portable) migrateLegacyUserData();
-
   const stateRoot = override
     ? path.resolve(override)
     : isDev
@@ -79,23 +77,6 @@ function resolveStorage() {
         : path.join(app.getPath('userData'), 'data');
 
   return { stateRoot, portable, exeDir };
-}
-
-/**
- * 앱 이름이 바뀌어도(`DefaultFrame` → 지금 이름) 설정·회원·백업이 사라지지 않게
- * 이전 userData 의 data 폴더를 새 위치로 한 번만 복사한다. 이전 폴더는 지우지 않는다.
- */
-function migrateLegacyUserData() {
-  try {
-    const target = path.join(app.getPath('userData'), 'data');
-    const legacy = path.join(app.getPath('appData'), LEGACY_USER_DATA_NAME, 'data');
-    if (fs.existsSync(target) || !fs.existsSync(legacy)) return;
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.cpSync(legacy, target, { recursive: true });
-    console.log('[migrate] copied legacy data:', legacy, '->', target);
-  } catch (err) {
-    console.warn('[migrate] legacy data copy failed:', err);
-  }
 }
 
 const storage = resolveStorage();
