@@ -519,6 +519,23 @@ export default function EditorPage() {
 
   async function newDoc() {
     setError('');
+    // 현재 문서가 수정된 상태면 저장 여부 확인
+    if (doc.modified) {
+      const choice = await dialog.choose({
+        title: '저장 여부',
+        body: '현재 문서가 수정되었습니다.\n저장하시겠습니까?',
+        primaryLabel: '저장',
+        extraLabel: '저장하지 않고 열기',
+        cancelLabel: '취소',
+      });
+      if (choice === 'cancel') return;
+      if (choice === 'primary') {
+        await save();
+        // save 함수가 성공했는지 확인하기 위해 에러가 없는지 체크
+        if (error) return;
+      }
+      // 'extra'를 선택하면 저장 없이 진행
+    }
     try {
       const created = await api('pdf.new');
       await showDocument(created.doc);
