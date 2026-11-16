@@ -2,8 +2,11 @@
 /**
  * npm run build:release:mac  (macOS only)
  *
- * Produces release/TinyPDFEditor-NEO_<YYMMDD_HHMMSS>_<arch>.dmg
+ * Produces two artifacts in release/:
+ *   TinyPDFEditor-NEO_<YYMMDD_HHMMSS>_<arch>.dmg       disk image (drag to Applications)
+ *   TinyPDFEditor-NEO_mac_<YYMMDD_HHMMSS>_<arch>.zip   the .app zipped (same stamp)
  * (arch = this Mac's architecture: arm64 on Apple Silicon, x64 on Intel).
+ * `_mac_` in the zip name tells the update check (and humans) it is not the Windows portable zip.
  *
  * The app is ad-hoc signed (`codesign --sign -`): enough to launch on Apple
  * Silicon. It is NOT notarized — for distribution outside your own machines,
@@ -69,10 +72,16 @@ function main() {
     'hdiutil',
   );
 
+  // zip: ditto -c -k keeps symlinks, permissions and the code signature (zip(1) would break them).
+  const zipPath = path.join(RELEASE_DIR, `${APP_FILE_NAME}_mac${suffix}.zip`);
+  fs.rmSync(zipPath, { force: true });
+  tool('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, zipPath], 'zip');
+
   fs.rmSync(STAGING_DIR, { recursive: true, force: true });
-  const size = `${(fs.statSync(dmgPath).size / 1024 / 1024).toFixed(1)} MB`;
+  const megabytes = (file) => `${(fs.statSync(file).size / 1024 / 1024).toFixed(1)} MB`;
   log('done');
-  log(`  ${path.relative(projectRoot, dmgPath)}  (${size})`);
+  log(`  ${path.relative(projectRoot, dmgPath)}  (${megabytes(dmgPath)})`);
+  log(`  ${path.relative(projectRoot, zipPath)}  (${megabytes(zipPath)})`);
 }
 
 try {

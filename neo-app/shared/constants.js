@@ -17,16 +17,39 @@ export const APP_ID = 'com.tinypdfeditor.neo';
 export const APP_FILE_NAME = 'TinyPDFEditor-NEO';
 
 /**
- * 앱 표시 버전 (점 구분 4단, 예: `1.0.0.0`). All In One Tools 와 같은 표기 규칙.
- * Git 태그는 `v1.0.0-0`(하이픈), package.json 은 `1.0.0-0` 형식을 쓴다.
+ * 앱 표시·MSI ProductVersion (점 구분 4단, 예: `1.0.0.1`). All In One Tools 와 같은 표기 규칙.
+ *
+ * 배포 시 버전 표기 규칙 (이후 릴리스도 동일):
+ * - UI / `APP_VERSION` / MSI: `1.0.0.N`  (점)
+ * - Git 태그·GitHub Release 태그: `v1.0.0-N`  (하이픈) ← `APP_GIT_TAG`
+ * - Release 제목: `v1.0.0.N`
+ * - `package.json` version: `1.0.0-N`  (electron-builder semver)
+ *
+ * N 은 `npm run version:bump` 가 올린다. 직접 고치지 않는다.
  */
-export const APP_VERSION = '1.0.0.0';
+export const APP_VERSION = '1.0.0.1';
+
+/**
+ * Git 태그 문자열. `1.0.0.1` → `v1.0.0-1`
+ * @param {string} [version]
+ */
+export function formatAppGitTag(version = APP_VERSION) {
+  const body = String(version ?? '')
+    .trim()
+    .replace(/^v/i, '');
+  const matched = /^(\d+\.\d+\.\d+)\.(\d+)$/.exec(body);
+  if (matched) return `v${matched[1]}-${matched[2]}`;
+  return `v${body}`;
+}
+
+/** 현재 릴리스용 Git 태그 (예: v1.0.0-1) */
+export const APP_GIT_TAG = formatAppGitTag(APP_VERSION);
 
 /**
  * Package build id (YYMMDD_HHMMSS). Rewritten by `npm run build:release*`
  * (scripts/sync-build-stamp.mjs); matches the suffix of the produced files.
  */
-export const APP_BUILD_STAMP = '261117_010004';
+export const APP_BUILD_STAMP = '261117_011327';
 
 /**
  * Default web server port (Electron window + LAN browsers share it).
@@ -41,9 +64,9 @@ export const DEFAULT_ADMIN_PW = 'admin1234';
 
 /**
  * GitHub repository (`owner/repo`) whose latest release is used by the
- * 업데이트 확인 button. Leave empty until the project has a release page.
+ * 업데이트 확인 button. Neo 전용 저장소 (Default Framework 와 다르다).
  */
-export const UPDATE_REPO = '';
+export const UPDATE_REPO = 'soonpyopark/Tiny-PDF-Editor-neo';
 
 /** Content hash of build/icon-source.png (scripts/prepare-icons.mjs). */
 export { APP_ICON_REV } from './iconRev.js';

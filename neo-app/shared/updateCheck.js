@@ -18,9 +18,17 @@
 
 const BUILD_STAMP_IN_NAME = /_(\d{6}_\d{6})(?=[_.])/;
 
-/** @param {string} tag */
+/**
+ * 릴리스 태그 → 앱 표시 버전. 태그는 `v1.0.0-1`(하이픈), 앱 버전은 `1.0.0.1`(점)이다.
+ *   v1.0.0-1 → 1.0.0.1,  v1.0.0.1 → 1.0.0.1,  v1.2 → 1.2
+ * 하이픈 뒤 번호를 버리면 `v1.0.0-2` 도 `1.0.0` 이 되어 새 버전을 영영 찾지 못한다.
+ * @param {string} tag
+ */
 export function parseReleaseTag(tag) {
-  const match = /^v?(\d+(?:\.\d+){0,3})/.exec(String(tag ?? '').trim());
+  const text = String(tag ?? '').trim();
+  const hyphen = /^v?(\d+\.\d+\.\d+)-(\d+)$/.exec(text);
+  if (hyphen) return `${hyphen[1]}.${hyphen[2]}`;
+  const match = /^v?(\d+(?:\.\d+){0,3})/.exec(text);
   return match ? match[1] : null;
 }
 
@@ -55,8 +63,10 @@ export function detectUpdatePlatform(platform = globalThis.process?.platform) {
 }
 
 /**
- * Keeps the release assets that belong to this platform
- * (.msi / _portable...zip on Windows, .dmg on macOS).
+ * Keeps the release assets that belong to this platform.
+ *   Windows: `.msi` and `_portable_…zip`
+ *   macOS:   `.dmg` and `_mac_…zip`
+ * 한 릴리스에 두 플랫폼의 zip 이 함께 올라가므로, zip 은 이름으로 플랫폼을 구분한다.
  *
  * @param {string[]} names
  * @param {'win' | 'mac' | 'other'} [platform]
@@ -64,8 +74,8 @@ export function detectUpdatePlatform(platform = globalThis.process?.platform) {
 export function filterAssetsForPlatform(names, platform = detectUpdatePlatform()) {
   return names.filter((name) => {
     const lower = name.toLowerCase();
-    if (platform === 'mac') return lower.endsWith('.dmg');
-    if (platform === 'win') return lower.endsWith('.msi') || lower.endsWith('.zip');
+    if (platform === 'mac') return lower.endsWith('.dmg') || (lower.endsWith('.zip') && lower.includes('_mac_'));
+    if (platform === 'win') return lower.endsWith('.msi') || (lower.endsWith('.zip') && lower.includes('_portable_'));
     return false;
   });
 }

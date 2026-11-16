@@ -58,12 +58,16 @@ function resolveWix() {
   );
 }
 
-/** x.y.z → x.y.z.<minute counter>; the 4th part must change per build so MSI treats it as an upgrade. */
+/**
+ * MSI ProductVersion = 앱 버전 그대로 (예: 1.0.0.1) — 프로그램 추가/제거에도 같은 버전이 보인다.
+ * 빌드마다 ProductCode 가 새로 만들어지고 Product.wxs 의 MajorUpgrade 가
+ * AllowSameVersionUpgrades 이므로, 같은 버전을 다시 빌드해 설치해도 이전 빌드를 교체한다.
+ * (Windows Installer 는 업그레이드 비교에서 4번째 자리를 무시한다.)
+ */
 function toMsiVersion(version) {
   const parts = String(version).split('.').map((part) => Number.parseInt(part, 10) || 0);
-  while (parts.length < 3) parts.push(0);
-  const revision = Math.floor(Date.now() / 60_000) % 65535;
-  return `${parts[0]}.${parts[1]}.${parts[2]}.${revision || 1}`;
+  while (parts.length < 4) parts.push(0);
+  return parts.slice(0, 4).join('.');
 }
 
 /** Zips `<parent>/<folder>` into `zipPath` (bsdtar ships with Windows 10+). */

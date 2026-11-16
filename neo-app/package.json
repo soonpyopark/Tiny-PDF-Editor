@@ -1,7 +1,7 @@
 {
   "name": "tiny-pdf-editor-neo-app",
   "productName": "Tiny PDF Editor - NEO",
-  "version": "1.0.0",
+  "version": "1.0.0-1",
   "description": "Tiny PDF Editor NEO: Electron + React UI over a bundled Python PDF engine, with a virtual PDF printer.",
   "main": "main.js",
   "type": "module",
@@ -17,6 +17,8 @@
     "build:engine": "node scripts/build-engine.mjs",
     "build:release": "node scripts/build-release.mjs",
     "build:release:mac": "node scripts/build-release-mac.mjs",
+    "version:bump": "node scripts/bump-version.mjs",
+    "publish:release": "node scripts/publish-release.mjs",
     "update:all": "node scripts/update-all.mjs",
     "build:update_all": "update_all.bat _inner && npm run build:release",
     "build:update_all:mac": "node scripts/update-all.mjs && npm run build:release:mac",
