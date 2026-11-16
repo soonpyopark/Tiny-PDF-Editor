@@ -575,9 +575,13 @@ export function register() {
     const win = ownerWindow();
     let paths = Array.isArray(body?.paths) ? body.paths.map(String) : [];
     if (!paths.length) {
+      let filters = OPEN_FILTERS;
+      if (body?.filters === 'all') {
+        filters = [{ name: '전체', extensions: ['*'] }, ...OPEN_FILTERS];
+      }
       const options = {
         title: '페이지 추가',
-        filters: OPEN_FILTERS,
+        filters,
         properties: ['openFile', 'multiSelections'],
       };
       const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
