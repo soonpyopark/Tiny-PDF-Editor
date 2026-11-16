@@ -372,7 +372,17 @@ export default function ThumbnailPanel({
         onDragLeave={() => setDragOverIndex(null)}
       >
         {!docOpen ? (
-          <p className="px-1 text-xs leading-relaxed text-slate-400">연 문서의 쪽 미리보기가 여기 표시됩니다.</p>
+          <div className="flex h-full items-center justify-center">
+            <p className="text-center text-sm text-slate-400">
+              Drag & Drop files here.
+            </p>
+          </div>
+        ) : pageCount === 0 ? (
+          <div className="flex h-full items-center justify-center">
+            <p className="text-center text-sm text-slate-400">
+              Drag & Drop files here.
+            </p>
+          </div>
         ) : (
           thumbs.map((src, index) => {
             const isSelected = selected.includes(index);
