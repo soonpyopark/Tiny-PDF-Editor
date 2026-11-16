@@ -547,7 +547,7 @@ export default function EditorPage() {
   async function insertFiles() {
     setError('');
     try {
-      const result = await api('pdf.insert', { index: pageIndex + 1, filters: 'all' });
+      const result = await api('pdf.insert', { index: pageIndex + 1 });
       if (result.canceled) return;
       await applyDocResult(result, pageIndex);
     } catch (err) {

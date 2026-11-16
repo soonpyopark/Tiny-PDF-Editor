@@ -575,9 +575,10 @@ export function register() {
     const win = ownerWindow();
     let paths = Array.isArray(body?.paths) ? body.paths.map(String) : [];
     if (!paths.length) {
-      let filters = OPEN_FILTERS;
-      if (body?.filters === 'all') {
-        filters = [{ name: '전체', extensions: ['*'] }, ...OPEN_FILTERS];
+      // 기본: 전체 필터, filters 옵션으로 제한 가능
+      let filters = [{ name: '전체', extensions: ['*'] }, ...OPEN_FILTERS];
+      if (body?.filters === 'restricted') {
+        filters = OPEN_FILTERS;
       }
       const options = {
         title: '페이지 추가',
