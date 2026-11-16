@@ -33,9 +33,34 @@
     @apply bg-app-surface text-slate-800;
   }
 
+  /* 전체화면: 브라우저 기본 검정 바탕(::backdrop)이 드러나지 않게 같은 배경을 쓴다. */
+  html,
+  html:fullscreen,
+  html::backdrop,
+  :fullscreen::backdrop {
+    @apply bg-app-surface;
+  }
+
   button:not(:disabled),
   [role='button']:not([aria-disabled='true']) {
     cursor: pointer;
+  }
+}
+
+@layer utilities {
+  @keyframes slideInUp {
+    from {
+      transform: translateY(100%);
+      opacity: 0;
+    }
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+
+  .animate-slideInUp {
+    animation: slideInUp 0.3s ease-out;
   }
 }
 

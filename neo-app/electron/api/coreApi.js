@@ -95,6 +95,7 @@ export function registerCoreApi() {
     if ('accentColor' in body) patch.accentColor = normalizeAccentColor(body.accentColor);
     if ('loginLockoutEnabled' in body) patch.loginLockoutEnabled = Boolean(body.loginLockoutEnabled);
     if ('startupUpdateCheck' in body) patch.startupUpdateCheck = Boolean(body.startupUpdateCheck);
+    if ('closeToTray' in body) patch.closeToTray = Boolean(body.closeToTray);
     if ('autoLaunch' in body && runtime.autoLaunch?.supported) {
       runtime.autoLaunch.set(Boolean(body.autoLaunch));
     }

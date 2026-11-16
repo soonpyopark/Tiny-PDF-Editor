@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMenuPlacement } from '../../lib/menuPlacement.js';
 
 /** Matches pdf_editor.thumbnail_panel.THUMB_SCALE_LEVELS */
-export const THUMB_SCALE_LEVELS = [55, 95, 135, 165];
-export const DEFAULT_THUMB_SCALE_LEVEL = 2;
+const THUMB_SCALE_LEVELS = [55, 95, 135, 165];
+const DEFAULT_THUMB_SCALE_LEVEL = 2;
 
 const headerBtnClass =
   'inline-flex h-[26px] w-7 shrink-0 items-center justify-center rounded text-[#333] hover:bg-slate-100 disabled:opacity-40';
@@ -309,15 +309,8 @@ export default function ThumbnailPanel({
     event.dataTransfer.effectAllowed = 'move';
   }
 
-  function onDragOverItem(event, index) {
-    event.preventDefault();
-    setDragOverIndex(index);
-    event.dataTransfer.dropEffect = event.dataTransfer.types.includes('Files') ? 'copy' : 'move';
-  }
-
   async function onDropAt(event, targetIndex) {
     event.preventDefault();
-    setDragOverIndex(null);
     // Sandboxed renderer cannot read File.path; use Preload's pathForFile.
     if (event.dataTransfer.files?.length) {
       const files = Array.from(event.dataTransfer.files);
@@ -337,10 +330,30 @@ export default function ThumbnailPanel({
       const raw = event.dataTransfer.getData('application/x-tiny-pages');
       const indices = JSON.parse(raw || '[]');
       if (Array.isArray(indices) && indices.length) {
-        onAction({ type: 'movePages', indices: indices.map(Number), targetIndex });
+        // 원본 PyQt의 _adjusted_move_target 로직을 정확히 복사
+        const movedIndices = indices.map(Number);
+        const selected = [...movedIndices].sort((a, b) => a - b);
+        
+        let adjustedTargetIndex = targetIndex;
+        
+        // 연속된 범위인지 확인
+        const isContiguous = selected.every(
+          (val, idx) => idx === 0 || val === selected[idx - 1] + 1
+        );
+        
+        if (isContiguous) {
+          const first = selected[0];
+          const last = selected[selected.length - 1];
+          // 선택한 범위 내에 drop하면 마지막 페이지 다음으로 이동
+          if (first < targetIndex && targetIndex <= last + 1) {
+            adjustedTargetIndex = last + 1;
+          }
+        }
+        
+        onAction({ type: 'movePages', indices: movedIndices, targetIndex: adjustedTargetIndex });
       }
-    } catch {
-      /* ignore */
+    } catch (e) {
+      console.error('onDropAt error:', e);
     }
   }
 
@@ -376,10 +389,46 @@ export default function ThumbnailPanel({
         onContextMenu={openEmptyMenu}
         onDragOver={(event) => {
           event.preventDefault();
-          setDragOverIndex(pageCount);
+          // 전체 리스트 영역에서 드래그 위치를 계산해 dragOverIndex를 업데이트
+          const list = listRef.current;
+          if (!list) return;
+          const rect = list.getBoundingClientRect();
+          const relativeY = event.clientY - rect.top + list.scrollTop;
+          
+          // 썸네일 중에서 마우스 위치에 해당하는 index를 찾기
+          let found = false;
+          for (let i = 0; i < pageCount; i += 1) {
+            const element = itemRefs.current[i];
+            if (!element) continue;
+            const elemRect = element.getBoundingClientRect();
+            const elemTop = elemRect.top - rect.top + list.scrollTop;
+            const elemBottom = elemTop + elemRect.height;
+            if (relativeY >= elemTop && relativeY < elemBottom) {
+              const centerY = elemTop + elemRect.height / 2;
+              const newIndex = relativeY < centerY ? i : i + 1;
+              setDragOverIndex(newIndex);
+              found = true;
+              break;
+            }
+          }
+          // 모든 페이지 아래 영역
+          if (!found) {
+            setDragOverIndex(pageCount);
+          }
+          event.dataTransfer.dropEffect = event.dataTransfer.types.includes('Files') ? 'copy' : 'move';
         }}
-        onDrop={(event) => void onDropAt(event, pageCount)}
-        onDragLeave={() => setDragOverIndex(null)}
+        onDrop={(event) => {
+          // dragOverIndex를 먼저 읽은 후 onDropAt 호출
+          const targetIdx = dragOverIndex ?? pageCount;
+          void onDropAt(event, targetIdx);
+          setDragOverIndex(null);
+        }}
+        onDragLeave={(event) => {
+          // 리스트 div 자체를 떠날 때만 리셋 (자식 요소로 이동할 때는 리셋하지 않음)
+          if (event.target === listRef.current) {
+            setDragOverIndex(null);
+          }
+        }}
       >
         {!docOpen ? (
           <div className="flex h-full items-center justify-center">
@@ -410,8 +459,6 @@ export default function ThumbnailPanel({
                   onClick={(event) => onItemClick(event, index)}
                   onContextMenu={(event) => openMenu(event, index)}
                   onDragStart={(event) => onDragStart(event, index)}
-                  onDragOver={(event) => onDragOverItem(event, index)}
-                  onDrop={(event) => void onDropAt(event, index)}
                   className={`mb-2 block w-full rounded-md border p-1 text-left ${
                     isSelected
                       ? 'border-[#d93025] bg-[#ebebeb]'

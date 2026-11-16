@@ -22,4 +22,11 @@ contextBridge.exposeInMainWorld('frame', {
   },
   /** 새 문서 창을 열고 파일 경로를 넘긴다. */
   openDocumentWindow: (filePath) => ipcRenderer.invoke('frame:openDocumentWindow', filePath),
+  /** 창 닫기·종료 요청이 오면 handler 를 부른다. 저장 여부를 묻고 respondClose 로 답한다. */
+  onCloseRequest: (handler) => {
+    const listener = () => handler();
+    ipcRenderer.on('frame:closeRequest', listener);
+    return () => ipcRenderer.removeListener('frame:closeRequest', listener);
+  },
+  respondClose: (proceed) => ipcRenderer.send('frame:closeResponse', proceed === true),
 });

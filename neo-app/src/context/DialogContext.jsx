@@ -21,6 +21,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
  *   title?: string,
  *   body?: string | import('react').ReactNode,
  *   primaryLabel?: string,
+ *   secondaryLabel?: string,
  *   extraLabel?: string,
  *   cancelLabel?: string,
  * }} ChoiceOptions
@@ -30,7 +31,7 @@ const DialogContext = createContext(
   /** @type {{
    *   alert: (options: DialogOptions) => Promise<void>,
    *   confirm: (options: DialogOptions) => Promise<boolean>,
-   *   choose: (options: ChoiceOptions) => Promise<'primary' | 'extra' | null>,
+   *   choose: (options: ChoiceOptions) => Promise<'primary' | 'secondary' | 'extra' | null>,
    * } | null} */ (null),
 );
 
@@ -89,7 +90,7 @@ export function DialogProvider({ children }) {
             role="alertdialog"
             aria-modal="true"
             aria-labelledby="app-dialog-title"
-            className="w-full max-w-[440px] rounded-xl bg-white p-6 shadow-xl"
+            className={`w-full rounded-xl bg-white p-6 shadow-xl ${options.secondaryLabel ? 'max-w-[560px]' : 'max-w-[440px]'}`}
           >
             <div className={options.icon ? 'flex items-start gap-4' : ''}>
               {options.icon ? <div className="shrink-0">{options.icon}</div> : null}
@@ -131,6 +132,11 @@ export function DialogProvider({ children }) {
                   {options.extraLabel ? (
                     <button type="button" className={btnSoft} onClick={() => close('extra')}>
                       {options.extraLabel}
+                    </button>
+                  ) : null}
+                  {options.secondaryLabel ? (
+                    <button type="button" className={btnSoft} onClick={() => close('secondary')}>
+                      {options.secondaryLabel}
                     </button>
                   ) : null}
                   <button type="button" autoFocus className={btnPrimary} onClick={() => close('primary')}>

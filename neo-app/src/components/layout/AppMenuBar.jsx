@@ -3,6 +3,7 @@ import { useAppInfo } from '../../context/AppInfoContext.jsx';
 import { useDialog } from '../../context/DialogContext.jsx';
 import { useEditorCommands } from '../../features/editor/editorCommands.jsx';
 import { api, getNative } from '../../lib/apiClient.js';
+import { toggleFullscreen as toggleAppFullscreen, useFullscreen } from '../../lib/fullscreen.js';
 import { runUpdateCheck } from '../../lib/updateCheckUi.js';
 import AppLogo from '../common/AppLogo.jsx';
 
@@ -25,7 +26,7 @@ export default function AppMenuBar() {
   const { run, ready, docOpen } = useEditorCommands();
   const [openId, setOpenId] = useState('');
   const [subId, setSubId] = useState('');
-  const [fullscreen, setFullscreen] = useState(false);
+  const fullscreen = useFullscreen();
   const [openTarget, setOpenTarget] = useState('tab');
   const [signatureOutside, setSignatureOutside] = useState(false);
   const [facing, setFacing] = useState(false);
@@ -45,12 +46,6 @@ export default function AppMenuBar() {
     void api('pdf.openTargetGet')
       .then((data) => setOpenTarget(data?.openInNewWindow ? 'window' : 'tab'))
       .catch(() => undefined);
-  }, []);
-
-  useEffect(() => {
-    const onFullscreen = () => setFullscreen(Boolean(document.fullscreenElement));
-    document.addEventListener('fullscreenchange', onFullscreen);
-    return () => document.removeEventListener('fullscreenchange', onFullscreen);
   }, []);
 
   useEffect(() => {
@@ -131,6 +126,7 @@ export default function AppMenuBar() {
   }, [recentCtx]);
 
   const go = (name, ...args) => {
+    console.log('[AppMenuBar.go] Called with name:', name, 'args:', args);
     closeMenus();
     void run(name, ...args);
   };
@@ -175,8 +171,7 @@ export default function AppMenuBar() {
 
   const toggleFullscreen = () => {
     closeMenus();
-    if (document.fullscreenElement) void document.exitFullscreen();
-    else void document.documentElement.requestFullscreen?.();
+    toggleAppFullscreen();
   };
 
   const needsDoc = !docOpen;
@@ -223,8 +218,8 @@ export default function AppMenuBar() {
     sep('edit-2'),
     item('find', '텍스트 검색...', { shortcut: 'Ctrl+F', disabled: needsDoc, run: () => go('find') }),
     item('delete', '선택 페이지 삭제', { shortcut: 'Delete', disabled: needsDoc, run: () => go('delete') }),
-    item('rotateCw', '모든 페이지 시계방향 회전', { disabled: needsDoc, run: () => go('rotateCw') }),
-    item('rotateCcw', '모든 페이지 반시계방향 회전', { disabled: needsDoc, run: () => go('rotateCcw') }),
+    item('rotateCw', '모두 시계방향 회전', { disabled: needsDoc, run: () => go('rotateCw') }),
+    item('rotateCcw', '모두 반시계방향 회전', { disabled: needsDoc, run: () => go('rotateCcw') }),
   ];
 
   // 기능: 원본 파일/OCR/보안 메뉴에 흩어져 있던 별도 기능을 한곳에 모았다. 기능끼리는 구분선으로 나눈다.

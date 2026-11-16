@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useDialog } from '../../context/DialogContext.jsx';
-import { api, getWindowId } from '../../lib/apiClient.js';
+import { api as apiRaw, engineScope } from '../../lib/apiClient.js';
+import { useFullscreen } from '../../lib/fullscreen.js';
+import Toast from '../../components/common/Toast.jsx';
 import { useRegisterEditorCommands } from './editorCommands.jsx';
 import PageSide, { PanelToggleTab } from './PageSide.jsx';
-import { DocumentTabBar, ReduceSizeDialog, SearchDropdown } from './editorDialogs.jsx';
+import { ReduceSizeDialog, SearchDropdown } from './editorDialogs.jsx';
 import PageNumberDialog from './PageNumberDialog.jsx';
 import ExportImagesDialog from './ExportImagesDialog.jsx';
 import HwpConvertDialog from './HwpConvertDialog.jsx';
@@ -114,9 +116,29 @@ function windowIndices(center, facingMode, count) {
   return list.sort((a, b) => Math.abs(a - center) - Math.abs(b - center));
 }
 
-/** Neo editor: Tiny PDF Editor features via the headless engine. */
-export default function EditorPage() {
+/**
+ * Neo editor: Tiny PDF Editor features via the headless engine.
+ * 한 탭 = 이 컴포넌트 인스턴스 하나 = PDF 엔진 세션 하나 (DocumentTabs 가 관리).
+ * @param {{
+ *   tabKey?: string,
+ *   active?: boolean,
+ *   initialPath?: string,
+ *   onDocChange?: (tabKey: string, state: { name: string, open: boolean, modified: boolean, fullscreen: boolean }) => void,
+ *   onOpenInNewTab?: (filePath: string) => void,
+ *   onRegisterControls?: (tabKey: string, controls: { confirmClose: () => Promise<boolean>, closeDoc: () => void } | null) => void,
+ * }} props
+ */
+export default function EditorPage({
+  tabKey = '',
+  active = true,
+  initialPath = '',
+  onDocChange,
+  onOpenInNewTab,
+  onRegisterControls,
+}) {
   const dialog = useDialog();
+  // 이 탭의 엔진 세션으로 보내는 요청. 아래 본문의 api(...) 호출은 모두 이 함수를 쓴다.
+  const api = (name, body) => apiRaw(name, body, { tab: tabKey });
   const [status, setStatus] = useState(/** @type {{ ready: boolean, error?: string } | null} */ (null));
   const [doc, setDoc] = useState(EMPTY_DOC);
   const [pageIndex, setPageIndex] = useState(0);
@@ -130,6 +152,7 @@ export default function EditorPage() {
   const [markupTabRequest, setMarkupTabRequest] = useState(0);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const [toast, setToast] = useState(/** @type {{ message: string, type: 'error' | 'success' | 'info' | 'warning' } | null} */ (null));
   // 원본 하단 "터미널": 작업 시작 시 열리고, 엔진 진행 로그가 쌓인다.
   const [terminal, setTerminal] = useState({ open: false, expanded: true, lines: /** @type {string[]} */ ([]) });
 
@@ -144,21 +167,17 @@ export default function EditorPage() {
   useEffect(() => {
     const subscribe = window.frame?.onPdfLog;
     if (typeof subscribe !== 'function') return undefined;
-    const myWindowId = getWindowId();
+    const myScope = engineScope(tabKey);
     return subscribe((/** @type {{ message?: string, windowId?: string }} */ payload) => {
-      // 다른 문서 창의 엔진 로그는 이 창의 터미널에 섞지 않는다.
-      if (payload?.message && payload.windowId === myWindowId) appendTerminal(payload.message);
+      // 다른 문서 창/탭의 엔진 로그는 이 터미널에 섞지 않는다.
+      if (payload?.message && payload.windowId === myScope) appendTerminal(payload.message);
     });
-  }, [appendTerminal]);
+  }, [appendTerminal, tabKey]);
 
-  // 새 문서 창: 메인 창이 넘긴 파일(?open=...)을 이 창의 엔진으로 연다.
+  // 넘어온 파일(?open= 또는 새 탭으로 연 파일)을 이 탭의 엔진으로 연다.
   useEffect(() => {
-    const url = new URL(window.location.href);
-    const target = url.searchParams.get('open');
-    if (!target) return;
-    url.searchParams.delete('open');
-    window.history.replaceState(null, '', url.toString());
-    void openRecent(target);
+    if (!initialPath) return;
+    void openRecent(initialPath);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [passwordPath, setPasswordPath] = useState('');
@@ -185,8 +204,13 @@ export default function EditorPage() {
   const [exportScope, setExportScope] = useState(null);
   // OCR 옵션창: null 이면 닫힘, { indices: null } 은 범위 입력 모드, { indices: [..] } 은 썸네일 선택 모드.
   const [ocrScope, setOcrScope] = useState(null);
-  const [fullscreen, setFullscreen] = useState(false);
-  const [showFullscreenExit, setShowFullscreenExit] = useState(false);
+  // 전체화면은 앱 전체가 공유한다 (메뉴·F11·종료 버튼은 AppShell 이 처리).
+  const fullscreen = useFullscreen();
+  // 전체화면에서 왼쪽 패널은 숨기되 토글 탭은 남기고, 탭을 누르면 패널을 잠시 펼친다 (원본 동작).
+  const [fullscreenPanelOpen, setFullscreenPanelOpen] = useState(false);
+  useEffect(() => {
+    if (!fullscreen) setFullscreenPanelOpen(false);
+  }, [fullscreen]);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [hwpOpen, setHwpOpen] = useState(false);
   const [clipboardCount, setClipboardCount] = useState(0);
@@ -219,8 +243,8 @@ export default function EditorPage() {
         if (cancelled) return;
         setStatus(data);
         // 원본 Tiny 처럼 실행하면 빈 문서 탭을 연다. 이미 열린 문서가 있거나 열 파일(?open=)이 있는 창은 건너뛴다.
-        const hasOpenTarget = new URL(window.location.href).searchParams.has('open');
-        if (data.ready && !data.doc?.open && !hasOpenTarget) {
+        // initialPath 가 있으면 넘어온 파일을 연다. 그 탭에는 빈 문서를 만들지 않는다.
+        if (data.ready && !data.doc?.open && !initialPath) {
           void newDoc();
         }
       })
@@ -439,29 +463,42 @@ export default function EditorPage() {
     void changeZoom(value / 100);
   }
 
+  /** 저장했으면 true. 저장 대화상자를 취소하거나 실패하면 false. */
   async function save() {
     setError('');
     try {
       const saved = doc.path ? await api('pdf.save') : await api('pdf.pickSave');
-      if (saved.canceled) return;
+      if (saved.canceled) return false;
       setDoc(saved.doc);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : '저장하지 못했습니다.');
+      return false;
     }
   }
 
+  /** 다른 이름으로 저장했으면 true. 대화상자를 취소하거나 실패하면 false. */
   async function saveAs() {
     setError('');
     try {
       const saved = await api('pdf.pickSave');
-      if (saved.canceled) return;
+      if (saved.canceled) return false;
       setDoc(saved.doc);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : '저장하지 못했습니다.');
+      return false;
     }
   }
 
   async function closeDoc() {
+    // 수정된 문서는 버리기 전에 저장 여부를 먼저 묻는다 (탭 X · 파일 > 닫기 공통).
+    const proceed = await confirmUnsavedChanges({
+      title: '저장 여부',
+      body: `'${docRef.current.name}'의 변경 사항을 저장하시겠습니까?`,
+      extraLabel: '저장하지 않고 닫기',
+    });
+    if (!proceed) return;
     const token = ++requestId.current;
     setError('');
     try {
@@ -517,25 +554,33 @@ export default function EditorPage() {
     void dialog.alert({ title: '형광펜 · 밑줄', body });
   }
 
+  /**
+   * 수정된 문서를 버리기 전에 저장 여부를 묻는다. 진행해도 되면 true.
+   * '취소'를 누르거나, 저장을 골랐는데 저장이 취소·실패하면 false.
+   */
+  async function confirmUnsavedChanges({ title, body, extraLabel }) {
+    if (!docRef.current.modified) return true;
+    const choice = await dialog.choose({
+      title,
+      body,
+      primaryLabel: '저장',
+      secondaryLabel: '다른 이름으로 저장',
+      extraLabel,
+      cancelLabel: '취소',
+    });
+    if (choice === 'primary') return save();
+    if (choice === 'secondary') return saveAs();
+    return choice === 'extra';
+  }
+
   async function newDoc() {
     setError('');
-    // 현재 문서가 수정된 상태면 저장 여부 확인
-    if (doc.modified) {
-      const choice = await dialog.choose({
-        title: '저장 여부',
-        body: '현재 문서가 수정되었습니다.\n저장하시겠습니까?',
-        primaryLabel: '저장',
-        extraLabel: '저장하지 않고 열기',
-        cancelLabel: '취소',
-      });
-      if (choice === 'cancel') return;
-      if (choice === 'primary') {
-        await save();
-        // save 함수가 성공했는지 확인하기 위해 에러가 없는지 체크
-        if (error) return;
-      }
-      // 'extra'를 선택하면 저장 없이 진행
-    }
+    const proceed = await confirmUnsavedChanges({
+      title: '저장 여부',
+      body: '현재 문서가 수정되었습니다.\n저장하시겠습니까?',
+      extraLabel: '저장하지 않고 열기',
+    });
+    if (!proceed) return;
     try {
       const created = await api('pdf.new');
       await showDocument(created.doc);
@@ -565,18 +610,44 @@ export default function EditorPage() {
    * 원본 _open_paths: 문서가 열려 있고 '새 창으로 열기'이면 새 창에서 연다.
    * 그 밖에는 이 창에서 연다. 브라우저(창 기능 없음)는 항상 이 창에서 연다.
    */
+  /**
+   * 원본 _is_effectively_empty: 경로·수정·페이지가 없는 문서는 빈 문서로 본다.
+   * 엔진은 빈 문서도 open: true 로 돌려주므로 open 만으로 판단하면 안 된다.
+   */
+  function isEffectivelyEmpty(current) {
+    return !current.open || (!current.path && !current.modified && (current.pageCount || 0) === 0);
+  }
+
+  /**
+   * 파일 열기 라우팅 (원본 _open_paths 와 같은 순서)
+   * 1) 빈 문서 상태 -> 이 창에서 바로 연다.
+   * 2) 문서가 열려 있고 설정이 '새 창' -> 새 창으로 연다.
+   * 3) 그 밖 -> 이 창에서 연다 (현재 문서를 교체하므로 수정 확인을 먼저 받는다).
+   */
   async function openFileTarget(filePath) {
     const native = window.frame;
-    if (doc.open && native?.openDocumentWindow) {
+    if (!isEffectivelyEmpty(docRef.current)) {
+      let openInNewWindow = false;
       try {
-        const { openInNewWindow } = await api('pdf.openTargetGet');
-        if (openInNewWindow) {
-          await native.openDocumentWindow(filePath);
-          return;
-        }
+        ({ openInNewWindow } = await api('pdf.openTargetGet'));
       } catch {
         // 설정을 읽지 못하면 이 창에서 연다.
       }
+      if (openInNewWindow && native?.openDocumentWindow) {
+        await native.openDocumentWindow(filePath);
+        return;
+      }
+      // 새 탭: 현재 탭은 그대로 두고 이 창에 탭을 하나 더 만든다. 수정 확인은 필요 없다.
+      if (onOpenInNewTab) {
+        onOpenInNewTab(filePath);
+        return;
+      }
+      const proceed = await confirmUnsavedChanges({
+        title: '저장 여부',
+        body: '현재 문서가 수정되었습니다.\n저장하시겠습니까?',
+        extraLabel: '저장하지 않고 열기',
+      });
+      if (!proceed) return;
     }
     await openRecent(filePath);
   }
@@ -1073,9 +1144,14 @@ export default function EditorPage() {
   async function printDoc() {
     setError('');
     try {
-      await api('pdf.print');
+      console.log('[printDoc] Starting print with path:', doc.path);
+      // 백엔드에서 임시 PDF를 생성하고 인쇄 대화상자를 띄운다
+      const result = await api('pdf.printWithDialog', { path: doc.path });
+      console.log('[printDoc] Print result:', result);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '인쇄하지 못했습니다.');
+      const errMsg = err instanceof Error ? err.message : '인쇄하지 못했습니다.';
+      console.error('[printDoc] Error:', errMsg, err);
+      setToast({ message: errMsg, type: 'error' });
     }
   }
 
@@ -1130,23 +1206,17 @@ export default function EditorPage() {
   }
 
   useEffect(() => {
+    // 단축키는 활성 탭에서만 처리한다 (숨은 탭이 같은 키를 받지 않게).
+    if (!active) return undefined;
     const onKeyDown = (event) => {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
-      if (event.key === 'F11') {
-        event.preventDefault();
-        setFullscreen((v) => !v);
-        return;
-      }
-      if (event.key === 'Escape' && fullscreen) {
-        setFullscreen(false);
-        return;
-      }
+      // F11·Esc 는 AppMenuBar / 브라우저 전체화면이 처리한다. 여기서 따로 다루지 않는다.
       if (event.key === 'ArrowLeft') void goTo(pageIndex - (facing ? 2 : 1));
       if (event.key === 'ArrowRight') void goTo(pageIndex + (facing ? 2 : 1));
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [fullscreen, facing, pageIndex]);
+  }, [fullscreen, facing, pageIndex, active]);
 
   // 연속 스크롤: 휠은 브라우저 기본 스크롤에 맡긴다. 쪽 끝에서 다음 쪽 위로 자연스럽게 이어진다.
   // (예전의 "끝에서 굴리면 쪽 맨 위로 점프" 방식은 제거했다.)
@@ -1168,16 +1238,27 @@ export default function EditorPage() {
     return () => view.removeEventListener('wheel', onCtrlWheelZoom);
   }, []);
 
-  // 전체화면 모드: 마우스 상단 60px 감지 타이머
+  // 창 닫기(X)·종료 요청이 오면 저장 여부를 묻고, 진행해도 되는지 메인 프로세스에 답한다.
+  // 최신 doc 상태를 읽도록 ref 로 호출한다. (브리지는 window.frame 이다. Electron 밖에서는 없다.)
+  const confirmCloseRef = useRef(null);
+  confirmCloseRef.current = () =>
+    confirmUnsavedChanges({
+      title: '저장 여부',
+      body: `'${docRef.current.name}'의 변경 사항을 저장하시겠습니까?`,
+      extraLabel: '저장하지 않고 닫기',
+    });
+  // 창 닫기 요청은 DocumentTabs 가 모든 탭을 차례로 확인한 뒤 처리한다. 여기서는 이 탭의 확인 함수만 등록한다.
+  const closeDocRef = useRef(null);
+  closeDocRef.current = closeDoc;
   useEffect(() => {
-    if (!fullscreen) return undefined;
-    const checkMousePos = () => {
-      const y = window.pageYOffset;
-      setShowFullscreenExit(y < 60);
-    };
-    const id = setInterval(checkMousePos, 120);
-    return () => clearInterval(id);
-  }, [fullscreen]);
+    if (!onRegisterControls) return undefined;
+    onRegisterControls(tabKey, {
+      confirmClose: () => confirmCloseRef.current(),
+      closeDoc: () => closeDocRef.current?.(),
+    });
+    return () => onRegisterControls(tabKey, null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabKey, onRegisterControls]);
 
   function fit(mode) {
     const view = viewRef.current;
@@ -1248,7 +1329,17 @@ export default function EditorPage() {
       getFacing: () => facing,
     },
     { ready: engineReady, docOpen: doc.open },
+    active,
   );
+
+  // 탭 묶음(DocumentTabs)에 이 탭의 문서 상태를 알린다. 탭 바와 종료 확인에 쓴다.
+  useEffect(() => {
+    onDocChange?.(tabKey, {
+      name: doc.path ? doc.name : '빈 문서(noname)',
+      open: Boolean(doc.open),
+      modified: Boolean(doc.modified),
+    });
+  }, [onDocChange, tabKey, doc.open, doc.name, doc.path, doc.modified]);
 
   const zoomPercent = Math.round(zoom * 100);
   const canNav = doc.open && doc.pageCount > 0;
@@ -1267,7 +1358,7 @@ export default function EditorPage() {
       : '';
 
   return (
-    <div className={`flex h-full min-h-0 flex-col ${fullscreen ? 'bg-black' : 'bg-app-surface'}`}>
+    <div className="flex h-full min-h-0 flex-col bg-app-surface">
       {!fullscreen && (
         <>
           {status && !engineReady ? (
@@ -1276,19 +1367,11 @@ export default function EditorPage() {
             </p>
           ) : null}
           {error ? <p className="border-b border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
-
-          <DocumentTabBar
-            docOpen={doc.open}
-            docName={doc.path ? doc.name : '빈 문서(noname)'}
-            modified={doc.modified}
-            onClose={() => void closeDoc()}
-          >
-          </DocumentTabBar>
         </>
       )}
 
       <div className="flex min-h-0 flex-1">
-        {!fullscreen && <PageSide
+        {(!fullscreen || fullscreenPanelOpen) && <PageSide
           docOpen={doc.open}
           pageIndex={pageIndex}
           pageCount={doc.pageCount || 0}
@@ -1304,12 +1387,14 @@ export default function EditorPage() {
         }
 
         <div className="relative flex min-w-0 flex-1 flex-col">
-          {!fullscreen && (
-            <PanelToggleTab
-              collapsed={panelCollapsed}
-              onToggle={() => setPanelCollapsed((value) => !value)}
-            />
-          )}
+          <PanelToggleTab
+            collapsed={fullscreen ? !fullscreenPanelOpen : panelCollapsed}
+            onToggle={() =>
+              fullscreen
+                ? setFullscreenPanelOpen((value) => !value)
+                : setPanelCollapsed((value) => !value)
+            }
+          />
           {!fullscreen && searchOpen && doc.open ? (
             <SearchDropdown
               query={searchQuery}
@@ -1375,9 +1460,9 @@ export default function EditorPage() {
             ) : (
               <div className="flex h-full items-center justify-center p-8">
                 <div className="max-w-md text-center">
-                  <h1 className="m-0 text-lg font-semibold text-slate-800">PDF 편집 초안</h1>
+                  <h1 className="m-0 text-lg font-semibold text-slate-800">빈 문서</h1>
                   <p className="mt-2 text-sm leading-relaxed text-slate-500">
-                    파일 메뉴의 열기로 문서를 불러옵니다. 문서를 읽고 쪽 그림을 만드는 일은 이 PC의 Tiny PDF Editor 엔진이 합니다.
+                    병합할 이미지나 PDF 를 좌측 썸네일 창으로 드래그 앤 드롭 해주세요
                   </p>
                   {busy ? <p className="mt-3 text-sm text-slate-500">{busy}</p> : null}
                 </div>
@@ -1579,24 +1664,13 @@ export default function EditorPage() {
         onApply={(hits, style) => void applyPiiRedact(hits, style)}
       />
 
-      {/* 전체화면 종료 버튼 */}
-      {fullscreen && (
-        <div className="fixed inset-0 z-[1000] pointer-events-none">
-          {showFullscreenExit && (
-            <button
-              type="button"
-              className="pointer-events-auto absolute top-7 left-1/2 -translate-x-1/2 h-9 w-9 rounded-full bg-white text-black hover:bg-gray-100 flex items-center justify-center transition-colors"
-              onClick={() => setFullscreen(false)}
-              title="전체 화면 해제 (ESC)"
-              aria-label="전체 화면 해제"
-            >
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          )}
-        </div>
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          onClose={() => setToast(null)}
+          autoClose={5000}
+        />
       )}
     </div>
   );

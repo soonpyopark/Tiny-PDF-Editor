@@ -13,7 +13,7 @@
  *   component: import('react').ComponentType,
  * }} FeatureDefinition
  */
-import EditorPage from './editor/EditorPage.jsx';
+import DocumentTabs from './editor/DocumentTabs.jsx';
 
 /** @type {FeatureDefinition[]} */
-export const FEATURES = [{ id: 'editor', label: 'PDF 편집', icon: '📄', component: EditorPage }];
+export const FEATURES = [{ id: 'editor', label: 'PDF 편집', icon: '📄', component: DocumentTabs }];

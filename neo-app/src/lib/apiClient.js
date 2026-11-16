@@ -35,6 +35,17 @@ export function getWindowId() {
   }
 }
 
+/**
+ * 탭 식별자 포함 엔진 세션 키. 탭이 없으면(첫 탭) 창 식별자와 같다.
+ * 탭마다 PDF 엔진 세션이 따로 생기므로 `창__탭` 형식으로 만든다.
+ * @param {string} [tab]
+ */
+export function engineScope(tab = '') {
+  const base = getWindowId();
+  const key = String(tab || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 16);
+  return key ? `${base}__${key}` : base;
+}
+
 export function getToken() {
   try {
     return window.sessionStorage.getItem(TOKEN_KEY) || window.localStorage.getItem(TOKEN_KEY) || '';
@@ -72,7 +83,7 @@ export const UNAUTHORIZED_EVENT = 'frame:unauthorized';
  * @param {string} name
  * @param {unknown} body
  */
-async function request(name, body) {
+async function request(name, body, tab = '') {
   const token = getToken();
   let response;
   try {
@@ -80,7 +91,7 @@ async function request(name, body) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Editor-Window': getWindowId(),
+        'X-Editor-Window': engineScope(tab),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify(body ?? {}),
@@ -115,8 +126,8 @@ async function failure(response, name) {
  * @param {unknown} [body]
  * @returns {Promise<T>}
  */
-export async function api(name, body = {}) {
-  const response = await request(name, body);
+export async function api(name, body = {}, options = {}) {
+  const response = await request(name, body, options?.tab ?? '');
   if (!response.ok) throw await failure(response, name);
   const payload = await response.json();
   return payload?.data;

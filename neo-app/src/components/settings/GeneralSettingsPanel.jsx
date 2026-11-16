@@ -118,6 +118,17 @@ export default function GeneralSettingsPanel() {
           />
         </div>
       </Section>
+
+      <Section title="종료">
+        <div className="divide-y divide-slate-100">
+          <ToggleRow
+            label="창을 닫으면 트레이로 보내기"
+            hint="켜 두면 창의 닫기(X) 버튼을 눌러도 프로그램이 트레이에서 계속 실행됩니다. 끄면 닫기(X)가 프로그램 종료가 됩니다. 트레이의 Exit 는 언제나 종료합니다."
+            checked={settings.closeToTray !== false}
+            onChange={(checked) => void save({ closeToTray: checked })}
+          />
+        </div>
+      </Section>
     </div>
   );
 }

@@ -13,6 +13,7 @@ import { ensureBootstrapAdmin } from './electron/membersService.js';
 import { registerModules } from './electron/modules/index.js';
 import { disposeEngineSession } from './electron/modules/pdf.js';
 import { runtime } from './electron/runtime.js';
+import { getSettings } from './electron/settingsService.js';
 import { createSplashWindow, registerSplashIpc, toggleAboutSplash } from './electron/splash.js';
 import { isOwnServerCertificate } from './electron/tlsCerts.js';
 import { createTrayController } from './electron/tray.js';
@@ -74,6 +75,21 @@ const storage = resolveStorage();
 /** @type {BrowserWindow | null} */
 let mainWindow = null;
 let isQuitting = false;
+/** 저장 여부 확인이 끝나 메인 창을 실제로 닫아도 되는지. */
+let mainCloseApproved = false;
+/** 저장 여부 확인 중인 요청 종류: 'hide'(X 버튼) 또는 'quit'(종료). 없으면 null. */
+/** @type {'hide' | 'quit' | null} */
+let closeReason = null;
+/** 열려 있는 문서 창(새 창으로 연 창). 닫기·종료 때 저장 여부를 묻는다. */
+const documentWindows = new Set();
+/** 저장 여부 확인이 끝나 한 번 닫아도 되는 문서 창. 닫히면서 소비된다. */
+const closeApprovedDocWindows = new WeakSet();
+/** 문서 창별 저장 여부 응답 대기. key = webContents.id, value = resolve(proceed) */
+/** @type {Map<number, (proceed: boolean) => void>} */
+const pendingDocCloseWaiters = new Map();
+/** 문서 창 저장 여부 확인이 모두 끝나 실제 종료를 진행해도 되는지. */
+let quitDocumentsConfirmed = false;
+let quitDocumentsConfirming = false;
 /** @type {ReturnType<typeof createServerManager> | null} */
 let serverManager = null;
 /** @type {ReturnType<typeof createTrayController> | null} */
@@ -306,29 +322,158 @@ function createAppWindow(appUrl, { main, windowId }) {
 
   // X closes → hide to tray (Exit in the tray menu actually quits).
   // 문서 창은 실제로 닫히고, 그때 자기 엔진 세션을 끈다.
+  // 문서 창도 닫기 전에 저장 여부를 묻는다 (메인 창과 같은 계약).
   win.on('close', (event) => {
-    if (main && !isQuitting) {
-      event.preventDefault();
-      win.hide();
+    if (main) {
+      if (!mainCloseApproved) {
+        event.preventDefault();
+        // 설정 > 종료: 켜져 있으면 트레이로 숨기고, 꺼져 있으면 트레이 Exit 와 같은 종료 흐름을 탄다.
+        requestMainClose(closeToTrayEnabled() ? 'hide' : 'quit');
+      }
+      return;
+    }
+    if (quitDocumentsConfirmed || closeApprovedDocWindows.delete(win)) return;
+    event.preventDefault();
+    void confirmDocumentWindowClose(win);
+  });
+
+  const webContentsId = win.webContents.id;
+  if (!main) documentWindows.add(win);
+
+  // 렌더러가 새로 로드되면(새로고침·크래시 복구) 열려 있던 저장 확인창과 응답 경로가 사라진다.
+  // 진행 중이던 닫기 요청을 취소해 두지 않으면 이후 닫기 클릭이 영원히 무시된다.
+  win.webContents.on('did-start-loading', () => {
+    if (main) {
+      if (closeReason) console.log('[close-debug] renderer reloaded, drop pending close =', closeReason);
+      closeReason = null;
+      return;
+    }
+    const waiter = pendingDocCloseWaiters.get(webContentsId);
+    if (waiter) {
+      pendingDocCloseWaiters.delete(webContentsId);
+      waiter(false);
     }
   });
 
   win.on('closed', () => {
-    if (main) mainWindow = null;
-    else disposeEngineSession(windowId);
+    if (main) {
+      mainWindow = null;
+    } else {
+      documentWindows.delete(win);
+      pendingDocCloseWaiters.delete(webContentsId);
+      disposeEngineSession(windowId);
+    }
   });
 
   void win.loadURL(appUrl);
   return win;
 }
 
-function quitFromTray() {
-  isQuitting = true;
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.removeAllListeners('close');
-    mainWindow.close();
+/** 설정 '창을 닫으면 트레이로 보내기'. 읽지 못하면 기존 동작(트레이)을 유지한다. */
+function closeToTrayEnabled() {
+  try {
+    return getSettings().closeToTray !== false;
+  } catch {
+    return true;
   }
+}
+
+/**
+ * 메인 창을 숨기거나 종료하기 전에 렌더러가 저장 여부를 묻도록 요청한다.
+ * 응답은 frame:closeResponse 로 온다. 취소하면 아무 일도 일어나지 않는다.
+ * @param {'hide' | 'quit'} reason
+ */
+function requestMainClose(reason) {
+  console.log('[close-debug] requestMainClose', reason, 'pending =', closeReason);
+  if (!mainWindow || mainWindow.isDestroyed() || closeReason) return;
+  closeReason = reason;
+  mainWindow.show();
+  mainWindow.focus();
+  if (mainWindow.webContents.isCrashed()) {
+    applyCloseDecision(true);
+    return;
+  }
+  mainWindow.webContents.send('frame:closeRequest');
+}
+
+/** @param {boolean} proceed */
+function applyCloseDecision(proceed) {
+  console.log('[close-debug] main decision proceed =', proceed, 'reason =', closeReason);
+  const reason = closeReason;
+  closeReason = null;
+  if (!reason || !proceed || !mainWindow || mainWindow.isDestroyed()) return;
+  if (reason === 'quit') {
+    mainCloseApproved = true;
+    app.quit();
+  } else {
+    mainWindow.hide();
+  }
+}
+
+function quitFromTray() {
+  // 실제 종료는 before-quit 에서 저장 여부를 확인한 뒤 진행한다.
   app.quit();
+}
+
+/**
+ * 문서 창에 저장 여부 확인을 요청하고, 닫아도 되는지(true) 기다린다.
+ * 응답은 frame:closeResponse 로 온다.
+ * @param {BrowserWindow} win
+ * @returns {Promise<boolean>}
+ */
+function askDocumentWindowClose(win) {
+  return new Promise((resolve) => {
+    if (win.isDestroyed()) return resolve(true);
+    if (win.webContents.isCrashed()) return resolve(true);
+    const id = win.webContents.id;
+    if (pendingDocCloseWaiters.has(id)) return resolve(false);
+    pendingDocCloseWaiters.set(id, resolve);
+    win.show();
+    win.focus();
+    win.webContents.send('frame:closeRequest');
+  });
+}
+
+/** X 로 닫는 문서 창: 저장 여부를 묻고, 확인이 끝나면 실제로 닫는다. */
+async function confirmDocumentWindowClose(win) {
+  console.log('[close-debug] document window close requested');
+  const proceed = await askDocumentWindowClose(win);
+  console.log('[close-debug] document window decision proceed =', proceed);
+  if (proceed && !win.isDestroyed()) {
+    closeApprovedDocWindows.add(win);
+    win.close();
+  }
+}
+
+/**
+ * 종료할 때 열린 문서 창마다 저장 여부를 묻는다. 하나라도 취소하면 종료를 멈춘다.
+ * 메인 창 확인이 끝난 뒤(before-quit)에 호출된다.
+ */
+async function confirmDocumentWindowsForQuit() {
+  if (quitDocumentsConfirming) return;
+  quitDocumentsConfirming = true;
+  try {
+    for (const win of [...documentWindows]) {
+      if (win.isDestroyed()) continue;
+      const proceed = await askDocumentWindowClose(win);
+      if (!proceed) {
+        // 종료 취소: 메인 창 승인도 되돌려 다음 X 클릭이 숨김으로 동작하게 한다.
+        mainCloseApproved = false;
+        return;
+      }
+    }
+    quitDocumentsConfirmed = true;
+    app.quit();
+  } finally {
+    quitDocumentsConfirming = false;
+  }
+}
+
+function hasOpenDocumentWindows() {
+  for (const win of documentWindows) {
+    if (!win.isDestroyed()) return true;
+  }
+  return false;
 }
 
 function setupMenu() {
@@ -378,6 +523,19 @@ function registerIpc() {
     isDev,
   }));
 
+  /** 렌더러가 저장 여부 확인을 끝냈다. proceed 가 true 면 숨기거나 종료한다. */
+  ipcMain.on('frame:closeResponse', (event, proceed) => {
+    // 문서 창이 저장 여부 확인을 끝낸 응답이면 그 창의 대기자에게 넘긴다.
+    const waiter = pendingDocCloseWaiters.get(event.sender.id);
+    if (waiter) {
+      pendingDocCloseWaiters.delete(event.sender.id);
+      waiter(proceed === true);
+      return;
+    }
+    if (!mainWindow || BrowserWindow.fromWebContents(event.sender) !== mainWindow) return;
+    applyCloseDecision(proceed === true);
+  });
+
   ipcMain.handle('frame:openExternal', (_event, url) => {
     openExternalSafe(String(url ?? ''));
   });
@@ -416,6 +574,18 @@ app.on('window-all-closed', () => {
 let quitCleanupStarted = false;
 
 app.on('before-quit', (event) => {
+  if (!mainCloseApproved && mainWindow && !mainWindow.isDestroyed()) {
+    // 저장 여부 확인이 끝나야 실제로 종료한다. 취소하면 종료하지 않는다.
+    event.preventDefault();
+    requestMainClose('quit');
+    return;
+  }
+  if (!quitDocumentsConfirmed && hasOpenDocumentWindows()) {
+    // 메인 창 확인 뒤, 열린 문서 창의 저장 여부도 묻고 나서 종료한다.
+    event.preventDefault();
+    void confirmDocumentWindowsForQuit();
+    return;
+  }
   isQuitting = true;
   if (quitCleanupStarted) return;
   quitCleanupStarted = true;

@@ -37,15 +37,17 @@ export function useEditorCommands() {
 }
 
 /** Keeps menu actions pointed at the latest editor handlers. */
-export function useRegisterEditorCommands(handlers, state) {
+export function useRegisterEditorCommands(handlers, state, enabled = true) {
   const { setHandlers, publish } = useEditorCommands();
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
-  setHandlers(handlersRef.current);
+  // 여러 탭이 있으면 활성 탭만 메뉴 명령을 등록한다.
+  if (enabled) setHandlers(handlersRef.current);
 
   const ready = Boolean(state.ready);
   const docOpen = Boolean(state.docOpen);
   useEffect(() => {
+    if (!enabled) return;
     publish({ ready, docOpen });
-  }, [publish, ready, docOpen]);
+  }, [publish, enabled, ready, docOpen]);
 }

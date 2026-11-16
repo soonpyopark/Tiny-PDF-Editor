@@ -22,6 +22,9 @@ const OPEN_FILTERS = [
   { name: '한글', extensions: ['hwp', 'hwpx'] },
 ];
 
+/** 파일 열기: 전체(*.*)를 기본 필터로 두고 종류별 필터를 뒤에 붙인다. */
+const OPEN_FILTERS_WITH_ALL = [{ name: '전체', extensions: ['*'] }, ...OPEN_FILTERS];
+
 const RECENT_LIMIT = 12;
 const recentPath = path.join(os.homedir(), '.tiny-pdf-editor-neo', 'recent.json');
 
@@ -328,12 +331,27 @@ function callEngine(payload) {
  * @param {string} windowId
  */
 export function disposeEngineSession(windowId) {
-  const session = sessions.get(windowId);
-  if (!session) return;
-  sessions.delete(windowId);
-  failPending(session, new ApiError('창이 닫혀 PDF 엔진을 종료했습니다.'));
-  if (session.child && session.child.exitCode == null) session.child.kill();
-  session.child = null;
+  disposeSessionsWhere(
+    (key) => key === windowId || key.startsWith(`${windowId}__`),
+    '창이 닫혀 PDF 엔진을 종료했습니다.',
+  );
+}
+
+/**
+ * 조건에 맞는 엔진 세션을 모두 끈다. 대기 중인 요청은 실패로 끝난다.
+ * @param {(key: string) => boolean} match
+ * @param {string} reason
+ */
+function disposeSessionsWhere(match, reason) {
+  for (const key of [...sessions.keys()]) {
+    if (!match(key)) continue;
+    const session = sessions.get(key);
+    sessions.delete(key);
+    if (!session) continue;
+    failPending(session, new ApiError(reason));
+    if (session.child && session.child.exitCode == null) session.child.kill();
+    session.child = null;
+  }
 }
 
 async function engineOp(payload) {
@@ -424,7 +442,7 @@ export function register() {
     const win = ownerWindow();
     const options = {
       title: 'PDF 열기',
-      filters: OPEN_FILTERS,
+      filters: OPEN_FILTERS_WITH_ALL,
       properties: ['openFile'],
     };
     const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
@@ -453,7 +471,7 @@ export function register() {
     const win = ownerWindow();
     const options = {
       title: 'PDF 열기',
-      filters: OPEN_FILTERS,
+      filters: OPEN_FILTERS_WITH_ALL,
       properties: ['openFile'],
     };
     const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
@@ -472,6 +490,14 @@ export function register() {
   defineApi('pdf.new', 'user', async () => {
     const created = await engineOp({ op: 'new' });
     return { doc: created.doc };
+  });
+
+  // 탭 하나를 닫을 때 그 탭의 엔진 프로세스만 끈다. 요청 헤더의 세션 키(창 또는 창__탭)와 정확히 일치하는 것만 끈다.
+  defineApi('pdf.closeTab', 'user', async (_body, ctx) => {
+    const key = String(ctx?.windowId || '');
+    if (!key) return { closed: false };
+    disposeSessionsWhere((item) => item === key, '탭이 닫혀 PDF 엔진을 종료했습니다.');
+    return { closed: true };
   });
 
   defineApi('pdf.render', 'user', async (body) => {
@@ -1043,10 +1069,12 @@ export function register() {
   });
 
   defineApi('pdf.print', 'user', async (body) => {
+    console.log('[pdf.print] Called with body:', body);
     const win = ownerWindow();
     const target = body?.path ? String(body.path) : '';
     const indices = Array.isArray(body?.indices) ? body.indices.map(Number) : [];
     let pdfPath = target;
+    console.log('[pdf.print] target:', target, 'indices:', indices, 'win:', !!win);
     if (!pdfPath && indices.length) {
       pdfPath = path.join(os.tmpdir(), `tiny-neo-print-pages-${Date.now()}.pdf`);
       await engineOp({ op: 'exportPagesPdf', indices, path: pdfPath });
@@ -1055,16 +1083,46 @@ export function register() {
       const saved = await engineOp({ op: 'save', path: tmp });
       pdfPath = saved.path || tmp;
     }
-    if (process.platform === 'win32') {
-      spawn('cmd', ['/c', 'start', '', '/print', pdfPath], { windowsHide: true, detached: true, stdio: 'ignore' }).unref();
-      return { ok: true, path: pdfPath };
-    }
-    if (win) {
-      await win.webContents.print({ silent: false, printBackground: true });
-      return { ok: true, path: pdfPath };
-    }
+    console.log('[pdf.print] Final pdfPath:', pdfPath, 'platform:', process.platform);
+    
+    // PDF 파일을 기본 애플리케이션으로 열기 (Windows에서는 기본 PDF 뷰어 또는 Chrome/Edge가 열리고, 거기서 인쇄 가능)
+    console.log('[pdf.print] Opening PDF with default application');
     await shell.openPath(pdfPath);
     return { ok: true, path: pdfPath };
+  });
+
+  defineApi('pdf.printWithDialog', 'user', async (body) => {
+    console.log('[pdf.printWithDialog] Called with body:', body);
+    const win = ownerWindow();
+    if (!win) {
+      throw new Error('프린터 윈도우를 찾을 수 없습니다.');
+    }
+    const target = body?.path ? String(body.path) : '';
+    const indices = Array.isArray(body?.indices) ? body.indices.map(Number) : [];
+    let pdfPath = target;
+    console.log('[pdf.printWithDialog] target:', target, 'indices:', indices);
+    
+    if (!pdfPath && indices.length) {
+      pdfPath = path.join(os.tmpdir(), `tiny-neo-print-pages-${Date.now()}.pdf`);
+      await engineOp({ op: 'exportPagesPdf', indices, path: pdfPath });
+    } else if (!pdfPath) {
+      const tmp = path.join(os.tmpdir(), `tiny-neo-print-${Date.now()}.pdf`);
+      const saved = await engineOp({ op: 'save', path: tmp });
+      pdfPath = saved.path || tmp;
+    }
+    console.log('[pdf.printWithDialog] Final pdfPath:', pdfPath);
+    
+    // Electron 인쇄 대화상자 열기
+    return new Promise((resolve, reject) => {
+      win.webContents.print({ silent: false, printBackground: true }, (success) => {
+        console.log('[pdf.printWithDialog] Print dialog result:', success);
+        if (success) {
+          resolve({ ok: true, path: pdfPath });
+        } else {
+          reject(new Error('인쇄 대화상자가 취소되었습니다.'));
+        }
+      });
+    });
   });
 
   defineApi('pdf.assocStatus', 'user', async () => engineOp({ op: 'assocStatus' }));
