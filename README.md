@@ -12,7 +12,7 @@
 같은 Python 편집 엔진을 두 가지 화면이 씁니다.
 
 - **PyQt6 데스크톱 앱** (`main.py`): 기존 배포판(exe·MSI·포터블 zip·macOS `.app`)의 화면입니다.
-- **Neo 화면** (`Default Framework` 프로젝트, Electron + React 19 + Tailwind CSS 4): 메뉴·썸네일·본문·대화상자를 새로 구성한 화면입니다. 편집 작업은 `pdf_editor/engine.py`를 자식 프로세스로 띄워 처리합니다.
+- **Neo 화면** (Electron + React 19 + Tailwind CSS 4): 메뉴·썸네일·본문·대화상자를 새로 구성한 화면입니다. 편집 작업은 `pdf_editor/engine.py`를 자식 프로세스로 띄워 처리합니다.
 
 ```
 Tiny PDF Editor - neo/
@@ -26,10 +26,6 @@ Tiny PDF Editor - neo/
   scripts/               배포판·아이콘 빌드 스크립트
   ocr/                   OCR 모델 (배포판에 포함)
   tests/                 테스트
-
-Default Framework/       Neo 화면
-  electron/modules/pdf.js          엔진 호출 API (pdf.* 이름)
-  src/features/editor/             편집 화면과 대화상자
 ```
 
 ## 실행 화면
@@ -257,13 +253,9 @@ python main.py
 의존성 (`requirements.txt`): PyMuPDF, PyQt6, openpyxl, ko-pii, numpy, Pillow, onnxruntime.
 OCR 모델 가중치는 배포 빌드 시 `scripts/ensure-ocr-models.mjs`로 받습니다.
 
-### Neo 화면 실행
+### 엔진 프로토콜 (Neo 화면용)
 
-Neo 화면 코드는 `Default Framework` 프로젝트에 있고, 이 저장소의 `pdf_editor/engine.py`를 사용합니다.
-
-- 엔진 위치: 기본은 `Default Framework`와 같은 상위 폴더의 `Tiny PDF Editor - neo`입니다. 다른 위치라면 환경 변수 `TINY_PDF_ROOT`로 지정합니다.
-- Python: PyMuPDF가 설치된 64비트 Python을 자동으로 찾습니다. 직접 지정하려면 `TINY_PDF_PYTHON`을 씁니다.
-- 실행: `Default Framework` 폴더에서 `npm install` 후 `npm run dev`, 다시 시작할 때는 `npm run dev:restart`를 씁니다.
+Neo 화면은 이 저장소의 `pdf_editor/engine.py`를 자식 프로세스(`python -m pdf_editor.engine`)로 띄워 사용합니다. PyMuPDF가 설치된 64비트 Python이 필요합니다.
 
 엔진은 요청 한 줄(`id`, `op`, 값)을 stdin으로 받고, 같은 `id`로 응답과 진행 로그를 stdout에 한 줄씩 돌려줍니다. 주요 `op`: `open`, `render`, `textSelect`, `markupAdd`, `pageNumbers`, `pageNumberOptions`, `exportImages`, `exportImagesTarget`, `exportPagesImages`.
 
@@ -365,7 +357,7 @@ msi/
 
 ## 기술 스택
 
-- Neo 화면: Electron, React 19, Tailwind CSS 4 (`Default Framework`)
+- Neo 화면: Electron, React 19, Tailwind CSS 4
 - Python 3, PyQt6 (Qt Print Support 포함)
 - PyMuPDF — 렌더링·편집·압축·레닥션·암호
 - openpyxl — 형광펜·밑줄 Excel로 보내기
