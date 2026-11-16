@@ -189,6 +189,8 @@ export default function EditorPage() {
   const [showFullscreenExit, setShowFullscreenExit] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [hwpOpen, setHwpOpen] = useState(false);
+  // HWP 변환 후 추가할 PDF 파일들과 삽입 위치
+  const [hwpConvertQueue, setHwpConvertQueue] = useState(null);
   const [clipboardCount, setClipboardCount] = useState(0);
   const requestId = useRef(0);
   const zoomRef = useRef(zoom);
@@ -618,6 +620,27 @@ export default function EditorPage() {
     const targetIndex = Number.isInteger(action.targetIndex) ? action.targetIndex : pageIndex + 1;
     setError('');
     try {
+      // HWP/HWPX 파일을 분리: 한글 변환 대화상자로 넘기고, 나머지는 일반 파일로 처리
+      if (action.type === 'insertFiles' && action.paths?.length) {
+        const hwpFiles = [];
+        const otherFiles = [];
+        for (const path of action.paths) {
+          const ext = path.toLowerCase().slice((path.lastIndexOf('.') - 1 >>> 0) + 2);
+          if (ext === 'hwp' || ext === 'hwpx') {
+            hwpFiles.push(path);
+          } else {
+            otherFiles.push(path);
+          }
+        }
+        // HWP 파일이 있으면 변환 대화상자로 먼저 넘기고, 나머지는 나중에 추가
+        if (hwpFiles.length) {
+          setHwpConvertQueue({ insertAt: targetIndex, files: hwpFiles, then: otherFiles });
+          setHwpOpen(true);
+          return;
+        }
+        action.paths = otherFiles.length ? otherFiles : action.paths;
+        if (!action.paths.length) return;
+      }
       switch (action.type) {
         case 'delete':
           await deletePages(indices);
@@ -1470,9 +1493,20 @@ export default function EditorPage() {
 
       <HwpConvertDialog
         open={hwpOpen}
-        onClose={() => setHwpOpen(false)}
+        onClose={() => {
+          setHwpOpen(false);
+          setHwpConvertQueue(null);
+        }}
         onConverted={(openPath) => {
           setHwpOpen(false);
+          // HWP 변환 후 대기 중인 PDF 파일들을 추가
+          if (hwpConvertQueue?.then?.length) {
+            const { insertAt, then: otherFiles } = hwpConvertQueue;
+            setHwpConvertQueue(null);
+            void handleThumbAction({ type: 'insertFiles', paths: otherFiles, targetIndex: insertAt });
+          } else {
+            setHwpConvertQueue(null);
+          }
           if (openPath) void openFileTarget(openPath);
         }}
       />
