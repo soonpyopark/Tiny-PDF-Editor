@@ -11,6 +11,7 @@ import MergePdfDialog from './MergePdfDialog.jsx';
 import PasswordOpenDialog from './PasswordOpenDialog.jsx';
 import PasswordSetDialog from './PasswordSetDialog.jsx';
 import PiiRemoveDialog from './PiiRemoveDialog.jsx';
+import OcrDialog from './OcrDialog.jsx';
 import TextMarkupLayer from './TextMarkupLayer.jsx';
 import TerminalPanel from './TerminalPanel.jsx';
 
@@ -182,6 +183,8 @@ export default function EditorPage() {
   const [pageNumberOpen, setPageNumberOpen] = useState(false);
   // 이미지로 저장 옵션창 범위: null 이면 닫힘, { indices: null } 은 문서 전체, { indices: [..] } 은 선택 페이지.
   const [exportScope, setExportScope] = useState(null);
+  // OCR 옵션창: null 이면 닫힘, { indices: null } 은 범위 입력 모드, { indices: [..] } 은 썸네일 선택 모드.
+  const [ocrScope, setOcrScope] = useState(null);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [hwpOpen, setHwpOpen] = useState(false);
   const [clipboardCount, setClipboardCount] = useState(0);
@@ -682,10 +685,7 @@ export default function EditorPage() {
           await undoRedo('redo');
           return;
         case 'ocr':
-          await runOcr('selected', indices);
-          return;
-        case 'ocrAll':
-          await runOcr('all');
+          setOcrScope(Array.isArray(indices) ? { indices } : { indices: null });
           return;
         case 'pii':
           await removePii(indices);
@@ -857,6 +857,26 @@ export default function EditorPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : '쪽 번호를 넣지 못했습니다.');
     }
+  }
+
+  async function handleOcrApply(payload, scope) {
+    setOcrScope(null);
+    let mode, indices;
+    if (payload.scope === 'current') {
+      mode = 'current';
+      indices = null;
+    } else if (payload.scope === 'selected') {
+      mode = 'selected';
+      indices = scope?.indices; // 썸네일 선택 페이지
+    } else if (payload.scope === 'all') {
+      mode = 'all';
+      indices = null;
+    } else if (payload.scope === 'range') {
+      // 범위 선택: 페이지 인덱스로 변환
+      mode = 'selected';
+      indices = Array.from({ length: payload.pageTo - payload.pageFrom + 1 }, (_, i) => payload.pageFrom - 1 + i);
+    }
+    await runOcr(mode, indices);
   }
 
   async function runOcr(mode, indices) {
@@ -1134,12 +1154,10 @@ export default function EditorPage() {
       rotateCcw: () => void rotateAll(-90),
       reduce: () => setReduceOpen(true),
       pageNumber: () => setPageNumberOpen(true),
+      ocr: () => setOcrScope({ indices: null }),
       sigClip: () => void stampSignature(true),
       sigFile: () => void stampSignature(false),
       sigOutside: () => setSignatureOutside((value) => !value),
-      ocrCurrent: () => void runOcr('current'),
-      ocrSelected: () => void runOcr('selected'),
-      ocrAll: () => void runOcr('all'),
       setPw: () => void setDocPassword(),
       clearPw: () => void clearPassword(),
       pii: () => void removePii(),
@@ -1455,6 +1473,13 @@ export default function EditorPage() {
         indices={exportScope?.indices ?? null}
         onClose={() => setExportScope(null)}
         onApply={(options) => void runExportImages(exportScope, options)}
+      />
+      <OcrDialog
+        open={Boolean(ocrScope)}
+        pageCount={doc.pageCount || 0}
+        indices={ocrScope?.indices ?? null}
+        onClose={() => setOcrScope(null)}
+        onApply={(payload) => void handleOcrApply(payload, ocrScope)}
       />
       <PasswordOpenDialog
         open={Boolean(passwordPath)}
