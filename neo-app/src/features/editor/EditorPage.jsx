@@ -185,6 +185,8 @@ export default function EditorPage() {
   const [exportScope, setExportScope] = useState(null);
   // OCR 옵션창: null 이면 닫힘, { indices: null } 은 범위 입력 모드, { indices: [..] } 은 썸네일 선택 모드.
   const [ocrScope, setOcrScope] = useState(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [showFullscreenExit, setShowFullscreenExit] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [hwpOpen, setHwpOpen] = useState(false);
   const [clipboardCount, setClipboardCount] = useState(0);
@@ -1080,12 +1082,21 @@ export default function EditorPage() {
   useEffect(() => {
     const onKeyDown = (event) => {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      if (event.key === 'F11') {
+        event.preventDefault();
+        setFullscreen((v) => !v);
+        return;
+      }
+      if (event.key === 'Escape' && fullscreen) {
+        setFullscreen(false);
+        return;
+      }
       if (event.key === 'ArrowLeft') void goTo(pageIndex - (facing ? 2 : 1));
       if (event.key === 'ArrowRight') void goTo(pageIndex + (facing ? 2 : 1));
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  });
+  }, [fullscreen, facing, pageIndex]);
 
   // 연속 스크롤: 휠은 브라우저 기본 스크롤에 맡긴다. 쪽 끝에서 다음 쪽 위로 자연스럽게 이어진다.
   // (예전의 "끝에서 굴리면 쪽 맨 위로 점프" 방식은 제거했다.)
@@ -1106,6 +1117,17 @@ export default function EditorPage() {
     view.addEventListener('wheel', onCtrlWheelZoom, { passive: false });
     return () => view.removeEventListener('wheel', onCtrlWheelZoom);
   }, []);
+
+  // 전체화면 모드: 마우스 상단 60px 감지 타이머
+  useEffect(() => {
+    if (!fullscreen) return undefined;
+    const checkMousePos = () => {
+      const y = window.pageYOffset;
+      setShowFullscreenExit(y < 60);
+    };
+    const id = setInterval(checkMousePos, 120);
+    return () => clearInterval(id);
+  }, [fullscreen]);
 
   function fit(mode) {
     const view = viewRef.current;
@@ -1195,24 +1217,28 @@ export default function EditorPage() {
       : '';
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-app-surface">
-      {status && !engineReady ? (
-        <p className="border-b border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700">
-          {status.error || 'PDF 엔진을 시작하지 못했습니다.'}
-        </p>
-      ) : null}
-      {error ? <p className="border-b border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+    <div className={`flex h-full min-h-0 flex-col ${fullscreen ? 'bg-black' : 'bg-app-surface'}`}>
+      {!fullscreen && (
+        <>
+          {status && !engineReady ? (
+            <p className="border-b border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {status.error || 'PDF 엔진을 시작하지 못했습니다.'}
+            </p>
+          ) : null}
+          {error ? <p className="border-b border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
 
-      <DocumentTabBar
-        docOpen={doc.open}
-        docName={doc.path ? doc.name : '빈 문서(noname)'}
-        modified={doc.modified}
-        onClose={() => void closeDoc()}
-      >
-      </DocumentTabBar>
+          <DocumentTabBar
+            docOpen={doc.open}
+            docName={doc.path ? doc.name : '빈 문서(noname)'}
+            modified={doc.modified}
+            onClose={() => void closeDoc()}
+          >
+          </DocumentTabBar>
+        </>
+      )}
 
       <div className="flex min-h-0 flex-1">
-        <PageSide
+        {!fullscreen && <PageSide
           docOpen={doc.open}
           pageIndex={pageIndex}
           pageCount={doc.pageCount || 0}
@@ -1225,13 +1251,16 @@ export default function EditorPage() {
           collapsed={panelCollapsed}
           onCollapsedChange={setPanelCollapsed}
         />
+        }
 
         <div className="relative flex min-w-0 flex-1 flex-col">
-          <PanelToggleTab
-            collapsed={panelCollapsed}
-            onToggle={() => setPanelCollapsed((value) => !value)}
-          />
-          {searchOpen && doc.open ? (
+          {!fullscreen && (
+            <PanelToggleTab
+              collapsed={panelCollapsed}
+              onToggle={() => setPanelCollapsed((value) => !value)}
+            />
+          )}
+          {!fullscreen && searchOpen && doc.open ? (
             <SearchDropdown
               query={searchQuery}
               ranQuery={searchRanQuery}
@@ -1499,6 +1528,26 @@ export default function EditorPage() {
         onPreview={previewPiiHit}
         onApply={(hits, style) => void applyPiiRedact(hits, style)}
       />
+
+      {/* 전체화면 종료 버튼 */}
+      {fullscreen && (
+        <div className="fixed inset-0 z-[1000] pointer-events-none">
+          {showFullscreenExit && (
+            <button
+              type="button"
+              className="pointer-events-auto absolute top-7 left-1/2 -translate-x-1/2 h-9 w-9 rounded-full bg-white text-black hover:bg-gray-100 flex items-center justify-center transition-colors"
+              onClick={() => setFullscreen(false)}
+              title="전체 화면 해제 (ESC)"
+              aria-label="전체 화면 해제"
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
