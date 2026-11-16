@@ -7,6 +7,31 @@
 - GitHub (미러): [https://github.com/soonpyopark/Tiny-PDF-Editor](https://github.com/soonpyopark/Tiny-PDF-Editor)
 - 릴리스(설치·포터블 파일): [Releases](https://github.com/soonpyopark/Tiny-PDF-Editor/releases)
 
+## 구성 (PyQt 앱과 Neo 화면)
+
+같은 Python 편집 엔진을 두 가지 화면이 씁니다.
+
+- **PyQt6 데스크톱 앱** (`main.py`): 기존 배포판(exe·MSI·포터블 zip·macOS `.app`)의 화면입니다.
+- **Neo 화면** (`Default Framework` 프로젝트, Electron + React 19 + Tailwind CSS 4): 메뉴·썸네일·본문·대화상자를 새로 구성한 화면입니다. 편집 작업은 `pdf_editor/engine.py`를 자식 프로세스로 띄워 처리합니다.
+
+```
+Tiny PDF Editor - neo/
+  main.py                PyQt6 데스크톱 앱 진입점
+  pdf_editor/
+    engine.py            Neo 화면용 엔진 (stdin 으로 JSON 요청, stdout 으로 응답)
+    document.py          PDF 문서 모델 (PyMuPDF): 렌더링·편집·이미지 저장·OCR 등
+    page_numbers.py      쪽 번호 옵션과 배치 계산
+    export_images_dialog.py, page_number_dialog.py ...   PyQt 대화상자
+    branding/            앱·파일 아이콘
+  scripts/               배포판·아이콘 빌드 스크립트
+  ocr/                   OCR 모델 (배포판에 포함)
+  tests/                 테스트
+
+Default Framework/       Neo 화면
+  electron/modules/pdf.js          엔진 호출 API (pdf.* 이름)
+  src/features/editor/             편집 화면과 대화상자
+```
+
 ## 실행 화면
 
 ### Windows
@@ -68,7 +93,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 - **추가...**: 현재 문서 **맨 뒤**에 PDF·이미지·(Windows) HWP/HWPX 페이지를 이어 붙입니다.
 - **PDF 병합...**: 여러 파일을 골라 순서·미리보기를 확인한 뒤 새 PDF로 병합합니다. (HWP/HWPX 포함, Windows+한컴)
 - **저장** (`Ctrl+S`) / **다른 이름으로 저장...** (`Ctrl+Shift+S`)
-- **PDF를 이미지로 저장...**: 문서 페이지를 PNG/JPEG 등으로 보냅니다.
+- **이미지로 저장...**: 옵션 창에서 해상도(72~600 DPI), 형식(PNG/JPEG와 JPEG 품질), 페이지 범위, 주석 포함 여부를 정한 뒤 폴더를 고릅니다. 고른 폴더 안에 문서 이름으로 하위 폴더를 만들어 이미지를 저장하며, 이미 있으면 덮어쓸지 묻고, 끝나면 폴더를 열지 묻습니다.
 - **인쇄...** (`Ctrl+P`): 미리보기에서 세로/가로를 고른 뒤 **프린터 설정 및 인쇄**로 장치·범위를 선택해 인쇄합니다. 썸네일 우클릭으로 선택 페이지 또는 **전체 페이지 인쇄**도 할 수 있습니다.
 - **PDF 파일 연결...** (Windows): 이 프로그램을 PDF 연결 프로그램 목록에 등록하거나 해제합니다.
 - **가상 프린터...** (Windows·macOS): 다른 프로그램에서 인쇄한 결과를 PDF로 받아 이 프로그램에서 엽니다.
@@ -95,7 +120,7 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
 - **복사 / 잘라내기 / 붙여넣기**: 선택 페이지를 클립보드로 옮기거나 다른 위치에 붙여넣기
 - **회전**: 시계/반시계 방향
 - **페이지 보내기**: 선택 페이지만 새 PDF로 저장
-- **이미지로 보내기**: 선택 페이지를 PNG/JPEG로 저장
+- **이미지로 저장**: 선택 페이지를 같은 옵션 창(해상도·형식·주석)을 거쳐 PNG/JPEG로 저장
 - **선택 페이지 / 전체 페이지 인쇄**: 썸네일 우클릭. 한 장이면 `2페이지 인쇄`, 여러 장이면 `선택한 2개 페이지 인쇄`
 - **선택 페이지 / 전체 페이지 개인정보 제거**: 썸네일 우클릭. 한 장이면 `2페이지 개인정보 제거`, 여러 장이면 `선택한 2개 페이지 개인정보 제거`. 보안 메뉴의 개인정보 제거는 전체 페이지와 같습니다.
 - **1페이지 / 선택된 N개 페이지 / 전체페이지 OCR 실행**: 썸네일 우클릭. 스캔 페이지에 숨은 텍스트를 넣어 드래그 복사할 수 있습니다.
@@ -147,6 +172,15 @@ USB에 폴더 전체를 복사해 다른 PC에서도 사용할 수 있습니다.
   - 가로·세로 여백(0~30mm). 가운데 위치에서는 가로 여백을 쓰지 않습니다.
   - 한글 접두·접미는 시스템에 설치된 한글 글꼴이 필요합니다. 없으면 안내 후 적용하지 않습니다.
   - 원본 PDF에 이미 있는 쪽 번호는 지우지 않습니다. 흰 배경으로 가리거나, 투명 배경이면 겹쳐 보일 수 있습니다.
+
+### 기능 메뉴 (Neo 화면)
+
+`편집` 오른쪽의 **기능** 메뉴에 별도 기능을 모았습니다. 기능끼리는 구분선으로 나눕니다.
+
+- 용량 줄이기 · 쪽 번호 매기기 · 서명 넣기
+- OCR: 현재 / 선택 / 전체 페이지
+- 개인정보 제거 · 비밀번호 설정 · 비밀번호 제거
+- PDF 병합 · 한글(HWP, HWPX) → PDF (Windows)
 
 ### 도움말
 
@@ -222,6 +256,16 @@ python main.py
 
 의존성 (`requirements.txt`): PyMuPDF, PyQt6, openpyxl, ko-pii, numpy, Pillow, onnxruntime.
 OCR 모델 가중치는 배포 빌드 시 `scripts/ensure-ocr-models.mjs`로 받습니다.
+
+### Neo 화면 실행
+
+Neo 화면 코드는 `Default Framework` 프로젝트에 있고, 이 저장소의 `pdf_editor/engine.py`를 사용합니다.
+
+- 엔진 위치: 기본은 `Default Framework`와 같은 상위 폴더의 `Tiny PDF Editor - neo`입니다. 다른 위치라면 환경 변수 `TINY_PDF_ROOT`로 지정합니다.
+- Python: PyMuPDF가 설치된 64비트 Python을 자동으로 찾습니다. 직접 지정하려면 `TINY_PDF_PYTHON`을 씁니다.
+- 실행: `Default Framework` 폴더에서 `npm install` 후 `npm run dev`, 다시 시작할 때는 `npm run dev:restart`를 씁니다.
+
+엔진은 요청 한 줄(`id`, `op`, 값)을 stdin으로 받고, 같은 `id`로 응답과 진행 로그를 stdout에 한 줄씩 돌려줍니다. 주요 `op`: `open`, `render`, `textSelect`, `markupAdd`, `pageNumbers`, `pageNumberOptions`, `exportImages`, `exportImagesTarget`, `exportPagesImages`.
 
 ### Windows 배포판 빌드
 
@@ -321,6 +365,7 @@ msi/
 
 ## 기술 스택
 
+- Neo 화면: Electron, React 19, Tailwind CSS 4 (`Default Framework`)
 - Python 3, PyQt6 (Qt Print Support 포함)
 - PyMuPDF — 렌더링·편집·압축·레닥션·암호
 - openpyxl — 형광펜·밑줄 Excel로 보내기
