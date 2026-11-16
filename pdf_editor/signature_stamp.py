@@ -5,13 +5,16 @@ from __future__ import annotations
 import hashlib
 import io
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import pymupdf as fitz
 import numpy as np
 from PIL import Image
-from PyQt6.QtCore import QBuffer, QByteArray, QIODevice, QMimeData
-from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtWidgets import QApplication
+
+# Qt 는 클립보드·미리보기(데스크톱 PyQt 앱) 함수에서만 쓴다. Neo 엔진은 이 모듈의
+# 순수 함수(배치·투명화 등)만 쓰므로, 여기서는 import 하지 않아 PyQt6 없이도 불러올 수 있다.
+if TYPE_CHECKING:
+    from PyQt6.QtGui import QImage, QPixmap
 
 DEFAULT_WIDTH_RATIO = 0.22
 MAX_HEIGHT_RATIO = 0.35
@@ -96,6 +99,8 @@ def clipboard_has_image() -> bool:
 
 
 def _image_from_clipboard_mime(mime) -> QImage | None:
+    from PyQt6.QtGui import QImage
+
     formats = [str(fmt) for fmt in mime.formats()]
     image_formats = [fmt for fmt in formats if fmt.lower().startswith("image/")]
     preferred = (
@@ -120,6 +125,8 @@ def _image_from_clipboard_mime(mime) -> QImage | None:
 
 
 def clipboard_image() -> QImage | None:
+    from PyQt6.QtWidgets import QApplication
+
     clipboard = QApplication.clipboard()
     if clipboard is None:
         return None
@@ -145,6 +152,8 @@ def prepare_signature_from_clipboard() -> PreparedSignature | None:
 
 
 def prepare_signature_from_path(path: str) -> PreparedSignature | None:
+    from PyQt6.QtGui import QImage
+
     image = QImage(path)
     if image.isNull():
         try:
@@ -163,6 +172,10 @@ def prepare_signature_from_path(path: str) -> PreparedSignature | None:
 
 
 def copy_signature_png_to_clipboard(png_bytes: bytes) -> bool:
+    from PyQt6.QtCore import QByteArray, QMimeData
+    from PyQt6.QtGui import QImage
+    from PyQt6.QtWidgets import QApplication
+
     if not png_bytes:
         return False
     image = QImage()
@@ -194,6 +207,8 @@ def prepare_signature_from_qimage(image: QImage) -> PreparedSignature | None:
 
 
 def pixmap_from_png_bytes(data: bytes) -> QPixmap:
+    from PyQt6.QtGui import QPixmap
+
     pixmap = QPixmap()
     pixmap.loadFromData(data, "PNG")
     return pixmap
@@ -464,6 +479,9 @@ def _image_aspect(image_width: int, image_height: int) -> float:
 
 
 def _qimage_to_rgba(image: QImage) -> np.ndarray:
+    from PyQt6.QtCore import QBuffer, QByteArray, QIODevice
+    from PyQt6.QtGui import QImage
+
     converted = image.convertToFormat(QImage.Format.Format_RGBA8888)
     buffer = QByteArray()
     qbuf = QBuffer(buffer)

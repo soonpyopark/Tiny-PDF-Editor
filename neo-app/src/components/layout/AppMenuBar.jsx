@@ -28,7 +28,6 @@ export default function AppMenuBar() {
   const [subId, setSubId] = useState('');
   const fullscreen = useFullscreen();
   const [openTarget, setOpenTarget] = useState('tab');
-  const [signatureOutside, setSignatureOutside] = useState(false);
   const [facing, setFacing] = useState(false);
   const [recent, setRecent] = useState(/** @type {string[]} */ ([]));
   const [updateChecking, setUpdateChecking] = useState(false);
@@ -232,14 +231,6 @@ export default function AppMenuBar() {
       children: [
         item('sigClip', '클립보드', { run: () => go('sigClip') }),
         item('sigFile', '파일 선택...', { run: () => go('sigFile') }),
-        sep('sig-1'),
-        item('sigOutside', '바깥 클릭으로 서명 등록 확정', {
-          checked: signatureOutside,
-          run: () => {
-            setSignatureOutside((value) => !value);
-            go('sigOutside');
-          },
-        }),
       ],
     }),
     sep('fn-1'),

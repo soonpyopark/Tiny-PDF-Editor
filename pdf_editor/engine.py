@@ -22,6 +22,15 @@ from pdf_editor.document import (
     configure_mupdf_messages,
 )
 from pdf_editor.page_numbers import PageNumberOptions
+from pdf_editor.signature_stamp import (
+    SignatureStampHit,
+    StampPlacementMemory,
+    crop_alpha_bbox,
+    knockout_white_rgba,
+    reinforce_signature_ink,
+    remember_stamp_placement,
+    stamp_rect_from_memory,
+)
 
 _MAX_ZOOM = 5.0
 _MIN_ZOOM = 0.2
@@ -88,6 +97,80 @@ def _pii_preview_rects(doc: PdfDocument, hit) -> list[list[float]]:
 def _require_open(opened: bool) -> None:
     if not opened:
         raise ValueError("열린 문서가 없습니다.")
+
+
+# 서명 넣기: 쪽마다 마지막 위치·크기를 기억해 다음 서명을 같은 자리에 놓는다(원본 StampPlacementMemory).
+_stamp_memory: dict[str, StampPlacementMemory | None] = {"value": None}
+# 기존 서명을 편집하려고 잠시 걷어낸 동안의 상태. 취소하면 이 값으로 되돌린다.
+_signature_lift: dict = {"active": False, "modified": False}
+
+
+def _prepare_signature(data: bytes) -> tuple[bytes, int, int]:
+    """서명 이미지를 원본 앱과 같은 규칙으로 다듬는다: 흰 배경 투명화 → 연한 잉크 보강 → 빈 여백 자르기."""
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(data)) as src:
+            rgba = np.array(src.convert("RGBA"))
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("이미지를 읽지 못했습니다.") from exc
+    if rgba.shape[0] < 2 or rgba.shape[1] < 2:
+        raise ValueError("이미지가 너무 작습니다.")
+    rgba = reinforce_signature_ink(knockout_white_rgba(rgba))
+    cropped = crop_alpha_bbox(rgba)
+    if cropped is None:
+        raise ValueError("서명으로 쓸 내용이 없는 이미지입니다. (전부 흰색입니다.)")
+    height, width = cropped.shape[:2]
+    buf = io.BytesIO()
+    Image.fromarray(cropped, "RGBA").save(buf, format="PNG")
+    return buf.getvalue(), int(width), int(height)
+
+
+def _rect_list(rect: fitz.Rect) -> list[float]:
+    return [float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)]
+
+
+def _page_box(page: fitz.Rect) -> list[float]:
+    """쪽 MediaBox [x0, y0, width, height]. 오버레이가 원점 보정에 쓴다."""
+    return [float(page.x0), float(page.y0), float(page.width), float(page.height)]
+
+
+def _rect_from_list(raw) -> fitz.Rect:
+    if not isinstance(raw, (list, tuple)) or len(raw) != 4:
+        raise ValueError("서명 위치가 올바르지 않습니다.")
+    return fitz.Rect(*(float(value) for value in raw))
+
+
+def _signature_hit_json(hit: SignatureStampHit) -> dict:
+    return {
+        "pageIndex": hit.page_index,
+        "annotXref": hit.annot_xref,
+        "imageId": hit.image_id,
+        "rect": _rect_list(hit.rect),
+        "width": hit.width,
+        "height": hit.height,
+        "imageXref": hit.image_xref,
+        "png": base64.b64encode(hit.png_bytes).decode("ascii"),
+    }
+
+
+def _signature_hit_from_json(raw) -> SignatureStampHit:
+    if not isinstance(raw, dict):
+        raise ValueError("서명 정보가 없습니다.")
+    xref = raw.get("imageXref")
+    return SignatureStampHit(
+        page_index=int(raw["pageIndex"]),
+        annot_xref=int(raw["annotXref"]),
+        image_id=str(raw.get("imageId") or ""),
+        rect=_rect_from_list(raw.get("rect")),
+        width=int(raw.get("width") or 1),
+        height=int(raw.get("height") or 1),
+        png_bytes=b"",
+        image_xref=int(xref) if xref else None,
+    )
 
 
 def _indices(req: dict, *, fallback: list[int] | None = None) -> list[int]:
@@ -729,31 +812,71 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
             "hitCount": hit_count,
             "areaCount": area_count,
         }
-    if op == "stampImage":
+    if op == "signaturePrepare":
+        # 새 서명: 이미지를 다듬고 처음 놓을 위치를 정한다. PDF 는 아직 바꾸지 않는다(Enter 로 확정할 때 넣는다).
         _require_open(opened)
         page_index = int(req.get("pageIndex") or 0)
         raw = str(req.get("image") or "").strip()
         if not raw:
             raise ValueError("서명 이미지가 없습니다.")
-        if "," in raw and raw.strip().startswith("data:"):
+        if raw.startswith("data:") and "," in raw:
             raw = raw.split(",", 1)[1]
-        image_bytes = base64.b64decode(raw)
-        rect_raw = req.get("rect") or {}
-        if isinstance(rect_raw, dict) and rect_raw:
-            rect = fitz.Rect(
-                float(rect_raw.get("x0", 0)),
-                float(rect_raw.get("y0", 0)),
-                float(rect_raw.get("x1", 120)),
-                float(rect_raw.get("y1", 40)),
-            )
-        else:
-            page = doc.get_page_rect(page_index)
-            width = min(140.0, page.width * 0.35)
-            height = width * 0.35
-            x0 = (page.width - width) / 2
-            y0 = (page.height - height) / 2
-            rect = fitz.Rect(x0, y0, x0 + width, y0 + height)
-        doc.stamp_image(page_index, image_bytes, rect)
+        png, width, height = _prepare_signature(base64.b64decode(raw))
+        page = doc.get_page_rect(page_index)
+        rect = stamp_rect_from_memory(page, width, height, _stamp_memory["value"])
+        return True, {
+            "png": base64.b64encode(png).decode("ascii"),
+            "width": width,
+            "height": height,
+            "rect": _rect_list(rect),
+            "page": _page_box(page),
+        }
+    if op == "signatureFind":
+        # 이미 넣은 서명 찾기. point 는 쪽 이미지 안의 0..1 비율 좌표.
+        _require_open(opened)
+        page_index = int(req.get("pageIndex") or 0)
+        if not (0 <= page_index < doc.page_count):
+            return True, {"hit": None}
+        page = doc.get_page_rect(page_index)
+        point = _markup_point(req["point"], page)
+        hit = doc.find_signature_stamp_at(page_index, point)
+        payload = _signature_hit_json(hit) if hit is not None else None
+        if payload is not None:
+            payload["page"] = _page_box(page)
+        return True, {"hit": payload}
+    if op == "signatureLift":
+        # 기존 서명을 편집하려고 쪽에서 잠시 걷어낸다. 한 번의 실행 취소 단계가 생기고,
+        # 취소(signatureCancel)하면 그 단계째로 되돌려 수정됨 표시도 남기지 않는다.
+        _require_open(opened)
+        hit = _signature_hit_from_json(req.get("hit"))
+        before = doc.modified
+        doc.delete_signature_stamp(hit, record_undo=True)
+        _signature_lift["active"] = True
+        _signature_lift["modified"] = before
+        return True, {"doc": _summary(doc, True)}
+    if op == "signatureCommit":
+        _require_open(opened)
+        page_index = int(req.get("pageIndex") or 0)
+        raw = str(req.get("png") or "").strip()
+        if not raw:
+            raise ValueError("서명 이미지가 없습니다.")
+        rect = _rect_from_list(req.get("rect"))
+        lifted = bool(req.get("lifted")) and _signature_lift["active"]
+        # 걷어낼 때 이미 실행 취소 단계를 만들었으니, 다시 놓을 때는 새로 만들지 않는다.
+        doc.stamp_image(page_index, base64.b64decode(raw), rect, record_undo=not lifted)
+        _signature_lift["active"] = False
+        _stamp_memory["value"] = remember_stamp_placement(doc.get_page_rect(page_index), rect)
+        return True, {"doc": _summary(doc, True)}
+    if op == "signatureCancel":
+        _require_open(opened)
+        if _signature_lift["active"]:
+            doc.revert_last_checkpoint(modified=bool(_signature_lift["modified"]))
+            _signature_lift["active"] = False
+        return True, {"doc": _summary(doc, True)}
+    if op == "signatureDiscard":
+        # 기존 서명을 걷어낸 뒤 삭제 확정(Esc 복원이 아니라 Delete). 이미 쪽에서 지워진 상태를 유지한다.
+        _require_open(opened)
+        _signature_lift["active"] = False
         return True, {"doc": _summary(doc, True)}
     if op == "hwpStatus":
         from pdf_editor.hwp_convert import hancom_installed

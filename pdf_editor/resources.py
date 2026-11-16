@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from PyQt6.QtGui import QIcon
-from PyQt6.QtWidgets import QWidget
+# Qt 는 데스크톱 PyQt 앱 함수에서만 쓴다. 경로 조회(branding_path 등)는 Neo 엔진도 쓰므로
+# 모듈 수준에서 import 하지 않는다.
+if TYPE_CHECKING:
+    from PyQt6.QtGui import QIcon
+    from PyQt6.QtWidgets import QWidget
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 _WINDOWS_APP_ID = "TinyPDFEditor.TinyPDFEditor.1"
@@ -105,6 +109,8 @@ def apply_macos_app_style(app) -> None:
 
 
 def load_app_icon() -> QIcon:
+    from PyQt6.QtGui import QIcon
+
     if sys.platform == "darwin":
         candidates = (
             "app_icon.icns",

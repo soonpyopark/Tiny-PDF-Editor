@@ -5,24 +5,27 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PyQt6.QtCore import QStandardPaths
-
 _STORE_FILENAME = "app_settings.json"
 
 
+def _qt_location(name: str) -> str:
+    """Qt 표준 위치. PyQt6 가 없으면(Neo 엔진 단독 실행) 빈 문자열 → 아래 기본 경로를 쓴다."""
+    try:
+        from PyQt6.QtCore import QStandardPaths
+    except ImportError:
+        return ""
+    return QStandardPaths.writableLocation(getattr(QStandardPaths.StandardLocation, name))
+
+
 def _store_path() -> Path:
-    base = QStandardPaths.writableLocation(
-        QStandardPaths.StandardLocation.AppDataLocation
-    )
+    base = _qt_location("AppDataLocation")
     if not base:
         base = str(Path.home() / ".tiny_pdf_editor")
     return Path(base) / _STORE_FILENAME
 
 
 def default_downloads_folder() -> str:
-    path = QStandardPaths.writableLocation(
-        QStandardPaths.StandardLocation.DownloadLocation
-    )
+    path = _qt_location("DownloadLocation")
     if path:
         return str(Path(path))
     return str(Path.home() / "Downloads")

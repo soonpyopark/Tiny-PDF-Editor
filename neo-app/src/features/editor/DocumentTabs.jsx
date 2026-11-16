@@ -141,7 +141,7 @@ export default function DocumentTabs() {
       {!fullscreen && (
         <div
           role="tablist"
-          className="flex h-10 shrink-0 items-end gap-1 overflow-x-auto border-b border-app-border bg-app-surface px-2"
+          className="flex h-10 shrink-0 items-end gap-1 overflow-x-auto overflow-y-hidden border-b border-app-border bg-app-surface px-2"
         >
           {tabs.map((tab) => {
             const info = states[tab.key];

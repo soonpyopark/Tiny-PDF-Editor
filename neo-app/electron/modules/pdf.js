@@ -950,12 +950,19 @@ export function register() {
     return { doc: result.doc, hitCount: result.hitCount, areaCount: result.areaCount };
   });
 
-  defineApi('pdf.stampImage', 'user', async (body) => {
+  async function readSignatureImage(body) {
     let image = body?.image ? String(body.image) : '';
     if (!image && body?.fromClipboard) {
-      const clip = clipboard.readImage();
-      if (clip.isEmpty()) throw new ApiError('클립보드에 이미지가 없습니다.');
-      image = clip.toPNG().toString('base64');
+      // Electron 44+ 의 clipboard 는 Promise 기반(read) 이며 readImage 가 없다.
+      const items = await clipboard.read();
+      for (const item of items) {
+        const type = item.types.find((t) => t.startsWith('image/'));
+        if (!type) continue;
+        const blob = await item.getType(type);
+        image = Buffer.from(await blob.arrayBuffer()).toString('base64');
+        break;
+      }
+      if (!image) throw new ApiError('클립보드에 이미지가 없습니다.');
     }
     if (!image && body?.pickFile) {
       const win = ownerWindow();
@@ -969,13 +976,83 @@ export function register() {
       image = fs.readFileSync(picked.filePaths[0]).toString('base64');
     }
     if (!image) throw new ApiError('서명 이미지가 없습니다.');
+    return { canceled: false, image };
+  }
+
+  // 서명 넣기: PDF 에 바로 찍지 않고 미리보기(편집 모드)용 이미지를 다듬어 돌려준다.
+  defineApi('pdf.signaturePrepare', 'user', async (body) => {
+    const picked = await readSignatureImage(body);
+    if (picked.canceled) return { canceled: true };
     const result = await engineOp({
-      op: 'stampImage',
+      op: 'signaturePrepare',
       pageIndex: Number(body?.pageIndex) || 0,
-      image,
-      rect: body?.rect || null,
+      image: picked.image,
     });
-    return { canceled: false, doc: result.doc };
+    return {
+      canceled: false,
+      png: result.png,
+      width: result.width,
+      height: result.height,
+      rect: result.rect,
+      page: result.page,
+    };
+  });
+
+  defineApi('pdf.signatureFind', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'signatureFind',
+      pageIndex: Number(body?.pageIndex) || 0,
+      point: body?.point,
+    });
+    return { hit: result.hit ?? null };
+  });
+
+  defineApi('pdf.signatureLift', 'user', async (body) => {
+    const result = await engineOp({ op: 'signatureLift', hit: body?.hit });
+    return { doc: result.doc };
+  });
+
+  defineApi('pdf.signatureCommit', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'signatureCommit',
+      pageIndex: Number(body?.pageIndex) || 0,
+      png: body?.png,
+      rect: body?.rect,
+      lifted: Boolean(body?.lifted),
+    });
+    return { doc: result.doc };
+  });
+
+  defineApi('pdf.signatureCancel', 'user', async () => {
+    const result = await engineOp({ op: 'signatureCancel' });
+    return { doc: result.doc };
+  });
+
+  defineApi('pdf.signatureDiscard', 'user', async () => {
+    const result = await engineOp({ op: 'signatureDiscard' });
+    return { doc: result.doc };
+  });
+
+  // 예전 호출 호환: 바로 찍지 않고 prepare 결과만 돌려준다.
+  defineApi('pdf.stampImage', 'user', async (body) => {
+    const prepared = await (async () => {
+      const picked = await readSignatureImage(body);
+      if (picked.canceled) return { canceled: true };
+      const result = await engineOp({
+        op: 'signaturePrepare',
+        pageIndex: Number(body?.pageIndex) || 0,
+        image: picked.image,
+      });
+      return {
+        canceled: false,
+        png: result.png,
+        width: result.width,
+        height: result.height,
+        rect: result.rect,
+        page: result.page,
+      };
+    })();
+    return prepared;
   });
 
   /* ---- 한글 → PDF (Tiny hwp_to_pdf_dialog.py 와 같은 규칙) ---- */

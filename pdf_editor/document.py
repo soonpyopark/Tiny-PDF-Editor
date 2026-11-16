@@ -428,6 +428,19 @@ class PdfDocument:
         self._restore_from_snapshot(payload)
         return True
 
+    def revert_last_checkpoint(self, *, modified: bool) -> bool:
+        """Go back to the last checkpoint as if the change never happened.
+
+        Unlike undo() this leaves no redo entry and restores the dirty flag, so a
+        cancelled edit does not mark the document as modified.
+        """
+        if not self._undo_stack:
+            return False
+        payload = self._undo_stack.pop()
+        self._restore_from_snapshot(payload)
+        self._modified = bool(modified)
+        return True
+
     def redo(self) -> bool:
         if not self._redo_stack:
             return False
@@ -3461,6 +3474,8 @@ class PdfDocument:
         page_index: int,
         image_bytes: bytes,
         rect: fitz.Rect,
+        *,
+        record_undo: bool = True,
     ) -> None:
         """Overlay a signature image and keep a hidden marker for later edits."""
         dest = self._signature_dest_rect(page_index, rect)
@@ -3468,7 +3483,8 @@ class PdfDocument:
             raise ValueError("서명 위치가 페이지 밖입니다.")
         if not image_bytes:
             raise ValueError("넣을 이미지가 없습니다.")
-        self._record_undo_checkpoint()
+        if record_undo:
+            self._record_undo_checkpoint()
         image_id = signature_image_id(image_bytes)
         self._ensure_signature_embfile(image_id, image_bytes)
         page = self._doc[page_index]
@@ -3477,12 +3493,19 @@ class PdfDocument:
         image_xref = self._insert_signature_image(
             page, dest, image_bytes, image_id
         )
+        image_width, image_height = 0, 0
+        try:
+            pix = fitz.Pixmap(image_bytes)
+            image_width = max(1, int(pix.width))
+            image_height = max(1, int(pix.height))
+        except (RuntimeError, ValueError):
+            pass
         self._add_signature_marker(
             page,
             dest,
             image_id,
-            image_width=0,
-            image_height=0,
+            image_width=image_width,
+            image_height=image_height,
             image_xref=image_xref,
             png_bytes=image_bytes,
         )

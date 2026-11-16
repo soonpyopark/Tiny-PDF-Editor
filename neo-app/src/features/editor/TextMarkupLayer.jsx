@@ -87,7 +87,7 @@ function ColorGroup({ label, kind, disabled, onPick }) {
  * 좌표는 쪽 이미지 기준 0..1 비율로 주고받으므로 확대/축소와 무관하다.
  * 형광펜·밑줄은 엔진이 PDF 에 주석으로 넣고, 쪽 이미지를 다시 그려서 보인다.
  */
-export default function TextMarkupLayer({ pageIndex, enabled, onMarkupChanged, onNotice }) {
+export default function TextMarkupLayer({ pageIndex, enabled, onMarkupChanged, onNotice, onEmptyClick }) {
   const layerRef = useRef(null);
   const dragRef = useRef(null);
   const previewAtRef = useRef(0);
@@ -195,6 +195,7 @@ export default function TextMarkupLayer({ pageIndex, enabled, onMarkupChanged, o
     const point = pointFromEvent(event);
     if (Math.abs(point.x - drag.anchor.x) < MIN_DRAG && Math.abs(point.y - drag.anchor.y) < MIN_DRAG) {
       setSel(null);
+      onEmptyClick?.(point);
       return;
     }
     try {
