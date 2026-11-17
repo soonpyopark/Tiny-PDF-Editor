@@ -240,12 +240,9 @@ export default function AppMenuBar() {
     sep('fn-3'),
     item('setPw', '비밀번호 설정...', { disabled: needsDoc, run: () => go('setPw') }),
     item('clearPw', '비밀번호 제거', { disabled: needsDoc, run: () => go('clearPw') }),
-    // PDF 병합·한글 변환은 문서를 새로 만드는 기능이라 맨 아래에 따로 둔다.
+    // PDF 변환(병합 / 개별 변환)은 문서를 새로 만드는 기능이라 맨 아래에 따로 둔다.
     sep('fn-4'),
-    item('merge', 'PDF 병합...', { disabled: !ready, run: () => go('merge') }),
-    ...(isWindows
-      ? [item('hwp', '한글(HWP, HWPX) → PDF...', { disabled: !ready, run: () => go('hwp') })]
-      : []),
+    item('convert', 'PDF 변환...', { disabled: !ready, run: () => go('convert') }),
   ];
 
   const menus = [

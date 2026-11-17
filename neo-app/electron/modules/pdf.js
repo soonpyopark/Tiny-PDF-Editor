@@ -659,7 +659,18 @@ export function register() {
     return { canceled: false, doc: result.doc, added: result.added };
   });
 
-  defineApi('pdf.mergeState', 'user', async () => ({ saveFolder: readMergeSaveFolder() }));
+  /**
+   * "PDF 변환" 대화상자 초기 상태 (병합·개별 변환 공용).
+   * 한글 설치 확인은 엔진을 띄워야 하므로 여기서 하지 않는다 → pdf.hwpAvailable (한글 파일이 목록에 들어올 때만).
+   */
+  defineApi('pdf.convertState', 'user', async () => {
+    const prefs = readHwpPrefs();
+    return {
+      windows: process.platform === 'win32',
+      besideSource: prefs.besideSource,
+      saveFolder: readMergeSaveFolder(),
+    };
+  });
 
   defineApi('pdf.mergePickFiles', 'user', async () => {
     const win = ownerWindow();
@@ -1096,8 +1107,8 @@ export function register() {
 
   /* ---- 한글 → PDF (Tiny hwp_to_pdf_dialog.py 와 같은 규칙) ---- */
 
-  defineApi('pdf.hwpState', 'user', async () => {
-    const prefs = readHwpPrefs();
+  /** 한컴 한글 설치 여부 (엔진을 띄워 확인하므로 한글 파일이 목록에 있을 때만 부른다). */
+  defineApi('pdf.hwpAvailable', 'user', async () => {
     const windows = process.platform === 'win32';
     let installed = false;
     if (windows) {
@@ -1107,50 +1118,10 @@ export function register() {
         installed = false;
       }
     }
-    return { windows, installed, besideSource: prefs.besideSource, saveFolder: prefs.saveFolder };
+    return { windows, installed };
   });
 
-  defineApi('pdf.hwpPickFiles', 'user', async () => {
-    const win = ownerWindow();
-    const options = {
-      title: '한글 문서 선택',
-      filters: [
-        { name: '한글 문서', extensions: ['hwp', 'hwpx'] },
-        { name: '모든 파일', extensions: ['*'] },
-      ],
-      properties: ['openFile', 'multiSelections'],
-    };
-    const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
-    if (picked.canceled || !picked.filePaths.length) return { canceled: true, paths: [] };
-    return { canceled: false, paths: picked.filePaths.filter(isHwpPath) };
-  });
-
-  defineApi('pdf.hwpPickFolder', 'user', async () => {
-    const win = ownerWindow();
-    const options = { title: '한글 문서가 있는 폴더 선택', properties: ['openDirectory'] };
-    const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
-    if (picked.canceled || !picked.filePaths[0]) return { canceled: true, paths: [] };
-    const folder = picked.filePaths[0];
-    const paths = fs
-      .readdirSync(folder, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && isHwpPath(entry.name))
-      .map((entry) => path.join(folder, entry.name))
-      .sort();
-    return { canceled: false, paths };
-  });
-
-  defineApi('pdf.hwpPickSaveFolder', 'user', async () => {
-    const win = ownerWindow();
-    const options = { title: '저장 폴더 선택', properties: ['openDirectory', 'createDirectory'] };
-    const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
-    if (picked.canceled || !picked.filePaths[0]) return { canceled: true };
-    return { canceled: false, folder: picked.filePaths[0] };
-  });
-
-  /**
-   * 파일 하나를 PDF로 바꾼다. 렌더러가 한 개씩 부르므로 진행 표시와 중지가 된다.
-   * 같은 이름이 있고 덮어쓰기가 아니면 "이름 (2).pdf" 식으로 피한다 (원본 _destination_for).
-   */
+  /** 편집 화면에 한글 파일을 끌어다 놓았을 때: 임시 폴더로 바로 변환해 연다. */
   defineApi('pdf.hwpConvertQuick', 'user', async (body) => {
     const source = String(body?.source || '').trim();
     if (!source || !isHwpPath(source) || !fs.existsSync(source)) {
@@ -1164,11 +1135,21 @@ export function register() {
     return { path: result.path };
   });
 
-  defineApi('pdf.hwpConvertOne', 'user', async (body) => {
+  /**
+   * "PDF 변환 > 개별 변환": 파일 하나를 PDF 하나로 바꾼다. 렌더러가 한 개씩 부르므로 진행 표시와 중지가 된다.
+   *   - 한글(HWP/HWPX): 한컴 한글로 변환 (기존 hwpConvert)
+   *   - 이미지: 병합 엔진에 파일 하나로 넘겨 한 쪽짜리 PDF 로 저장
+   *   - PDF: 이미 PDF 라 변환할 것이 없다
+   * 같은 이름이 있고 덮어쓰기가 아니면 "이름 (2).pdf" 식으로 피한다 (원본 _destination_for).
+   */
+  defineApi('pdf.convertOne', 'user', async (body) => {
     const source = String(body?.source || '').trim();
-    if (!source || !isHwpPath(source) || !fs.existsSync(source)) {
-      throw new ApiError('HWP/HWPX 파일을 찾을 수 없습니다.');
-    }
+    if (!source || !fs.existsSync(source)) throw new ApiError('파일을 찾을 수 없습니다.');
+    const ext = path.extname(source).toLowerCase();
+    const isHwp = isHwpPath(source);
+    if (ext === '.pdf') throw new ApiError('이미 PDF 파일입니다.');
+    if (!isHwp && !MERGE_SUPPORTED_EXT.has(ext)) throw new ApiError('변환할 수 없는 파일 형식입니다.');
+
     const besideSource = Boolean(body?.besideSource);
     const folder = besideSource ? path.dirname(source) : String(body?.folder || '').trim();
     if (!folder || !isDirectory(folder)) throw new ApiError('유효한 저장 폴더를 지정해 주세요.');
@@ -1177,10 +1158,14 @@ export function register() {
     const target = body?.overwrite
       ? path.join(folder, `${stemName}.pdf`)
       : uniquePdfPath(folder, stemName);
-    const result = await engineOp({ op: 'hwpConvert', path: source, output: target });
+    const result = isHwp
+      ? await engineOp({ op: 'hwpConvert', path: source, output: target })
+      : await engineOp({ op: 'mergeFiles', paths: [source], output: target, passwords: {} });
 
+    // 저장 위치 기억: 병합과 같은 폴더 설정을 쓴다.
     const prev = readHwpPrefs();
-    writeHwpPrefs({ besideSource, saveFolder: besideSource ? prev.saveFolder : folder });
+    writeHwpPrefs({ besideSource, saveFolder: prev.saveFolder });
+    if (!besideSource) writeMergeSaveFolder(folder);
     return { path: result.path };
   });
 

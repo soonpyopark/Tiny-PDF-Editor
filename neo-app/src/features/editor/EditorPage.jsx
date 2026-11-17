@@ -9,8 +9,7 @@ import PageSide, { PanelToggleTab } from './PageSide.jsx';
 import { ReduceSizeDialog, SearchDropdown } from './editorDialogs.jsx';
 import PageNumberDialog from './PageNumberDialog.jsx';
 import ExportImagesDialog from './ExportImagesDialog.jsx';
-import HwpConvertDialog from './HwpConvertDialog.jsx';
-import MergePdfDialog from './MergePdfDialog.jsx';
+import PdfConvertDialog from './PdfConvertDialog.jsx';
 import PasswordOpenDialog from './PasswordOpenDialog.jsx';
 import PasswordSetDialog from './PasswordSetDialog.jsx';
 import PiiRemoveDialog from './PiiRemoveDialog.jsx';
@@ -266,8 +265,7 @@ export default function EditorPage({
   useEffect(() => {
     if (!fullscreen) setFullscreenPanelOpen(false);
   }, [fullscreen]);
-  const [mergeOpen, setMergeOpen] = useState(false);
-  const [hwpOpen, setHwpOpen] = useState(false);
+  const [convertOpen, setConvertOpen] = useState(false);
   const [clipboardCount, setClipboardCount] = useState(0);
   const requestId = useRef(0);
   const zoomRef = useRef(zoom);
@@ -656,10 +654,10 @@ export default function EditorPage({
     }
   }
 
-  // 원본 PDF 병합: 대화상자에서 파일을 모아 저장한 뒤, 저장된 파일을 연다.
-  function mergeFiles() {
+  // PDF 변환(병합 / 개별 변환): 대화상자에서 파일을 모아 저장한 뒤, 병합 결과 또는 (원하면) 첫 변환 결과를 연다.
+  function convertFiles() {
     setError('');
-    setMergeOpen(true);
+    setConvertOpen(true);
   }
 
   /**
@@ -1282,12 +1280,6 @@ export default function EditorPage({
     }
   }
 
-  // 원본 한글 → PDF: 대화상자에서 여러 파일을 모아 변환하고, 원하면 결과를 연다.
-  function hwpConvert() {
-    setError('');
-    setHwpOpen(true);
-  }
-
   async function printDoc() {
     setError('');
     try {
@@ -1432,7 +1424,7 @@ export default function EditorPage({
       openRecent: (filePath) => void openFileTarget(filePath),
       new: () => void newDoc(),
       add: () => void insertFiles(),
-      merge: () => void mergeFiles(),
+      convert: () => void convertFiles(),
       save: () => void save(),
       saveAs: () => void saveAs(),
       close: () => void closeDoc(),
@@ -1440,7 +1432,6 @@ export default function EditorPage({
       print: () => void printDoc(),
       assoc: () => void manageAssoc(),
       printer: () => void managePrinter(),
-      hwp: () => void hwpConvert(),
       undo: () => void undoRedo('undo'),
       redo: () => void undoRedo('redo'),
       copy: () => void copyCutPaste('copy'),
@@ -1775,20 +1766,12 @@ export default function EditorPage({
         </div>
       </div>
 
-      <HwpConvertDialog
-        open={hwpOpen}
-        onClose={() => setHwpOpen(false)}
-        onConverted={(openPath) => {
-          setHwpOpen(false);
+      <PdfConvertDialog
+        open={convertOpen}
+        onClose={() => setConvertOpen(false)}
+        onDone={(openPath) => {
+          setConvertOpen(false);
           if (openPath) void openFileTarget(openPath);
-        }}
-      />
-      <MergePdfDialog
-        open={mergeOpen}
-        onClose={() => setMergeOpen(false)}
-        onMerged={(filePath) => {
-          setMergeOpen(false);
-          void openFileTarget(filePath);
         }}
       />
       <ReduceSizeDialog
