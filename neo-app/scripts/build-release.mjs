@@ -122,8 +122,13 @@ async function stampWindowsExe(unpackedDir) {
     return;
   }
   const { rcedit } = await import('rcedit');
+  // 고정 파일 버전도 앱 버전으로 찍는다. (문자열만 바꾸면 모든 빌드의 exe 가 1.0.0.0 으로 같아져서,
+  // 파일 버전을 비교하는 설치/탐색기/진단 도구가 새 빌드를 구분하지 못한다.)
+  const exeVersion = toMsiVersion(APP_VERSION);
   await rcedit(path.join(unpackedDir, exeName), {
     icon: icoPath,
+    'file-version': exeVersion,
+    'product-version': exeVersion,
     'version-string': {
       ProductName: APP_NAME,
       FileDescription: APP_NAME,

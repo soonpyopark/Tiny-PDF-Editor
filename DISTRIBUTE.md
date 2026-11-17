@@ -26,6 +26,8 @@ wix eula accept wix7
 
 2026-11-17 이전에 만든 Neo MSI는 Default Framework와 **같은 UpgradeCode**를 쓰던 빌드입니다. 이후 빌드는 Neo 전용 UpgradeCode를 쓰므로, 새 MSI는 그 설치본을 업그레이드하지 않고 같은 폴더에 따로 설치하려 합니다. 먼저 이전 Neo를 **설정 → 앱**에서 제거한 뒤 새 MSI를 설치하세요. 설정·회원·백업은 `%APPDATA%`에 있어 제거해도 남습니다. 새 빌드부터는 이 단계가 필요 없습니다.
 
+이 단계를 건너뛰면 이전 Neo 항목이 같은 설치 폴더·같은 파일을 붙잡고 있어서, 새 MSI가 일부 파일(특히 `Tiny PDF Editor - NEO.exe`)을 교체하지 못합니다. 그 상태에서 Electron 버전이 바뀌면 옛 exe 와 새 파일이 섞여 앱이 켜지자마자 꺼집니다 (`Version mismatch between V8 binary and snapshot`). 증상이 이렇다면 **설정 → 앱**에 `Tiny PDF Editor - NEO` 항목이 두 개 있는지 보고, 오래된 쪽을 제거한 뒤 최신 MSI로 수리(다시 설치)하세요.
+
 ## Windows — 포터블 zip
 
 1. `npm run build:release`로 `neo-app/release/`에 `...-portable-....zip`을 만듭니다.

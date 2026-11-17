@@ -27,10 +27,18 @@
 
     <SummaryInformation Description="$(AppName)" />
 
-    <!-- A new ProductCode + AllowSameVersionUpgrades lets every build replace the previous one. -->
+    <!--
+      A new ProductCode + AllowSameVersionUpgrades lets every build replace the previous one.
+
+      Schedule="afterInstallValidate": the old product is removed completely BEFORE the new files
+      are costed, so every file is laid down fresh. With afterInstallInitialize the installer decided
+      per file against the old install (same file version = keep), so an exe whose version did not
+      change stayed behind next to the new Electron DLLs/snapshot (V8 version mismatch, app exits
+      right after launch). Shortcut pins survive because RemoveShortcuts below skips upgrades.
+    -->
     <MajorUpgrade
       AllowSameVersionUpgrades="yes"
-      Schedule="afterInstallInitialize"
+      Schedule="afterInstallValidate"
       DowngradeErrorMessage="A newer version of $(AppName) is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
