@@ -1157,13 +1157,32 @@ class PdfDocument:
             height / display_rect.height * 72,
         )
 
+    def get_document_image_dpi(self) -> int | None:
+        """Area-weighted effective DPI of every raster image in the document (None if no images)."""
+        weighted_dpi = 0.0
+        total_area = 0.0
+        for index in range(len(self._doc)):
+            weighted, area = self._page_image_dpi_sums(index)
+            weighted_dpi += weighted
+            total_area += area
+        if total_area <= 0:
+            return None
+        return int(round(weighted_dpi / total_area))
+
     def get_page_creation_dpi(self, index: int) -> int | None:
         """Area-weighted effective DPI of raster images embedded on one page."""
+        weighted_dpi, total_area = self._page_image_dpi_sums(index)
+        if total_area <= 0:
+            return None
+        return int(round(weighted_dpi / total_area))
+
+    def _page_image_dpi_sums(self, index: int) -> tuple[float, float]:
+        """(sum of dpi*area, sum of area) for the raster images placed on one page."""
         page = self._doc[index]
         try:
             images = page.get_images(full=True)
         except Exception:
-            return None
+            return 0.0, 0.0
 
         weighted_dpi = 0.0
         total_area = 0.0
@@ -1187,9 +1206,7 @@ class PdfDocument:
                 weighted_dpi += dpi * area
                 total_area += area
 
-        if total_area <= 0:
-            return None
-        return int(round(weighted_dpi / total_area))
+        return weighted_dpi, total_area
 
     @staticmethod
     def _downsample_pixmap(pix: fitz.Pixmap, target_w: int, target_h: int) -> fitz.Pixmap:

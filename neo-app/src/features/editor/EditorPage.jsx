@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useDialog } from '../../context/DialogContext.jsx';
 import { api as apiRaw, engineScope } from '../../lib/apiClient.js';
 import { formatMb } from '../../lib/format.js';
-import { useFullscreen } from '../../lib/fullscreen.js';
+import { enterFullscreen, useFullscreen } from '../../lib/fullscreen.js';
 import Toast from '../../components/common/Toast.jsx';
 import { useRegisterEditorCommands } from './editorCommands.jsx';
 import PageSide, { PanelToggleTab } from './PageSide.jsx';
@@ -246,6 +246,7 @@ export default function EditorPage({
   );
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [reduceOpen, setReduceOpen] = useState(false);
+  const [reduceSourceDpi, setReduceSourceDpi] = useState(null);
   const [pageNumberOpen, setPageNumberOpen] = useState(false);
   // 이미지로 저장 옵션창 범위: null 이면 닫힘, { indices: null } 은 문서 전체, { indices: [..] } 은 선택 페이지.
   const [exportScope, setExportScope] = useState(null);
@@ -426,6 +427,8 @@ export default function EditorPage({
   const showDocument = useCallback(
     async (nextDoc, index = 0) => {
       const token = ++requestId.current;
+      // loadPage 가 렌더 전에 바로 이어지므로, 쪽 수가 바뀐 새 문서를 ref 에 먼저 반영한다(삭제 뒤 옛 쪽 번호를 그리다 실패하지 않게).
+      docRef.current = nextDoc;
       setDoc(nextDoc);
       setPageIndex(index);
       pageMapRef.current = { zoom: 0, map: {} };
@@ -454,10 +457,20 @@ export default function EditorPage({
         .catch(() => {
           if (requestId.current === token) setPageSizes([]);
         });
-      await loadPage(index, zoomRef.current, token);
+      // 본문 그림이 실패해도 썸네일은 계속 채운다(한쪽 오류가 썸네일 전체를 막지 않게).
+      try {
+        await loadPage(index, zoomRef.current, token);
+      } catch (err) {
+        if (requestId.current === token) setError(err instanceof Error ? err.message : '페이지를 그리지 못했습니다.');
+      }
       for (let i = 0; i < nextDoc.pageCount; i += 1) {
         if (requestId.current !== token) return;
-        const image = await api('pdf.render', { index: i, thumb: true });
+        let image;
+        try {
+          image = await api('pdf.render', { index: i, thumb: true });
+        } catch {
+          continue;
+        }
         if (requestId.current !== token) return;
         setThumbs((prev) => {
           const copy = prev.slice();
@@ -1574,7 +1587,14 @@ export default function EditorPage({
       delete: () => void deleteCurrentPage(),
       rotateCw: () => void rotateAll(90),
       rotateCcw: () => void rotateAll(-90),
-      reduce: () => setReduceOpen(true),
+      reduce: () => {
+        setReduceSourceDpi(null);
+        setReduceOpen(true);
+        // 창은 바로 열고, 문서 그림의 원본 해상도는 알아내는 대로 채운다(실패해도 창에는 영향 없음).
+        api('pdf.imageDpi')
+          .then((info) => setReduceSourceDpi(Number(info?.dpi) > 0 ? Number(info.dpi) : null))
+          .catch(() => setReduceSourceDpi(null));
+      },
       pageNumber: () => setPageNumberOpen(true),
       ocr: () => setOcrScope({ indices: null }),
       draw: () => toggleDrawing(),
@@ -1587,14 +1607,7 @@ export default function EditorPage({
       fitWidth: () => fit('width'),
       fitHeight: () => fit('height'),
       fitPage: () => fit('page'),
-      facing: () => {
-        setFacing((value) => {
-          const next = !value;
-          const token = ++requestId.current;
-          void loadPage(pageIndex, zoomRef.current, token, next);
-          return next;
-        });
-      },
+      facing: () => applyFacing(!facing),
       getFacing: () => facing,
     },
     { ready: engineReady, docOpen: doc.open },
@@ -1610,8 +1623,24 @@ export default function EditorPage({
     });
   }, [onDocChange, tabKey, doc.open, doc.name, doc.path, doc.modified]);
 
+  // 활성 탭의 쪽 보기 방식을 메뉴(보기 > 두 쪽씩 보기)에 알린다.
+  useEffect(() => {
+    if (!active) return;
+    window.dispatchEvent(new CustomEvent('tiny:facing', { detail: facing }));
+  }, [facing, active]);
+
+  // 한쪽씩/두쪽씩 보기 전환. 하단 토글·메뉴·Ctrl+2 가 모두 이 함수를 쓴다.
+  function applyFacing(next) {
+    if (next === facing) return;
+    setFacing(next);
+    const token = ++requestId.current;
+    void loadPage(pageIndex, zoomRef.current, token, next);
+  }
+
   const zoomPercent = Math.round(zoom * 100);
   const canNav = doc.open && doc.pageCount > 0;
+  // 이전·다음 단추의 이동 폭: 두쪽씩 보기는 한 번에 한 쌍(2쪽)씩, 한쪽씩 보기는 1쪽씩.
+  const pageStep = facing ? 2 : 1;
   // 한쪽씩 보기는 행마다 쪽 1개, 두쪽씩 보기는 쪽 2개.
   const pageRows = [];
   if (canNav) {
@@ -1823,7 +1852,7 @@ export default function EditorPage({
                 className={barBtnClass}
                 title="이전 페이지"
                 disabled={!canNav || pageIndex <= 0}
-                onClick={() => void goTo(pageIndex - 1)}
+                onClick={() => void goTo(pageIndex - pageStep)}
               >
                 <NavIcon kind="prev" />
               </button>
@@ -1848,8 +1877,8 @@ export default function EditorPage({
                 type="button"
                 className={barBtnClass}
                 title="다음 페이지"
-                disabled={!canNav || pageIndex >= doc.pageCount - 1}
-                onClick={() => void goTo(pageIndex + 1)}
+                disabled={!canNav || pageIndex + pageStep >= doc.pageCount}
+                onClick={() => void goTo(pageIndex + pageStep)}
               >
                 <NavIcon kind="next" />
               </button>
@@ -1857,7 +1886,7 @@ export default function EditorPage({
                 type="button"
                 className={barBtnClass}
                 title="마지막 페이지"
-                disabled={!canNav || pageIndex >= doc.pageCount - 1}
+                disabled={!canNav || pageIndex + pageStep >= doc.pageCount}
                 onClick={() => void goTo(doc.pageCount - 1)}
               >
                 <NavIcon kind="last" />
@@ -1874,6 +1903,28 @@ export default function EditorPage({
               <button type="button" className={fitBtnClass} title="화면 맞추기" disabled={!doc.open} onClick={() => fit('page')}>
                 화면
               </button>
+
+              <div role="group" aria-label="쪽 보기 방식" className="ml-1 inline-flex shrink-0 overflow-hidden rounded border border-slate-300">
+                {[
+                  { value: false, label: '1쪽', title: '한 쪽씩 보기' },
+                  { value: true, label: '2쪽', title: '두 쪽씩 보기 (Ctrl+2)' },
+                ].map((mode) => (
+                  <button
+                    key={mode.label}
+                    type="button"
+                    title={mode.title}
+                    aria-pressed={facing === mode.value}
+                    data-facing-toggle={mode.value ? 'two' : 'one'}
+                    disabled={!doc.open}
+                    onClick={() => applyFacing(mode.value)}
+                    className={`inline-flex h-[20px] w-9 items-center justify-center text-[11px] font-medium disabled:opacity-40 ${
+                      facing === mode.value ? 'bg-app-accent text-white' : 'bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    {mode.label}
+                  </button>
+                ))}
+              </div>
 
               <button
                 type="button"
@@ -1924,6 +1975,21 @@ export default function EditorPage({
                   <option key={value} value={`${value}%`} />
                 ))}
               </datalist>
+              <button
+                type="button"
+                className={barBtnClass}
+                title="전체 화면 (F11)"
+                aria-label="전체 화면"
+                data-fullscreen-enter="1"
+                onClick={enterFullscreen}
+              >
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M2.5 6V2.5H6" />
+                  <path d="M10 2.5h3.5V6" />
+                  <path d="M13.5 10v3.5H10" />
+                  <path d="M6 13.5H2.5V10" />
+                </svg>
+              </button>
             </div>
           </footer>
         </div>
@@ -1939,6 +2005,7 @@ export default function EditorPage({
       />
       <ReduceSizeDialog
         open={reduceOpen}
+        sourceDpi={reduceSourceDpi}
         onClose={() => setReduceOpen(false)}
         onApply={(options) => void applyReduceSize(options)}
       />

@@ -934,6 +934,11 @@ export function register() {
     return { doc: result.doc, added: result.added };
   });
 
+  defineApi('pdf.imageDpi', 'user', async () => {
+    const result = await engineOp({ op: 'imageDpi' });
+    return { dpi: Number.isFinite(result.dpi) ? result.dpi : null };
+  });
+
   defineApi('pdf.reduceSize', 'user', async (body) => {
     const result = await engineOp({
       op: 'reduceSize',

@@ -15,9 +15,9 @@ const btnGhost = `${btnBase} text-slate-700 hover:bg-slate-100`;
 
 /**
  * Tiny ReduceSizeDialog — dpi / quality / size percent.
- * @param {{ open: boolean, onClose: () => void, onApply: (options: { dpi: number, quality: number, sizePercent: number }) => void }} props
+ * @param {{ open: boolean, onClose: () => void, onApply: (options: { dpi: number, quality: number, sizePercent: number }) => void, sourceDpi?: number | null }} props
  */
-export function ReduceSizeDialog({ open, onClose, onApply }) {
+export function ReduceSizeDialog({ open, onClose, onApply, sourceDpi = null }) {
   const [dpi, setDpi] = useState(150);
   const [quality, setQuality] = useState(100);
   const [sizePercent, setSizePercent] = useState(100);
@@ -47,7 +47,14 @@ export function ReduceSizeDialog({ open, onClose, onApply }) {
           <legend className="px-1 text-sm font-semibold text-slate-800">이미지 설정 조정</legend>
           <div className="grid gap-3">
             <label className={`grid gap-1 ${labelClass}`}>
-              이미지 압축 해상도
+              <span>
+                이미지 압축 해상도
+                {sourceDpi ? (
+                  <span className="ml-1.5 text-xs text-slate-500" data-source-dpi={sourceDpi}>
+                    (원본 : {sourceDpi}dpi)
+                  </span>
+                ) : null}
+              </span>
               <select className={fieldClass} value={dpi} onChange={(e) => setDpi(Number(e.target.value))}>
                 {OPTIMIZE_DPI_CHOICES.map((value) => (
                   <option key={value} value={value}>

@@ -841,6 +841,10 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
             "pdf": base64.b64encode(payload).decode("ascii"),
             "count": len(indices),
         }
+    if op == "imageDpi":
+        # 용량 줄이기 창이 "원본: 150dpi" 를 보여 주도록, 문서에 든 그림의 실제 해상도를 알려 준다.
+        _require_open(opened)
+        return True, {"dpi": doc.get_document_image_dpi()}
     if op == "reduceSize":
         _require_open(opened)
         options = OptimizeSizeOptions(

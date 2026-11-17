@@ -25,7 +25,13 @@ export default function AppMenuBar() {
   const [subId, setSubId] = useState('');
   const fullscreen = useFullscreen();
   const [openTarget, setOpenTarget] = useState('tab');
+  // 쪽 보기 방식은 활성 탭의 편집 화면이 알려 준다(하단 토글·메뉴·Ctrl+2 어느 쪽으로 바꿔도 같은 표시).
   const [facing, setFacing] = useState(false);
+  useEffect(() => {
+    const onFacing = (event) => setFacing(Boolean(event.detail));
+    window.addEventListener('tiny:facing', onFacing);
+    return () => window.removeEventListener('tiny:facing', onFacing);
+  }, []);
   const [recent, setRecent] = useState(/** @type {string[]} */ ([]));
   const [recentCtx, setRecentCtx] = useState(/** @type {null | { x: number, y: number, path: string }} */ (null));
   const rootRef = useRef(null);
@@ -236,10 +242,7 @@ export default function AppMenuBar() {
         item('facing', '두 쪽씩 보기', {
           shortcut: 'Ctrl+2',
           checked: facing,
-          run: () => {
-            setFacing((value) => !value);
-            go('facing');
-          },
+          run: () => go('facing'),
         }),
         sep('view-2'),
         item('fullscreen', '전체 화면', { shortcut: 'F11', checked: fullscreen, run: toggleFullscreen }),
@@ -313,7 +316,6 @@ export default function AppMenuBar() {
       }
       if (ctrl && key === '2') {
         event.preventDefault();
-        setFacing((value) => !value);
         void run('facing');
         return;
       }

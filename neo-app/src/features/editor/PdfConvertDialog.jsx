@@ -558,9 +558,6 @@ export default function PdfConvertDialog({ open, onClose, onDone }) {
               </button>
             ))}
           </div>
-          <button type="button" className={btnGhost} onClick={onClose} disabled={running}>
-            닫기
-          </button>
         </header>
 
         {knownHwpIssue ? (
