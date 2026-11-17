@@ -254,7 +254,7 @@ export default function AppMenuBar() {
         }),
       ],
     },
-    { id: 'function', label: '기능', mnemonic: 'u', badge: 'NEW', items: featureItems },
+    { id: 'function', label: '기능', mnemonic: 'u', badge: 'NEO', items: featureItems },
   ];
 
   useEffect(() => {
@@ -381,7 +381,7 @@ export default function AppMenuBar() {
               {menu.badge ? (
                 <span
                   data-menu-badge={menu.id}
-                  aria-label="새 기능"
+                  aria-label="NEO"
                   className="pointer-events-none absolute right-0.5 top-0 rounded-full bg-red-500 px-1 text-[8px] font-bold leading-[11px] tracking-tight text-white"
                 >
                   {menu.badge}

@@ -561,11 +561,11 @@ export default function PrintDialog({ open, api, pageCount, pageIndex, pageSizes
             {error || (noPrinter && printersLoaded ? '프린터를 선택해 주세요.' : '')}
           </span>
           <div className="flex gap-2">
-            <button type="button" className={btnPrimary} disabled={!canPrint} data-print="submit" onClick={() => void submit()}>
-              {printing ? '인쇄 중…' : '인쇄'}
-            </button>
             <button type="button" className={btnGhost} disabled={printing} data-print="cancel" onClick={onClose}>
               취소
+            </button>
+            <button type="button" className={btnPrimary} disabled={!canPrint} data-print="submit" onClick={() => void submit()}>
+              {printing ? '인쇄 중…' : '인쇄'}
             </button>
           </div>
         </div>

@@ -10,7 +10,8 @@ import { useEffect, useState } from 'react';
  */
 
 const overlayClass = 'fixed inset-0 z-[2000] flex items-center justify-center bg-[rgba(32,33,36,0.4)] p-4';
-const cardClass = 'flex w-full max-w-[730px] flex-col rounded-xl bg-white p-5 shadow-xl';
+// 가로 566px: 접두사·접미사 입력칸을 134px 로 줄인 만큼(730 → 566) 창도 좁힌다.
+const cardClass = 'flex w-full max-w-[566px] flex-col rounded-xl bg-white p-5 shadow-xl';
 const labelClass = 'whitespace-nowrap text-sm text-slate-700';
 // 너비(w-*)는 호출부에서 따로 지정한다. fieldClass 에 w-full 을 넣어 두면 호출부 w-* 를 덮어쓴다.
 const fieldBase =
@@ -472,11 +473,11 @@ export default function PageNumberDialog({ open, pageCount, onClose, onApply, lo
 
         {/* 실행 버튼: 창 오른쪽 아래 */}
         <div className="mt-5 flex justify-end gap-2">
-          <button type="submit" className={btnPrimary}>
-            넣기
-          </button>
           <button type="button" className={btnGhost} onClick={onClose}>
             취소
+          </button>
+          <button type="submit" className={btnPrimary}>
+            넣기
           </button>
         </div>
       </form>

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Generates the app icons from one source image:
- *   build/icon.png      (1024, used by electron-builder / macOS / window icon)
+ *   build/icon.png      (1024, full-bleed: electron-builder Windows / window icon)
+ *   build/icon-mac.png  (1024, macOS app icon: Apple icon grid — 824px rounded body + shadow on transparent margin)
  *   build/icon.ico      (Windows, 16–256)
  *   public/icon.png     (256, web UI logo)
  *   public/favicon.ico  (browser tab — Chrome prefers this path)
@@ -42,6 +43,48 @@ const PLACEHOLDER_SVG = `
   <path d="M408 368v420" stroke="#fff" stroke-width="40"/>
 </svg>`;
 
+/** macOS 아이콘 격자: 1024 캔버스 가운데 824px 본체(지수 5 의 둥근 사각형) + 아래로 살짝 퍼지는 그림자. */
+const MAC_CANVAS = 1024;
+const MAC_BODY = 824;
+
+function squirclePath(size, offset, exponent = 5, steps = 360) {
+  const half = size / 2;
+  const center = offset + half;
+  const points = [];
+  for (let i = 0; i < steps; i += 1) {
+    const angle = (i / steps) * Math.PI * 2;
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    const x = center + Math.sign(c) * Math.abs(c) ** (2 / exponent) * half;
+    const y = center + Math.sign(s) * Math.abs(s) ** (2 / exponent) * half;
+    points.push(`${x.toFixed(2)},${y.toFixed(2)}`);
+  }
+  return `M${points.join('L')}Z`;
+}
+
+async function macIcon() {
+  const offset = (MAC_CANVAS - MAC_BODY) / 2;
+  const maskSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${MAC_CANVAS}" height="${MAC_CANVAS}"><path d="${squirclePath(MAC_BODY, offset)}" fill="#fff"/></svg>`;
+  const mask = await sharp(Buffer.from(maskSvg)).png().toBuffer();
+  const body = await sharp(sourcePath)
+    .resize(MAC_BODY, MAC_BODY, { fit: 'cover' })
+    .extend({ top: offset, bottom: offset, left: offset, right: offset, background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .composite([{ input: mask, blend: 'dest-in' }])
+    .png()
+    .toBuffer();
+  // 그림자: 본체 모양의 검정(투명도 28%)을 흐리게 해서 10px 아래에 둔다.
+  const black = await sharp({ create: { width: MAC_CANVAS, height: MAC_CANVAS, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0.28 } } })
+    .composite([{ input: mask, blend: 'dest-in' }])
+    .png()
+    .toBuffer();
+  const blurred = await sharp(black).blur(14).png().toBuffer();
+  const shadow = await sharp({ create: { width: MAC_CANVAS, height: MAC_CANVAS, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+    .composite([{ input: blurred, top: 10, left: 0 }])
+    .png()
+    .toBuffer();
+  return sharp(shadow).composite([{ input: body }]).png().toBuffer();
+}
+
 const mtime = (file) => (fs.existsSync(file) ? fs.statSync(file).mtimeMs : 0);
 
 function writeIconRev(rev) {
@@ -66,6 +109,7 @@ async function main() {
 
   const outputs = [
     path.join(buildDir, 'icon.png'),
+    path.join(buildDir, 'icon-mac.png'),
     path.join(buildDir, 'icon.ico'),
     path.join(publicDir, 'icon.png'),
     path.join(publicDir, 'favicon.ico'),
@@ -79,6 +123,7 @@ async function main() {
   const png = (size) => sharp(sourcePath).resize(size, size, { fit: 'cover' }).png().toBuffer();
 
   fs.writeFileSync(path.join(buildDir, 'icon.png'), await png(1024));
+  fs.writeFileSync(path.join(buildDir, 'icon-mac.png'), await macIcon());
   fs.writeFileSync(path.join(publicDir, 'icon.png'), await png(256));
 
   const icoSizes = [16, 24, 32, 48, 64, 128, 256];
@@ -86,7 +131,7 @@ async function main() {
   fs.writeFileSync(path.join(buildDir, 'icon.ico'), ico);
   fs.writeFileSync(path.join(publicDir, 'favicon.ico'), ico);
 
-  console.log(`[icons] build/icon.png, build/icon.ico, public/icon.png, public/favicon.ico ready (rev ${rev})`);
+  console.log(`[icons] build/icon.png, build/icon-mac.png, build/icon.ico, public/icon.png, public/favicon.ico ready (rev ${rev})`);
 }
 
 main().catch((error) => {

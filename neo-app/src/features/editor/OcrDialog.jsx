@@ -157,11 +157,11 @@ export default function OcrDialog({ open, pageCount, indices, onClose, onApply }
         </div>
 
         <div className="mt-5 flex justify-end gap-2">
-          <button type="submit" className={btnPrimary}>
-            변환하기
-          </button>
           <button type="button" className={btnGhost} onClick={onClose}>
             취소
+          </button>
+          <button type="submit" className={btnPrimary}>
+            변환하기
           </button>
         </div>
       </form>
