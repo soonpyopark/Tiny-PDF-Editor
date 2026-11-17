@@ -39,6 +39,16 @@ if (process.env.TINY_DEBUG_PORT) {
   app.commandLine.appendSwitch('remote-debugging-port', String(process.env.TINY_DEBUG_PORT));
 }
 
+// 메모리 절약 (배포본 측정, 문서 1개 연 상태): Electron 쪽 개인 메모리 222MB → 141MB.
+//  - GPU 프로세스(97MB)를 소프트웨어 렌더링으로 돌린다. 화면은 DOM + PDF 쪽 이미지뿐이라 GPU 가속이 필요 없다.
+//    문제가 생기면 TINY_ENABLE_GPU=1 로 실행해 예전처럼 GPU 가속을 켠다.
+//  - 네트워크 서비스를 main 프로세스 안에서 돌려 보조 프로세스 하나를 줄인다.
+// 두 스위치 모두 app ready 전에 설정해야 한다.
+if (process.env.TINY_ENABLE_GPU !== '1') {
+  app.commandLine.appendSwitch('disable-gpu');
+}
+app.commandLine.appendSwitch('enable-features', 'NetworkServiceInProcess2');
+
 // Must run before any window / Jump List work so pinned taskbar icons keep the
 // same identity (and icon) after reboot. Matches MSI ShortcutProperty AUMID.
 if (process.platform === 'win32') {
