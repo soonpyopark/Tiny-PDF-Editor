@@ -1270,6 +1270,35 @@ export default function EditorPage({
     return job;
   }
 
+  // 지우개: 드래그 한 번(=여러 조각 요청)을 되돌리기 한 단계로 묶는다.
+  const eraseDragRef = useRef(/** @type {null | { id: number, joinPrev: boolean, removed: boolean }} */ (null));
+  function commitErase(index, path, radius, meta) {
+    let drag = eraseDragRef.current;
+    if (!drag || drag.id !== meta.dragId) {
+      drag = { id: meta.dragId, joinPrev: meta.startedAt - lastInkAtRef.current < INK_GROUP_MS, removed: false };
+      eraseDragRef.current = drag;
+    }
+    lastInkAtRef.current = meta.endedAt;
+    const job = inkQueueRef.current
+      .then(async () => {
+        const result = await api('pdf.inkErase', {
+          pageIndex: index,
+          path,
+          radius,
+          continueGroup: drag.removed || drag.joinPrev,
+        });
+        if (result.removed > 0) {
+          drag.removed = true;
+          await refreshInkPage(result.doc, index);
+        }
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : '지우지 못했습니다.');
+      });
+    inkQueueRef.current = job;
+    return job;
+  }
+
   async function startDrawing() {
     if (!docRef.current.open) return;
     setError('');
@@ -1746,8 +1775,13 @@ export default function EditorPage({
                               ptW={ptW}
                               ptH={ptH}
                               tool={drawState.tool}
-                              settings={drawState.tools[drawState.tool] ?? drawState.tools.pen}
+                              settings={
+                                drawState.tool === 'eraser'
+                                  ? { radius: drawState.eraserRadius }
+                                  : (drawState.tools[drawState.tool] ?? drawState.tools.pen)
+                              }
                               onStroke={commitInk}
+                              onErase={commitErase}
                             />
                           ) : null}
                           {current && src && reviewRects && reviewRects.pageIndex === index ? (

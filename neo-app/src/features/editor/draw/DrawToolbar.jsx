@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   DRAW_TOOLS,
+  ERASER_RADIUS_MAX,
+  ERASER_RADIUS_MIN,
+  ERASER_RADIUS_STEP,
   HIGHLIGHTER_SIZE_MAX,
   HIGHLIGHTER_SIZE_MIN,
   HIGHLIGHTER_SIZE_STEP,
@@ -11,13 +14,25 @@ import {
   PEN_SIZE_STEP,
   TOOL_LABELS,
   normalizeHex,
+  snapEraserRadius,
   snapOpacity,
   snapThickness,
 } from './drawSettings.js';
 
+const TOOL_BUTTONS = [...DRAW_TOOLS, 'eraser'];
+
 const iconProps = { viewBox: '0 0 20 20', width: 18, height: 18, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true };
 
 function ToolIcon({ tool }) {
+  if (tool === 'eraser') {
+    return (
+      <svg {...iconProps}>
+        <path d="M8 16l-4-4 8-8 6 6-6 6z" />
+        <path d="M6 9l6 6" />
+        <path d="M8 16h9" />
+      </svg>
+    );
+  }
   if (tool === 'pencil') {
     return (
       <svg {...iconProps}>
@@ -126,12 +141,14 @@ const sliderClass = 'h-[18px] w-[84px] accent-sky-600';
 /** 그리기 모드 도구 막대. 뷰어 위쪽 가운데에 떠 있다. */
 export default function DrawToolbar({ state, onChange, onDone }) {
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const tool = DRAW_TOOLS.includes(state.tool) ? state.tool : 'pen';
-  const settings = state.tools[tool];
-  const limits = sliderLimits(tool);
+  const tool = TOOL_BUTTONS.includes(state.tool) ? state.tool : 'pen';
+  const isEraser = tool === 'eraser';
+  // 지우개는 색·불투명도가 없다. 아래 값은 지우개일 때 쓰이지 않는다.
+  const settings = state.tools[isEraser ? 'pen' : tool];
+  const limits = sliderLimits(isEraser ? 'pen' : tool);
 
   const update = (patch) =>
-    onChange((prev) => ({ ...prev, tools: { ...prev.tools, [tool]: { ...prev.tools[tool], ...patch } } }));
+    onChange((prev) => (prev.tool === 'eraser' ? prev : { ...prev, tools: { ...prev.tools, [prev.tool]: { ...prev.tools[prev.tool], ...patch } } }));
   const pickTool = (next) => {
     setPaletteOpen(false);
     onChange((prev) => ({ ...prev, tool: next }));
@@ -143,7 +160,7 @@ export default function DrawToolbar({ state, onChange, onDone }) {
       className="pointer-events-auto absolute inset-x-0 top-2 z-30 mx-auto flex w-max max-w-[calc(100%-1rem)] flex-wrap items-center gap-2 rounded-lg border border-slate-300 bg-white/95 px-2 py-1.5 text-[12px] text-slate-700 shadow-md"
     >
       <div className="flex items-center gap-1" role="radiogroup" aria-label="그리기 도구">
-        {DRAW_TOOLS.map((id) => (
+        {TOOL_BUTTONS.map((id) => (
           <button
             key={id}
             type="button"
@@ -161,6 +178,26 @@ export default function DrawToolbar({ state, onChange, onDone }) {
 
       <span className="h-5 w-px bg-slate-300" />
 
+      {isEraser ? (
+        <label className="flex items-center gap-1" title="지우개 크기">
+          <span className="text-slate-500">지우개 크기</span>
+          <input
+            type="range"
+            min={ERASER_RADIUS_MIN}
+            max={ERASER_RADIUS_MAX}
+            step={ERASER_RADIUS_STEP}
+            value={state.eraserRadius}
+            aria-label="지우개 크기"
+            data-draw-eraser-size="1"
+            onChange={(event) => onChange((prev) => ({ ...prev, eraserRadius: snapEraserRadius(Number(event.target.value)) }))}
+            onPointerUp={(event) => event.currentTarget.blur()}
+            className={sliderClass}
+          />
+          <span className="w-6 text-right tabular-nums text-slate-500">{state.eraserRadius}</span>
+          <span className="text-slate-400">획 단위로 지웁니다</span>
+        </label>
+      ) : (
+      <>
       <div className="relative flex items-center gap-1.5">
         <button
           type="button"
@@ -217,6 +254,8 @@ export default function DrawToolbar({ state, onChange, onDone }) {
       </label>
 
       <BrushPreview settings={settings} tool={tool} />
+      </>
+      )}
 
       <span className="h-5 w-px bg-slate-300" />
 
