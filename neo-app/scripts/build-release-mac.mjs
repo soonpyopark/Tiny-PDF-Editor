@@ -3,10 +3,10 @@
  * npm run build:release:mac  (macOS only)
  *
  * Produces two artifacts in release/:
- *   TinyPDFEditor-NEO_<YYMMDD_HHMMSS>_<arch>.dmg       disk image (drag to Applications)
- *   TinyPDFEditor-NEO_mac_<YYMMDD_HHMMSS>_<arch>.zip   the .app zipped (same stamp)
+ *   TinyPDFEditor-NEO-v<버전>-<YYMMDD_HHMMSS>_<arch>.dmg       disk image (drag to Applications)
+ *   TinyPDFEditor-NEO-v<버전>-mac-<YYMMDD_HHMMSS>_<arch>.zip   the .app zipped (same stamp)
  * (arch = this Mac's architecture: arm64 on Apple Silicon, x64 on Intel).
- * `_mac_` in the zip name tells the update check (and humans) it is not the Windows portable zip.
+ * `-mac-` in the zip name tells the update check (and humans) it is not the Windows portable zip.
  *
  * The app is ad-hoc signed (`codesign --sign -`): enough to launch on Apple
  * Silicon. It is NOT notarized — for distribution outside your own machines,
@@ -20,7 +20,8 @@ import {
   APP_NAME,
   RELEASE_DIR,
   STAGING_DIR,
-  artifactSuffix,
+  APP_VERSION,
+  artifactBase,
   beginBuild,
   buildRenderer,
   ensureDir,
@@ -43,8 +44,7 @@ function main() {
 
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
   const stamp = beginBuild();
-  const suffix = artifactSuffix(stamp, arch);
-  log(`build stamp ${stamp}, arch ${arch}`);
+  log(`build v${APP_VERSION}, stamp ${stamp}, arch ${arch}`);
 
   ensureDir(RELEASE_DIR);
   buildRenderer();
@@ -64,7 +64,7 @@ function main() {
   tool('ditto', [appPath, path.join(dmgStage, `${APP_FILE_NAME}.app`)], 'dmg staging');
   fs.symlinkSync('/Applications', path.join(dmgStage, 'Applications'));
 
-  const dmgPath = path.join(RELEASE_DIR, `${APP_FILE_NAME}${suffix}.dmg`);
+  const dmgPath = path.join(RELEASE_DIR, `${artifactBase('dmg', stamp, arch)}.dmg`);
   fs.rmSync(dmgPath, { force: true });
   tool(
     'hdiutil',
@@ -73,7 +73,7 @@ function main() {
   );
 
   // zip: ditto -c -k keeps symlinks, permissions and the code signature (zip(1) would break them).
-  const zipPath = path.join(RELEASE_DIR, `${APP_FILE_NAME}_mac${suffix}.zip`);
+  const zipPath = path.join(RELEASE_DIR, `${artifactBase('mac', stamp, arch)}.zip`);
   fs.rmSync(zipPath, { force: true });
   tool('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, zipPath], 'zip');
 

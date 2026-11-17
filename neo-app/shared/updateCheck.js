@@ -16,7 +16,34 @@
  * }} UpdateCheckResult
  */
 
-const BUILD_STAMP_IN_NAME = /_(\d{6}_\d{6})(?=[_.])/;
+/**
+ * 산출물 이름 (scripts/build-common.mjs 의 artifactBase 와 같이 바꾼다):
+ *   현재  TinyPDFEditor-NEO-v1.0.0.3-261117_104722_x64.msi
+ *         TinyPDFEditor-NEO-v1.0.0.3-portable-261117_104722_x64.zip
+ *         TinyPDFEditor-NEO-v1.0.0.3-mac-261117_104722_arm64.zip
+ *   예전  TinyPDFEditor-NEO_261117_104722_x64.msi / TinyPDFEditor-NEO_portable_… / TinyPDFEditor-NEO_mac_…
+ * 구분자는 `-` 와 `_` 둘 다 받아서 이미 올라간 예전 릴리스도 읽는다.
+ */
+const BUILD_STAMP_IN_NAME = /[_-](\d{6}_\d{6})(?=[_.])/;
+const PORTABLE_ZIP_MARK = /[_-]portable[_-]/;
+const MAC_ZIP_MARK = /[_-]mac[_-]/;
+
+/** @param {string} name 산출물 파일 이름에서 빌드 스탬프(YYMMDD_HHMMSS)를 꺼낸다. */
+export function buildStampOfName(name) {
+  return BUILD_STAMP_IN_NAME.exec(String(name ?? ''))?.[1] ?? null;
+}
+
+/** @param {string} name Windows 용 산출물인가 (.msi 또는 포터블 zip). */
+export function isWindowsAsset(name) {
+  const lower = String(name ?? '').toLowerCase();
+  return lower.endsWith('.msi') || (lower.endsWith('.zip') && PORTABLE_ZIP_MARK.test(lower));
+}
+
+/** @param {string} name macOS 용 산출물인가 (.dmg 또는 mac zip). */
+export function isMacAsset(name) {
+  const lower = String(name ?? '').toLowerCase();
+  return lower.endsWith('.dmg') || (lower.endsWith('.zip') && MAC_ZIP_MARK.test(lower));
+}
 
 /**
  * 릴리스 태그 → 앱 표시 버전. 태그는 `v1.0.0-1`(하이픈), 앱 버전은 `1.0.0.1`(점)이다.
@@ -64,8 +91,8 @@ export function detectUpdatePlatform(platform = globalThis.process?.platform) {
 
 /**
  * Keeps the release assets that belong to this platform.
- *   Windows: `.msi` and `_portable_…zip`
- *   macOS:   `.dmg` and `_mac_…zip`
+ *   Windows: `.msi` and `…-portable-…zip`
+ *   macOS:   `.dmg` and `…-mac-…zip`
  * 한 릴리스에 두 플랫폼의 zip 이 함께 올라가므로, zip 은 이름으로 플랫폼을 구분한다.
  *
  * @param {string[]} names
@@ -73,9 +100,8 @@ export function detectUpdatePlatform(platform = globalThis.process?.platform) {
  */
 export function filterAssetsForPlatform(names, platform = detectUpdatePlatform()) {
   return names.filter((name) => {
-    const lower = name.toLowerCase();
-    if (platform === 'mac') return lower.endsWith('.dmg') || (lower.endsWith('.zip') && lower.includes('_mac_'));
-    if (platform === 'win') return lower.endsWith('.msi') || (lower.endsWith('.zip') && lower.includes('_portable_'));
+    if (platform === 'mac') return isMacAsset(name);
+    if (platform === 'win') return isWindowsAsset(name);
     return false;
   });
 }
@@ -84,7 +110,7 @@ export function filterAssetsForPlatform(names, platform = detectUpdatePlatform()
 export function maxBuildStamp(names) {
   let best = /** @type {string | null} */ (null);
   for (const name of names) {
-    const stamp = BUILD_STAMP_IN_NAME.exec(name)?.[1];
+    const stamp = buildStampOfName(name);
     if (stamp && (!best || stamp > best)) best = stamp;
   }
   return best;

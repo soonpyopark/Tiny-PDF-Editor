@@ -9,7 +9,7 @@
  *   1. 점검: package.json 버전 = APP_VERSION, main 브랜치, 작업 트리 깨끗함, 이 플랫폼의 산출물 존재
  *   2. 태그 `v1.0.0-N`(APP_GIT_TAG) 생성 → main 과 태그를 GitHub 로 push
  *   3. GitHub Release(제목 `v1.0.0.N`)를 만들고 산출물을 올림
- *        Windows: .msi + 포터블 .zip      macOS: .dmg + _mac_ .zip
+ *        Windows: .msi + 포터블 .zip      macOS: .dmg + -mac- .zip
  *      릴리스가 이미 있으면(예: Windows 가 먼저 올린 뒤 macOS) 파일만 추가로 올린다.
  *   4. 업로드를 확인한 뒤에만 **이전 릴리스와 이전 태그를 모두 삭제** (원격 + 로컬)
  *        삭제한 태그와 커밋 SHA 는 .cache/logs/publish-release.log 에 남는다 (복구용).
@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { APP_BUILD_STAMP, APP_GIT_TAG, APP_NAME, APP_VERSION, UPDATE_REPO } from '../shared/constants.js';
+import { buildStampOfName, isMacAsset, isWindowsAsset } from '../shared/updateCheck.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -78,12 +79,8 @@ function findArtifacts() {
   const platform = process.platform;
   if (platform !== 'win32' && platform !== 'darwin') fail('Windows 또는 macOS 에서만 배포할 수 있습니다.');
   if (!fs.existsSync(releaseDir)) fail(`산출물 폴더가 없습니다: ${releaseDir}`);
-  const names = fs.readdirSync(releaseDir).filter((name) => name.includes(`_${APP_BUILD_STAMP}_`));
-  const wanted = names.filter((name) => {
-    const lower = name.toLowerCase();
-    if (platform === 'win32') return lower.endsWith('.msi') || (lower.endsWith('.zip') && lower.includes('_portable_'));
-    return lower.endsWith('.dmg') || (lower.endsWith('.zip') && lower.includes('_mac_'));
-  });
+  const names = fs.readdirSync(releaseDir).filter((name) => buildStampOfName(name) === APP_BUILD_STAMP);
+  const wanted = names.filter((name) => (platform === 'win32' ? isWindowsAsset(name) : isMacAsset(name)));
   const need = platform === 'win32' ? ['.msi', '.zip'] : ['.dmg', '.zip'];
   for (const ext of need) {
     if (!wanted.some((name) => name.toLowerCase().endsWith(ext))) {

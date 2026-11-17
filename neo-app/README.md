@@ -24,7 +24,16 @@ NAS4USB 류 앱을 만들 때 쓰는 Electron 기본 프레임. 로그인·회�
 
 `npm run check:identity` 는 Default Framework 와 식별자(UpgradeCode·appId·포트 등)가 겹치지 않는지 검사합니다. 두 릴리스 빌드가 시작할 때 자동으로 실행됩니다.
 
-산출물 이름: `TinyPDFEditor-NEO_<YYMMDD_HHMMSS>_<arch>.msi`, `TinyPDFEditor-NEO_portable_<stamp>_<arch>.zip`, `TinyPDFEditor-NEO_<stamp>_<arch>.dmg`.
+산출물 이름은 모두 가운데에 앱 버전, 그 뒤에 빌드 스탬프(`YYMMDD_HHMMSS`)가 들어갑니다. (이름은 `scripts/build-common.mjs` 의 `artifactBase()` 한 곳에서 만듭니다.)
+
+| 산출물 | 이름 (예) |
+| --- | --- |
+| Windows MSI | `TinyPDFEditor-NEO-v1.0.0.3-261117_104722_x64.msi` |
+| Windows 포터블 zip | `TinyPDFEditor-NEO-v1.0.0.3-portable-261117_104722_x64.zip` |
+| macOS dmg | `TinyPDFEditor-NEO-v1.0.0.3-261117_104722_arm64.dmg` |
+| macOS zip | `TinyPDFEditor-NEO-v1.0.0.3-mac-261117_104722_arm64.zip` |
+
+`-portable-` / `-mac-` 는 업데이트 확인이 플랫폼별 zip 을 구분하는 표시이고, 스탬프는 같은 버전을 다시 빌드했을 때 새 빌드인지 비교하는 데 씁니다. 업데이트 확인(`shared/updateCheck.js`)은 예전 이름(`TinyPDFEditor-NEO_<stamp>_…`, `_portable_`, `_mac_`)도 읽습니다.
 
 기본 로그인: `admin` / `admin1234` (로그인 후 회원 관리에서 변경).
 기본 포트 3021, 기본 접속 범위는 이 PC(127.0.0.1) 만. 환경설정 > 서버 관리에서 변경.

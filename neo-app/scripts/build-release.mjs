@@ -3,8 +3,8 @@
  * npm run build:release  (Windows)
  *
  * One build, one stamp, two artifacts in release/:
- *   TinyPDFEditor-NEO_<YYMMDD_HHMMSS>_<arch>.msi            per-user installer
- *   TinyPDFEditor-NEO_portable_<YYMMDD_HHMMSS>_<arch>.zip   unzip-and-run (data beside the exe)
+ *   TinyPDFEditor-NEO-v<버전>-<YYMMDD_HHMMSS>_<arch>.msi            per-user installer
+ *   TinyPDFEditor-NEO-v<버전>-portable-<YYMMDD_HHMMSS>_<arch>.zip   unzip-and-run (data beside the exe)
  *
  * The PDF engine (Python) is frozen first (scripts/build-engine.mjs) and shipped in resources/engine.
  *
@@ -22,7 +22,7 @@ import {
   APP_VERSION,
   RELEASE_DIR,
   STAGING_DIR,
-  artifactSuffix,
+  artifactBase,
   beginBuild,
   buildRenderer,
   ensureDir,
@@ -77,8 +77,8 @@ function zipFolder(parent, folder, zipPath) {
   if (result.status !== 0) throw new Error('zip failed (tar exit ' + result.status + ')');
 }
 
-function buildPortableZip(unpackedDir, suffix) {
-  const folder = `${APP_FILE_NAME}_portable${suffix}`;
+function buildPortableZip(unpackedDir, stamp, arch) {
+  const folder = artifactBase('portable', stamp, arch);
   const stage = path.join(STAGING_DIR, 'portable');
   const target = path.join(stage, folder);
   fs.rmSync(stage, { recursive: true, force: true });
@@ -98,7 +98,7 @@ function buildPortableZip(unpackedDir, suffix) {
       `4. 기본 로그인: admin / admin1234  (최초 로그인 후 변경하세요)`,
       `5. LAN 접속은 환경설정 → 서버 관리 에서 허용합니다. (Windows 방화벽 허용이 필요할 수 있음)`,
       '',
-      `버전 v${APP_VERSION} / 빌드 ${suffix.slice(1)}`,
+      `버전 v${APP_VERSION} / 빌드 ${stamp}_${arch}`,
       '',
     ].join('\r\n'),
   );
@@ -135,7 +135,7 @@ async function stampWindowsExe(unpackedDir) {
   log(`stampWindowsExe: icon + version → ${exeName}`);
 }
 
-function buildMsi(unpackedDir, suffix) {
+function buildMsi(unpackedDir, stamp, arch) {
   const wix = resolveWix();
   const stage = path.join(STAGING_DIR, 'msi-stage');
   fs.rmSync(stage, { recursive: true, force: true });
@@ -145,7 +145,7 @@ function buildMsi(unpackedDir, suffix) {
   const exeName = findMainExe(stage);
   if (!exeName) throw new Error(`Main executable not found in ${stage}`);
 
-  const outPath = path.join(RELEASE_DIR, `${APP_FILE_NAME}${suffix}.msi`);
+  const outPath = path.join(RELEASE_DIR, `${artifactBase('msi', stamp, arch)}.msi`);
   fs.rmSync(outPath, { force: true });
 
   const productVersion = toMsiVersion(APP_VERSION);
@@ -179,8 +179,7 @@ async function main() {
 
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
   const stamp = beginBuild();
-  const suffix = artifactSuffix(stamp, arch);
-  log(`build stamp ${stamp}, arch ${arch}`);
+  log(`build v${APP_VERSION}, stamp ${stamp}, arch ${arch}`);
 
   ensureDir(RELEASE_DIR);
   buildRenderer();
@@ -192,8 +191,8 @@ async function main() {
   const unpackedDir = findUnpacked(unpackedRoot, /^win(-arm64)?-unpacked$/);
   await stampWindowsExe(unpackedDir);
 
-  const zipPath = buildPortableZip(unpackedDir, suffix);
-  const msiPath = buildMsi(unpackedDir, suffix);
+  const zipPath = buildPortableZip(unpackedDir, stamp, arch);
+  const msiPath = buildMsi(unpackedDir, stamp, arch);
   fs.rmSync(STAGING_DIR, { recursive: true, force: true });
 
   const size = (file) => `${(fs.statSync(file).size / 1024 / 1024).toFixed(1)} MB`;

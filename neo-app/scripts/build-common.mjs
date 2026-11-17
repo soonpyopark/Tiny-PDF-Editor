@@ -18,12 +18,20 @@ export const STAGING_DIR = path.join(projectRoot, '.dist-build');
 export { APP_FILE_NAME, APP_NAME, APP_VERSION, formatBuildTimestamp };
 
 /**
- * Artifact name suffix: `_YYMMDD_HHMMSS_<arch>` (e.g. `_261029_153000_arm64`).
- * @param {string} stamp
+ * Artifact base name (no extension) — every build output uses it, so version and stamp are always in the name:
+ *   msi       TinyPDFEditor-NEO-v1.0.0.3-261117_104722_x64
+ *   portable  TinyPDFEditor-NEO-v1.0.0.3-portable-261117_104722_x64   (Windows zip)
+ *   dmg       TinyPDFEditor-NEO-v1.0.0.3-261117_104722_arm64
+ *   mac       TinyPDFEditor-NEO-v1.0.0.3-mac-261117_104722_arm64      (macOS zip)
+ * `portable` / `mac` tell the update check (and humans) which platform a zip belongs to.
+ * shared/updateCheck.js parses these names, so change both together.
+ * @param {'msi' | 'portable' | 'dmg' | 'mac'} kind
+ * @param {string} stamp YYMMDD_HHMMSS
  * @param {string} arch
  */
-export function artifactSuffix(stamp, arch) {
-  return `_${stamp}_${arch}`;
+export function artifactBase(kind, stamp, arch) {
+  const marker = kind === 'portable' || kind === 'mac' ? `-${kind}` : '';
+  return `${APP_FILE_NAME}-v${APP_VERSION}${marker}-${stamp}_${arch}`;
 }
 
 /**

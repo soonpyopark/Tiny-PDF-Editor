@@ -3,8 +3,8 @@
 빌드 방법과 산출물 이름은 `neo-app/README.md`를 참고하세요.
 산출물은 `neo-app/release/`에 만들어집니다.
 
-- `TinyPDFEditor-NEO_<YYMMDD_HHMMSS>_<arch>.msi`
-- `TinyPDFEditor-NEO_portable_<YYMMDD_HHMMSS>_<arch>.zip`
+- `TinyPDFEditor-NEO-v<버전>-<YYMMDD_HHMMSS>_<arch>.msi`
+- `TinyPDFEditor-NEO-v<버전>-portable-<YYMMDD_HHMMSS>_<arch>.zip`
 
 릴리스 다운로드: https://github.com/soonpyopark/Tiny-PDF-Editor/releases
 
@@ -28,7 +28,7 @@ wix eula accept wix7
 
 ## Windows — 포터블 zip
 
-1. `npm run build:release`로 `neo-app/release/`에 `..._portable_....zip`을 만듭니다.
+1. `npm run build:release`로 `neo-app/release/`에 `...-portable-....zip`을 만듭니다.
 2. zip을 **폴더째** 압축 해제한 뒤 폴더 안의 `.exe`를 실행합니다.
 3. Python 설치가 필요 없습니다. PDF 엔진(`resources/engine/tiny-pdf-engine.exe`)이 함께 들어 있습니다.
 4. exe와 `resources` 폴더는 **같은 위치**에 두어야 합니다. exe만 따로 복사하면 실행되지 않습니다.

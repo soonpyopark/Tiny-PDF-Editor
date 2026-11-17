@@ -27,7 +27,7 @@ alwaysApply: true
    - 실패하면 배포하지 않는다. 원인을 고치고 2번부터 다시.
 4. **커밋** — 버전 올림 + 빌드 스탬프 + 이번 변경. 작업 트리를 깨끗하게 만든다 (`publish:release` 가 요구한다).
 5. **게시** — `npm run publish:release -- --notes-file=<노트.md>`
-   - 태그 `v1.0.0-N` 생성 → `main` 과 태그 push → GitHub Release 생성 → `.msi` + `_portable_…zip` 업로드
+   - 태그 `v1.0.0-N` 생성 → `main` 과 태그 push → GitHub Release 생성 → `.msi` + `-portable-…zip` 업로드
    - 업로드가 확인된 뒤에만 **이전 릴리스와 이전 버전 태그를 모두 삭제** (원격 + 로컬).
    - 삭제한 태그와 커밋 SHA 는 `neo-app/.cache/logs/publish-release.log` 에 남는다 (복구용).
    - 먼저 `-- --dry-run` 으로 계획을 확인해도 된다.
@@ -40,8 +40,8 @@ alwaysApply: true
 Mac 에서만 빌드할 수 있다. Windows 가 먼저 릴리스를 올린 뒤 Mac 에서:
 
 1. `git pull` 로 같은 커밋을 받는다 (버전 올리기는 하지 않는다 — 같은 `v1.0.0-N` 에 올린다).
-2. `npm run build:release:mac` → `TinyPDFEditor-NEO_<스탬프>_<arch>.dmg` + `TinyPDFEditor-NEO_mac_<스탬프>_<arch>.zip`
-3. `npm run publish:release` → 같은 릴리스에 `.dmg` + `_mac_…zip` 만 추가로 올린다 (빌드 스탬프로 `constants.js` 가 바뀐 것은 허용).
+2. `npm run build:release:mac` → `TinyPDFEditor-NEO-v<버전>-<스탬프>_<arch>.dmg` + `TinyPDFEditor-NEO-v<버전>-mac-<스탬프>_<arch>.zip`
+3. `npm run publish:release` → 같은 릴리스에 `.dmg` + `-mac-…zip` 만 추가로 올린다 (빌드 스탬프로 `constants.js` 가 바뀐 것은 허용).
 
 Windows 에서는 mac 산출물을 만들 수 없으므로, Windows 만 배포했다면 "mac 은 Mac 에서 별도로 올려야 한다" 고 보고에 적는다.
 
