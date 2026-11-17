@@ -132,6 +132,15 @@ a = Analysis(
 
 a.scripts = [s for s in a.scripts if "pyi_rth_multiprocessing" not in s[0]]
 
+# PyInstaller 훅이 위 필터를 거치지 않고 같은 파일을 다시 담는 경우가 있다(PyMuPDF layout ONNX 모델 ~40MB,
+# C 개발용 .lib). 분석이 끝난 최종 목록에서 한 번 더 걸러 패키지가 불어나지 않게 한다.
+def _unused_toc(entry):
+    text = (str(entry[0]) + "|" + str(entry[1])).replace(chr(92), "/")
+    return "pymupdf/layout/" in text or "mupdf-devel/" in text
+
+a.datas = [e for e in a.datas if not _unused_toc(e)]
+a.binaries = [e for e in a.binaries if not _unused_toc(e)]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

@@ -27,7 +27,7 @@ export const APP_FILE_NAME = 'TinyPDFEditor-NEO';
  *
  * N 은 `npm run version:bump` 가 올린다. 직접 고치지 않는다.
  */
-export const APP_VERSION = '1.0.0.1';
+export const APP_VERSION = '1.0.0.2';
 
 /**
  * Git 태그 문자열. `1.0.0.1` → `v1.0.0-1`
@@ -49,7 +49,7 @@ export const APP_GIT_TAG = formatAppGitTag(APP_VERSION);
  * Package build id (YYMMDD_HHMMSS). Rewritten by `npm run build:release*`
  * (scripts/sync-build-stamp.mjs); matches the suffix of the produced files.
  */
-export const APP_BUILD_STAMP = '261117_011327';
+export const APP_BUILD_STAMP = '261117_103008';
 
 /**
  * Default web server port (Electron window + LAN browsers share it).
