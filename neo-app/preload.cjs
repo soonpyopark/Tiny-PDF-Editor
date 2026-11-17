@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld('frame', {
   openExternal: (url) => ipcRenderer.invoke('frame:openExternal', url),
   openStateFolder: (sub) => ipcRenderer.invoke('frame:openStateFolder', sub),
   quit: () => ipcRenderer.invoke('frame:quit'),
-  /** 도움말 > 정보: 스플래시 형태의 정보 창을 연다/닫는다. */
+  /** 상단 오른쪽 ? 단추: 스플래시 형태의 정보 창을 연다/닫는다. */
   showAboutSplash: () => ipcRenderer.invoke('frame:showAboutSplash'),
   /** Real path of a dropped File (sandboxed pages cannot read File.path). */
   pathForFile: (file) => webUtils.getPathForFile(file),

@@ -44,6 +44,9 @@ from pdf_editor.signature_stamp import (
 
 _MAX_ZOOM = 5.0
 _MIN_ZOOM = 0.2
+# 인쇄용 렌더링 상한 (600dpi 까지). 화면 렌더링 상한(_MAX_ZOOM)보다 높다.
+_PRINT_MAX_ZOOM = 8.4
+_PRINT_PNG_LIMIT = 4 * 1024 * 1024
 _THUMB_WIDTH = 200
 
 # MuPDF 이미지/렌더 캐시는 기본 상한이 256MB 라서, 이미지가 많은 문서를 넘기면 엔진이 그만큼 커진다.
@@ -541,6 +544,35 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
             zoom = min(_MAX_ZOOM, max(_MIN_ZOOM, zoom))
             pix = doc.render_page_pixmap(index, zoom)
         result = _png(pix)
+        _trim_store()
+        return opened, result
+    if op == "printPage":
+        # 인쇄용으로 한 쪽을 높은 해상도로 그려 파일로 쓴다 (base64 로 IPC 에 싣지 않는다).
+        _require_open(opened)
+        index = int(req.get("index") or 0)
+        if index < 0 or index >= doc.page_count:
+            raise ValueError("페이지 번호가 올바르지 않습니다.")
+        target = Path(str(req.get("path") or ""))
+        if not str(target) or not target.parent.is_dir():
+            raise ValueError("인쇄용 그림을 쓸 폴더가 올바르지 않습니다.")
+        zoom = min(_PRINT_MAX_ZOOM, max(_MIN_ZOOM, float(req.get("zoom") or 1)))
+        pix = doc.render_page_pixmap(index, zoom)
+        try:
+            gray = bool(req.get("gray"))
+            if gray and pix.colorspace is not None and pix.colorspace.n != 1:
+                pix = fitz.Pixmap(fitz.csGRAY, pix)
+            png_path = target.with_suffix(".png")
+            pix.save(str(png_path))
+            written = png_path
+            # 사진이 많은 쪽은 PNG 가 아주 커지므로 JPEG 로 다시 저장한다 (글자만 있는 쪽은 PNG 유지).
+            if not gray and png_path.stat().st_size > _PRINT_PNG_LIMIT:
+                jpg_path = target.with_suffix(".jpg")
+                pix.save(str(jpg_path), jpg_quality=92)
+                png_path.unlink(missing_ok=True)
+                written = jpg_path
+            result = {"path": str(written), "width": int(pix.width), "height": int(pix.height)}
+        finally:
+            pix = None
         _trim_store()
         return opened, result
     if op == "markups":
@@ -1110,6 +1142,28 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
     if op == "imageFlatten":
         _require_open(opened)
         doc.flatten_image_stamp(int(req.get("pageIndex") or 0), int(req.get("stampId")), below=bool(req.get("below")))
+        return True, {"doc": _summary(doc, True)}
+    if op == "shapeList":
+        _require_open(opened)
+        page_index = req.get("pageIndex")
+        return True, {"items": doc.shape_items(None if page_index is None else int(page_index))}
+    if op == "shapeAdd":
+        # 도형 그리기: kind + (points | rect, 화면 좌표 pt) + 모양(params). 반환 shapeId ("id" 는 요청 번호 키라 피한다)
+        _require_open(opened)
+        kind = str(req.get("kind") or "")
+        geom = {"points": req.get("points"), "rect": req.get("rect")}
+        shape_id = doc.add_shape(int(req.get("pageIndex") or 0), kind, geom, req.get("params"))
+        return True, {"doc": _summary(doc, True), "shapeId": shape_id}
+    if op == "shapeUpdate":
+        _require_open(opened)
+        geom = None
+        if req.get("points") is not None or req.get("rect") is not None:
+            geom = {"points": req.get("points"), "rect": req.get("rect")}
+        result = doc.update_shape(int(req.get("pageIndex") or 0), int(req.get("shapeId")), geom, req.get("params"))
+        return True, {"doc": _summary(doc, True), "newId": result["newId"], "changed": result["changed"]}
+    if op == "shapeDelete":
+        _require_open(opened)
+        doc.delete_shape(int(req.get("pageIndex") or 0), int(req.get("shapeId")))
         return True, {"doc": _summary(doc, True)}
     if op == "inkAdd":
         # 그리기: 획마다 잉크 주석 하나. 점은 쪽 화면 좌표(pt, 회전 반영)로 받는다.

@@ -306,7 +306,7 @@ export default function PageNumberDialog({ open, pageCount, onClose, onApply, lo
           {/* 왼쪽: 번호 위치 */}
           <div className="flex w-[190px] shrink-0 flex-col gap-2">
             <span className="text-sm font-semibold text-slate-800">번호 위치</span>
-            <div className="grid grid-cols-3 justify-items-center gap-y-1">
+            <div className="grid grid-cols-3 justify-items-center gap-y-1 rounded-md border border-slate-300 px-2 py-2">
               {TOP_POSITIONS.map(positionRadio)}
               <div className="col-span-3 justify-self-center py-1">
                 <PageNumberPreview form={form} />
@@ -468,16 +468,16 @@ export default function PageNumberDialog({ open, pageCount, onClose, onApply, lo
               </span>
             </div>
           </div>
+        </div>
 
-          {/* 오른쪽: 실행 버튼 */}
-          <div className="flex shrink-0 flex-col gap-2">
-            <button type="submit" className={btnPrimary}>
-              넣기
-            </button>
-            <button type="button" className={btnGhost} onClick={onClose}>
-              취소
-            </button>
-          </div>
+        {/* 실행 버튼: 창 오른쪽 아래 */}
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="submit" className={btnPrimary}>
+            넣기
+          </button>
+          <button type="button" className={btnGhost} onClick={onClose}>
+            취소
+          </button>
         </div>
       </form>
     </div>

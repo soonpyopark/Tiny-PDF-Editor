@@ -91,5 +91,9 @@ export function createTrayController(options) {
     tray = null;
   }
 
-  return { create, destroy, updateMenu };
+  function isActive() {
+    return Boolean(tray && !tray.isDestroyed());
+  }
+
+  return { create, destroy, updateMenu, isActive };
 }

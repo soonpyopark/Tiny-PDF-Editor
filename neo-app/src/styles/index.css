@@ -18,6 +18,11 @@
     --app-sidebar-hover: 57 68 84;
   }
 
+  /* 슬라이드바는 테마 색상(환경설정 → 일반 → 테마 색상)을 따른다. */
+  input[type='range'] {
+    accent-color: rgb(var(--app-accent));
+  }
+
   html,
   body,
   #root {

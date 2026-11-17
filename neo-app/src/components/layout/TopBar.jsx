@@ -1,6 +1,9 @@
 import { useState } from 'react';
+import { useAppInfo } from '../../context/AppInfoContext.jsx';
 import { useDialog } from '../../context/DialogContext.jsx';
+import { getNative } from '../../lib/apiClient.js';
 import { runUpdateCheck } from '../../lib/updateCheckUi.js';
+import AppLogo from '../common/AppLogo.jsx';
 import AppMenuBar from './AppMenuBar.jsx';
 
 const iconBtnClass =
@@ -19,6 +22,17 @@ function SettingsIcon() {
   );
 }
 
+/** 원 안의 물음표 (정보). */
+function AboutIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.4 9.3a2.7 2.7 0 0 1 5.2.9c0 1.8-2.6 2.2-2.6 3.9" />
+      <circle cx="12" cy="17.1" r="0.6" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 function UpdateCheckIcon() {
   return (
     <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
@@ -31,17 +45,32 @@ function UpdateCheckIcon() {
 }
 
 /**
- * Top bar: Tiny PDF Editor menus, then 업데이트 확인 and 환경설정.
+ * Top bar: Tiny PDF Editor menus, then 정보(?) · 업데이트 확인 · 환경설정.
  *
  * @param {{ settingsOpen: boolean, onToggleSettings: () => void }} props
  */
 export default function TopBar({ settingsOpen, onToggleSettings }) {
   const dialog = useDialog();
+  const appInfo = useAppInfo();
   const [updateChecking, setUpdateChecking] = useState(false);
   const handleUpdateCheck = () => {
     if (updateChecking) return;
     setUpdateChecking(true);
     void runUpdateCheck(dialog).finally(() => setUpdateChecking(false));
+  };
+
+  // Electron 창은 스플래시 형태의 정보 창을 쓰고, 브라우저(LAN 접속)는 기존 대화상자를 쓴다.
+  const showAbout = () => {
+    const native = getNative();
+    if (native?.showAboutSplash) {
+      void native.showAboutSplash();
+      return;
+    }
+    void dialog.alert({
+      title: appInfo.name,
+      icon: <AppLogo size={72} />,
+      body: `버전: v${appInfo.version}\n빌드: ${appInfo.buildStampLabel}\n라이선스: MIT License`,
+    });
   };
 
   return (
@@ -52,6 +81,10 @@ export default function TopBar({ settingsOpen, onToggleSettings }) {
         </div>
 
         <div className="flex shrink-0 items-center justify-end gap-2">
+          <button type="button" className={iconBtnClass} aria-label="정보" title="정보" data-top-about="1" onClick={showAbout}>
+            <AboutIcon />
+          </button>
+
           <button
             type="button"
             className={iconBtnClass}

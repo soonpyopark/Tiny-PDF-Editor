@@ -459,11 +459,14 @@ export default function ThumbnailPanel({
                   onClick={(event) => onItemClick(event, index)}
                   onContextMenu={(event) => openMenu(event, index)}
                   onDragStart={(event) => onDragStart(event, index)}
-                  className={`mb-2 block w-full rounded-md border p-1 text-left ${
+                  className={`mb-2 block w-full rounded-md text-left ${
+                    // 본문에 나오는 쪽은 테두리를 굵게(2px). 안쪽 여백을 1px 줄여 썸네일 크기·위치는 그대로 둔다.
+                    isCurrent ? 'border-2 p-[3px]' : 'border p-1'
+                  } ${
                     isSelected
-                      ? 'border-[#d93025] bg-[#ebebeb]'
+                      ? 'border-app-accent bg-[#ebebeb]'
                       : isCurrent
-                        ? 'border-[#f28b82] bg-white'
+                        ? 'border-app-accentBorder bg-white'
                         : 'border-[#666666] bg-white hover:bg-slate-50'
                   }`}
                 >
@@ -483,10 +486,10 @@ export default function ThumbnailPanel({
             );
           })
         )}
-        {dragOverIndex === pageCount && docOpen ? <DropLine className="relative" /> : null}
+        {dragOverIndex === pageCount && docOpen ? <DropLine className="relative -top-1" /> : null}
         {bandRect ? (
           <div
-            className="pointer-events-none absolute z-20 border border-[#f28b82] bg-[#f28b82]/20"
+            className="pointer-events-none absolute z-20 border border-app-accent bg-app-accent/20"
             style={{ left: bandRect.left, top: bandRect.top, width: bandRect.width, height: bandRect.height }}
           />
         ) : null}
@@ -582,11 +585,11 @@ function MenuItem({ children, disabled, onClick, shortcut }) {
 }
 
 /** 원본 _DropIndicatorOverlay 와 같은 삽입 표시선(양 끝 눈금 포함). */
-function DropLine({ className = 'absolute left-0 right-0 top-0' }) {
+function DropLine({ className = 'absolute left-0 right-0 -top-1' }) {
   return (
-    <div className={`pointer-events-none z-10 h-[2px] bg-[#f28b82] ${className}`}>
-      <span className="absolute -top-[5px] left-0 h-[12px] w-[2px] bg-[#f28b82]" />
-      <span className="absolute -top-[5px] right-0 h-[12px] w-[2px] bg-[#f28b82]" />
+    <div className={`pointer-events-none z-10 h-[2px] bg-app-accent ${className}`}>
+      <span className="absolute -top-[2px] left-0 h-[6px] w-[2px] bg-app-accent" />
+      <span className="absolute -top-[2px] right-0 h-[6px] w-[2px] bg-app-accent" />
     </div>
   );
 }

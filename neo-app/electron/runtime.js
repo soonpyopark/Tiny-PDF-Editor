@@ -9,6 +9,7 @@
  *     get: () => boolean,
  *     set: (enabled: boolean) => void,
  *   } | null,
+ *   syncTray: (() => void) | null,
  *   stateRoot: string,
  *   portable: boolean,
  * }} Runtime
@@ -18,6 +19,7 @@
 export const runtime = {
   server: null,
   autoLaunch: null,
+  syncTray: null,
   stateRoot: '',
   portable: false,
 };

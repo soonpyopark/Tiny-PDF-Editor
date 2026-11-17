@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDialog } from '../../context/DialogContext.jsx';
 import { api } from '../../lib/apiClient.js';
+import { useAnchoredPlacement } from '../../lib/menuPlacement.js';
 
 /**
  * PDF 변환 대화상자 — 예전 "PDF 병합"(Tiny merge_pdf_dialog.py)과
@@ -20,7 +21,7 @@ import { api } from '../../lib/apiClient.js';
  * 한컴 한글 설치 확인은 한글 파일이 목록에 들어왔을 때만 한다 (엔진을 띄워야 하므로).
  */
 
-const TITLE = 'PDF 변환';
+const TITLE = 'PDF로 변환하기';
 const MODE_KEY = 'tinypdfneo.convertMode';
 const DEFAULT_NAME = '병합';
 const NOT_INSTALLED =
@@ -77,6 +78,17 @@ function saveMode(mode) {
  *   onDone: (openPath: string | null) => void,
  * }} props
  */
+/** "파일 추가" 단추 아래 메뉴. 대화상자 가장자리에 걸려도 화면 안에 맞춘다. */
+function AddFilesMenu({ children }) {
+  const ref = useRef(null);
+  useAnchoredPlacement(ref, { gap: 4 });
+  return (
+    <div ref={ref} role="menu" className="fixed left-0 top-0 z-10 w-44 rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+      {children}
+    </div>
+  );
+}
+
 export default function PdfConvertDialog({ open, onClose, onDone }) {
   const dialog = useDialog();
   const [mode, setMode] = useState(/** @type {'merge' | 'each'} */ ('merge'));
@@ -575,17 +587,14 @@ export default function PdfConvertDialog({ open, onClose, onDone }) {
                   파일 추가 ▾
                 </button>
                 {menuOpen ? (
-                  <div
-                    role="menu"
-                    className="absolute left-0 top-full z-10 mt-1 w-44 rounded-md border border-slate-200 bg-white py-1 shadow-lg"
-                  >
+                  <AddFilesMenu>
                     <button type="button" role="menuitem" className="block w-full px-3 py-2 text-left text-sm hover:bg-slate-100" onClick={pickFiles}>
                       파일 추가...
                     </button>
                     <button type="button" role="menuitem" className="block w-full px-3 py-2 text-left text-sm hover:bg-slate-100" onClick={pickFolder}>
                       폴더에서 추가...
                     </button>
-                  </div>
+                  </AddFilesMenu>
                 ) : null}
               </div>
               <button type="button" className={btnOutline} disabled={!selectedKeys.length || running} onClick={removeSelected}>

@@ -83,6 +83,54 @@ function ColorGroup({ label, kind, disabled, onPick }) {
 }
 
 /**
+ * 드래그 선택 뒤 도구 모음과 우클릭 메뉴가 함께 쓰는 본문. 두 곳이 항상 같은 구성이 되도록 한 군데에서 만든다.
+ * 1행 형광펜 색, 2행 밑줄 색, 3행 복사 · 선택 해제, 4행 이 위치의 형광펜·밑줄 지우기.
+ */
+function SelectionMenuBody({ hasSelection, busy, onPick, onCopy, onClear, onRemove }) {
+  return (
+    <>
+      <ColorGroup label="형광펜" kind="highlight" disabled={busy || !hasSelection} onPick={onPick} />
+      <span className="h-px w-full bg-slate-200" />
+      <ColorGroup label="밑줄" kind="underline" disabled={busy || !hasSelection} onPick={onPick} />
+      <span className="h-px w-full bg-slate-200" />
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          disabled={!hasSelection}
+          onClick={onCopy}
+          className="h-6 shrink-0 whitespace-nowrap rounded px-2 hover:bg-app-accentSoft disabled:text-slate-400 disabled:hover:bg-transparent"
+          title="선택한 글자 복사 (Ctrl+C)"
+        >
+          복사
+        </button>
+        <button
+          type="button"
+          onClick={onClear}
+          className="ml-auto h-6 w-6 rounded text-slate-500 hover:bg-slate-100"
+          aria-label="선택 해제"
+          title="선택 해제 (Esc)"
+        >
+          ×
+        </button>
+      </div>
+      <span className="h-px w-full bg-slate-200" />
+      <button
+        type="button"
+        role="menuitem"
+        disabled={busy}
+        onClick={onRemove}
+        className="h-6 whitespace-nowrap rounded px-2 text-left hover:bg-app-accentSoft disabled:text-slate-400 disabled:hover:bg-transparent"
+      >
+        이 위치의 형광펜·밑줄 지우기
+      </button>
+    </>
+  );
+}
+
+const MENU_BOX_CLASS =
+  'flex w-max min-w-[210px] flex-col items-stretch gap-1 whitespace-nowrap rounded-lg border border-app-border bg-white px-1.5 py-1 text-[12px] text-slate-700 shadow-lg';
+
+/**
  * 쪽 이미지 위에 겹치는 드래그 선택 레이어 (원본 PageCanvas 의 텍스트 선택 + 형광펜·밑줄).
  * 좌표는 쪽 이미지 기준 0..1 비율로 주고받으므로 확대/축소와 무관하다.
  * 형광펜·밑줄은 엔진이 PDF 에 주석으로 넣고, 쪽 이미지를 다시 그려서 보인다.
@@ -247,9 +295,8 @@ export default function TextMarkupLayer({ pageIndex, enabled, onMarkupChanged, o
     }
   }
 
-  async function removeAtMenuPoint() {
-    if (!menu || busy) return;
-    const point = menu.point;
+  async function removeAt(point) {
+    if (busy) return;
     setMenu(null);
     setBusy(true);
     try {
@@ -273,7 +320,7 @@ export default function TextMarkupLayer({ pageIndex, enabled, onMarkupChanged, o
   // 선택 도구 모음은 드래그를 놓은 마지막 포인터 위치 부근(오른쪽 아래)에 연다.
   // 공간이 모자라면 왼쪽/위로 뒤집고, 보이는 영역 안으로 맞춘다. 원본 우클릭 메뉴 배치와 같은 규칙.
   useLayoutEffect(() => {
-    if (dragging || !sel || !toolbarRef.current || !layerRef.current) {
+    if (dragging || menu || !sel || !toolbarRef.current || !layerRef.current) {
       setToolbarPos(null);
       return;
     }
@@ -294,7 +341,7 @@ export default function TextMarkupLayer({ pageIndex, enabled, onMarkupChanged, o
     y = Math.max(box.top + margin, Math.min(y, box.bottom - h - margin));
 
     setToolbarPos({ left: x - layer.left, top: y - layer.top });
-  }, [sel, dragging]);
+  }, [sel, dragging, menu]);
 
   return (
     <>
@@ -324,42 +371,27 @@ export default function TextMarkupLayer({ pageIndex, enabled, onMarkupChanged, o
         ))}
       </div>
 
-      {!dragging && sel && lastRect ? (
+      {/* 우클릭 메뉴가 열려 있는 동안에는 드래그 도구 모음을 숨긴다(메뉴가 같은 구성을 가진다). */}
+      {!dragging && !menu && sel && lastRect ? (
         <div
           ref={toolbarRef}
           role="toolbar"
           aria-label="선택 영역 도구"
-          className="absolute z-20 flex w-max max-w-none flex-col items-stretch gap-1 whitespace-nowrap rounded-lg border border-app-border bg-white px-1.5 py-1 text-[12px] text-slate-700 shadow-lg"
+          className={`absolute z-20 max-w-none ${MENU_BOX_CLASS}`}
           style={{
             left: toolbarPos?.left ?? 0,
             top: toolbarPos?.top ?? 0,
             visibility: toolbarPos ? 'visible' : 'hidden',
           }}
         >
-          {/* 1행: 형광펜 색, 2행: 밑줄 색, 3행: 복사 · 선택 해제 */}
-          <ColorGroup label="형광펜" kind="highlight" disabled={busy} onPick={apply} />
-          <span className="h-px w-full bg-slate-200" />
-          <ColorGroup label="밑줄" kind="underline" disabled={busy} onPick={apply} />
-          <span className="h-px w-full bg-slate-200" />
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={copySelection}
-              className="h-6 shrink-0 whitespace-nowrap rounded px-2 hover:bg-app-accentSoft"
-              title="선택한 글자 복사 (Ctrl+C)"
-            >
-              복사
-            </button>
-            <button
-              type="button"
-              onClick={() => setSel(null)}
-              className="ml-auto h-6 w-6 rounded text-slate-500 hover:bg-slate-100"
-              aria-label="선택 해제"
-              title="선택 해제 (Esc)"
-            >
-              ×
-            </button>
-          </div>
+          <SelectionMenuBody
+            hasSelection
+            busy={busy}
+            onPick={apply}
+            onCopy={copySelection}
+            onClear={() => setSel(null)}
+            onRemove={() => void removeAt(sel.cursor)}
+          />
         </div>
       ) : null}
 
@@ -367,51 +399,23 @@ export default function TextMarkupLayer({ pageIndex, enabled, onMarkupChanged, o
         <div
           ref={menuRef}
           role="menu"
-          className="fixed z-[3000] flex w-max min-w-[210px] flex-col items-stretch gap-1 whitespace-nowrap rounded-lg border border-app-border bg-white px-1.5 py-1 text-[12px] text-slate-700 shadow-lg"
+          className={`fixed z-[3000] ${MENU_BOX_CLASS}`}
           onContextMenu={(event) => event.preventDefault()}
         >
-          {/* 드래그로 나오는 도구 모음과 같은 구성: 1행 형광펜 색, 2행 밑줄 색, 3행 복사 · 선택 해제 */}
-          <ColorGroup label="형광펜" kind="highlight" disabled={busy || !menuHasSelection} onPick={pickFromMenu} />
-          <span className="h-px w-full bg-slate-200" />
-          <ColorGroup label="밑줄" kind="underline" disabled={busy || !menuHasSelection} onPick={pickFromMenu} />
-          <span className="h-px w-full bg-slate-200" />
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              disabled={!menuHasSelection}
-              onClick={() => {
-                setMenu(null);
-                copySelection();
-              }}
-              className="h-6 shrink-0 whitespace-nowrap rounded px-2 hover:bg-app-accentSoft disabled:text-slate-400 disabled:hover:bg-transparent"
-              title="선택한 글자 복사 (Ctrl+C)"
-            >
-              복사
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMenu(null);
-                setSel(null);
-              }}
-              className="ml-auto h-6 w-6 rounded text-slate-500 hover:bg-slate-100"
-              aria-label="선택 해제"
-              title="선택 해제 (Esc)"
-            >
-              ×
-            </button>
-          </div>
-          {/* 이 아래는 기존 기능 그대로: 이 위치의 형광펜·밑줄 지우기 */}
-          <span className="h-px w-full bg-slate-200" />
-          <button
-            type="button"
-            role="menuitem"
-            disabled={busy}
-            onClick={() => void removeAtMenuPoint()}
-            className="h-6 whitespace-nowrap rounded px-2 text-left hover:bg-app-accentSoft disabled:text-slate-400 disabled:hover:bg-transparent"
-          >
-            이 위치의 형광펜·밑줄 지우기
-          </button>
+          <SelectionMenuBody
+            hasSelection={menuHasSelection}
+            busy={busy}
+            onPick={pickFromMenu}
+            onCopy={() => {
+              setMenu(null);
+              copySelection();
+            }}
+            onClear={() => {
+              setMenu(null);
+              setSel(null);
+            }}
+            onRemove={() => void removeAt(menu.point)}
+          />
         </div>
       ) : null}
     </>

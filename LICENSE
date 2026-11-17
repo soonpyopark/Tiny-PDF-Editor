@@ -107,7 +107,7 @@ Tiny PDF Editor Neo 배포판(Windows MSI·`_portable.zip`, macOS `.app`/DMG)에
   라이선스를 따릅니다.
 - 한컴 오피스 한글 (Windows, 선택): HWP/HWPX 열기·병합·삽입 시 필요합니다.
   한컴 제품의 라이선스·설치는 사용자 PC에 별도로 준비되어야 합니다.
-- 인터넷 연결 (선택): 「도움말 → 업데이트 확인」만 GitHub Releases API를
+- 인터넷 연결 (선택): 「상단 업데이트 확인 단추」만 GitHub Releases API를
   조회합니다. 문서 편집·OCR·개인정보 제거·용량 줄이기 등 일반 기능은
   오프라인으로 동작합니다.
 

@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
+import { useAnchoredPlacement } from '../../lib/menuPlacement.js';
+import NumberStepper from '../../components/common/NumberStepper.jsx';
 import { mmFromPt, ptFromMm, rectSize } from './imageEditMath.js';
 
 const btn =
   'inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded border border-transparent px-1.5 text-[12px] text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-transparent';
 const btnOn = 'border-sky-500 bg-sky-50 text-sky-700';
 const panelBtn = 'rounded border border-slate-300 bg-white px-2 py-1 text-[12px] hover:bg-slate-50 disabled:opacity-40';
-const sliderClass = 'h-[18px] w-[110px] accent-sky-600';
+const sliderClass = 'h-[18px] w-[110px]';
 
 const iconProps = { viewBox: '0 0 20 20', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true };
 
@@ -116,10 +118,13 @@ function NumberField({ label, value, disabled, onCommit, testId, suffix = 'mm' }
 }
 
 function Panel({ children, wide }) {
+  const ref = useRef(null);
+  useAnchoredPlacement(ref);
   return (
     <div
+      ref={ref}
       role="dialog"
-      className={`absolute left-0 top-full z-40 mt-1.5 flex w-max flex-col gap-2 rounded-lg border border-slate-300 bg-white p-3 text-[12px] text-slate-700 shadow-lg ${wide ? 'min-w-[260px]' : ''}`}
+      className={`fixed left-0 top-full z-40 flex w-max flex-col gap-2 rounded-lg border border-slate-300 bg-white p-3 text-[12px] text-slate-700 shadow-lg ${wide ? 'min-w-[260px]' : ''}`}
     >
       {children}
     </div>
@@ -194,22 +199,18 @@ export default function ImageToolbar({ controller, pageCount, confirm }) {
         <Icon name="flipy" />
       </button>
       <span className="h-5 w-px bg-slate-300" />
-      <label className="flex items-center gap-1" title="투명도">
-        <span className="text-slate-500">투명도</span>
-        <input
-          type="range"
-          min={5}
-          max={100}
-          step={5}
-          value={p.op}
-          aria-label="투명도"
-          data-img-slider="opacity"
-          className="h-[18px] w-[84px] accent-sky-600"
-          onChange={(event) => patch({ op: Number(event.target.value) })}
-          onPointerUp={(event) => event.currentTarget.blur()}
-        />
-        <span className="w-9 text-right tabular-nums text-slate-500">{p.op}%</span>
-      </label>
+      <NumberStepper
+        label="투명도"
+        ariaLabel="투명도"
+        dataAttr="data-img-opacity"
+        suffix="%"
+        value={p.op}
+        min={5}
+        max={100}
+        step={5}
+        normalize={(v) => Math.min(100, Math.max(5, Math.round(v)))}
+        onChange={(v) => patch({ op: v })}
+      />
       <span className="h-5 w-px bg-slate-300" />
 
       <div className="relative">

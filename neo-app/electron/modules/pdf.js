@@ -7,9 +7,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { app, BrowserWindow, clipboard, dialog, shell } from 'electron';
 import { ApiError, currentWindowId, defineApi } from '../api/registry.js';
+import {
+  buildPrintHtml,
+  dpiForSheets,
+  layoutSheets,
+  normalizePrintOptions,
+  renderZoomFor,
+} from '../../shared/printLayout.js';
 import {
   disablePrinter,
   enablePrinter,
@@ -1175,6 +1182,55 @@ export function register() {
     return { doc: result.doc, removed: Number(result.removed) || 0 };
   });
 
+  // 도형(선·화살표·사각형·타원·다각형·클라우드·폴리라인·텍스트 상자): 표준 주석으로 넣고, 나중에 다시 고친다.
+  // 좌표는 쪽 화면 좌표(pt, 회전 반영). 점으로 그리는 도형은 points, 상자로 그리는 도형은 rect.
+  function shapeGeometry(body) {
+    return {
+      points: Array.isArray(body?.points) ? body.points : undefined,
+      rect: Array.isArray(body?.rect) ? body.rect : undefined,
+    };
+  }
+
+  defineApi('pdf.shapeList', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'shapeList',
+      pageIndex: body?.pageIndex === undefined || body?.pageIndex === null ? undefined : Number(body.pageIndex),
+    });
+    return { items: result.items || [] };
+  });
+
+  defineApi('pdf.shapeAdd', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'shapeAdd',
+      pageIndex: Number(body?.pageIndex) || 0,
+      kind: String(body?.kind || ''),
+      ...shapeGeometry(body),
+      params: body?.params && typeof body.params === 'object' ? body.params : {},
+    });
+    return { doc: result.doc, shapeId: result.shapeId };
+  });
+
+  // 위치(points/rect)나 모양(params)만 골라 보낼 수 있다. 고치면 주석이 새로 만들어져 id 가 바뀐다(newId).
+  defineApi('pdf.shapeUpdate', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'shapeUpdate',
+      pageIndex: Number(body?.pageIndex) || 0,
+      shapeId: Number(body?.shapeId),
+      ...shapeGeometry(body),
+      params: body?.params && typeof body.params === 'object' ? body.params : undefined,
+    });
+    return { doc: result.doc, newId: result.newId, changed: Boolean(result.changed) };
+  });
+
+  defineApi('pdf.shapeDelete', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'shapeDelete',
+      pageIndex: Number(body?.pageIndex) || 0,
+      shapeId: Number(body?.shapeId),
+    });
+    return { doc: result.doc };
+  });
+
   /* ---- 한글 → PDF (Tiny hwp_to_pdf_dialog.py 와 같은 규칙) ---- */
 
   /** 한컴 한글 설치 여부 (엔진을 띄워 확인하므로 한글 파일이 목록에 있을 때만 부른다). */
@@ -1239,61 +1295,93 @@ export function register() {
     return { path: result.path };
   });
 
-  defineApi('pdf.print', 'user', async (body) => {
-    console.log('[pdf.print] Called with body:', body);
+  // ---- 인쇄 ----
+  // 인쇄 대화상자(렌더러)가 프린터 목록을 가져온다. 설치된 가상 프린터(Tiny PDF Editor)도 그대로 나온다.
+  defineApi('pdf.printers', 'user', async () => {
     const win = ownerWindow();
-    const target = body?.path ? String(body.path) : '';
-    const indices = Array.isArray(body?.indices) ? body.indices.map(Number) : [];
-    let pdfPath = target;
-    console.log('[pdf.print] target:', target, 'indices:', indices, 'win:', !!win);
-    if (!pdfPath && indices.length) {
-      pdfPath = path.join(os.tmpdir(), `tiny-neo-print-pages-${Date.now()}.pdf`);
-      await engineOp({ op: 'exportPagesPdf', indices, path: pdfPath });
-    } else if (!pdfPath) {
-      const tmp = path.join(os.tmpdir(), `tiny-neo-print-${Date.now()}.pdf`);
-      const saved = await engineOp({ op: 'save', path: tmp });
-      pdfPath = saved.path || tmp;
-    }
-    console.log('[pdf.print] Final pdfPath:', pdfPath, 'platform:', process.platform);
-    
-    // PDF 파일을 기본 애플리케이션으로 열기 (Windows에서는 기본 PDF 뷰어 또는 Chrome/Edge가 열리고, 거기서 인쇄 가능)
-    console.log('[pdf.print] Opening PDF with default application');
-    await shell.openPath(pdfPath);
-    return { ok: true, path: pdfPath };
+    if (!win) return { printers: [] };
+    const list = await win.webContents.getPrintersAsync();
+    return {
+      printers: list.map((item) => ({
+        name: String(item.name),
+        displayName: String(item.displayName || item.name),
+        isDefault: Boolean(item.isDefault),
+      })),
+    };
   });
 
-  defineApi('pdf.printWithDialog', 'user', async (body) => {
-    console.log('[pdf.printWithDialog] Called with body:', body);
-    const win = ownerWindow();
-    if (!win) {
-      throw new Error('프린터 윈도우를 찾을 수 없습니다.');
-    }
-    const target = body?.path ? String(body.path) : '';
-    const indices = Array.isArray(body?.indices) ? body.indices.map(Number) : [];
-    let pdfPath = target;
-    console.log('[pdf.printWithDialog] target:', target, 'indices:', indices);
-    
-    if (!pdfPath && indices.length) {
-      pdfPath = path.join(os.tmpdir(), `tiny-neo-print-pages-${Date.now()}.pdf`);
-      await engineOp({ op: 'exportPagesPdf', indices, path: pdfPath });
-    } else if (!pdfPath) {
-      const tmp = path.join(os.tmpdir(), `tiny-neo-print-${Date.now()}.pdf`);
-      const saved = await engineOp({ op: 'save', path: tmp });
-      pdfPath = saved.path || tmp;
-    }
-    console.log('[pdf.printWithDialog] Final pdfPath:', pdfPath);
-    
-    // Electron 인쇄 대화상자 열기
-    return new Promise((resolve, reject) => {
-      win.webContents.print({ silent: false, printBackground: true }, (success) => {
-        console.log('[pdf.printWithDialog] Print dialog result:', success);
-        if (success) {
-          resolve({ ok: true, path: pdfPath });
-        } else {
-          reject(new Error('인쇄 대화상자가 취소되었습니다.'));
-        }
+  // 대화상자에서 고른 설정대로 인쇄한다. 쪽을 높은 해상도로 그려 HTML 로 묶고, Chromium 이 프린터로 보낸다.
+  // (Electron 은 PDF 뷰어 창을 그대로 인쇄하지 못해 — 빈 쪽이 나온다 — 그림 HTML 방식을 쓴다.)
+  defineApi('pdf.printRun', 'user', async (body) => {
+    const options = normalizePrintOptions(body?.options);
+    if (!options.systemDialog && !options.printer) throw new ApiError('프린터를 선택해 주세요.');
+
+    const sizes = (await engineOp({ op: 'pageSizes' })).sizes ?? [];
+    const requested = Array.isArray(body?.indices) ? body.indices.map(Number) : sizes.map((_, i) => i);
+    const indices = requested.filter((i) => Number.isInteger(i) && i >= 0 && i < sizes.length);
+    if (!indices.length) throw new ApiError('인쇄할 쪽이 없습니다.');
+
+    const layout = layoutSheets(indices.map((i) => sizes[i]), options);
+    const dpi = dpiForSheets(layout.sheets.length);
+    const cellByPosition = new Map();
+    for (const sheet of layout.sheets) for (const cell of sheet.cells) cellByPosition.set(cell.i, cell);
+
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'tiny-neo-print-'));
+    let printWin = null;
+    try {
+      const imageUrls = [];
+      for (let position = 0; position < indices.length; position += 1) {
+        const cell = cellByPosition.get(position);
+        const written = await engineOp({
+          op: 'printPage',
+          index: indices[position],
+          zoom: renderZoomFor(cell, sizes[indices[position]], dpi),
+          path: path.join(work, `page-${position}`),
+          gray: !options.color,
+        });
+        imageUrls.push(pathToFileURL(written.path).href);
+      }
+      const htmlPath = path.join(work, 'print.html');
+      fs.writeFileSync(htmlPath, buildPrintHtml(layout, imageUrls), 'utf8');
+
+      printWin = new BrowserWindow({
+        show: false,
+        webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
       });
-    });
+      await printWin.loadFile(htmlPath);
+      await printWin.webContents.executeJavaScript(
+        "Promise.all([...document.images].map((img) => img.complete ? 1 : new Promise((done) => { img.onload = img.onerror = done; })))",
+      );
+
+      const printOptions = {
+        silent: !options.systemDialog,
+        printBackground: true,
+        color: options.color,
+        copies: options.copies,
+        collate: options.collate,
+        landscape: layout.electron.landscape,
+        pageSize: layout.electron.pageSize,
+        margins: { marginType: 'none' },
+        duplexMode: options.duplex,
+      };
+      if (!options.systemDialog) printOptions.deviceName = options.printer;
+
+      const outcome = await new Promise((resolve) => {
+        printWin.webContents.print(printOptions, (success, reason) => resolve({ success, reason: String(reason || '') }));
+      });
+      if (!outcome.success) {
+        if (/cancel/i.test(outcome.reason)) return { ok: false, canceled: true, sheets: layout.sheets.length };
+        throw new ApiError(`인쇄하지 못했습니다.${outcome.reason ? ` (${outcome.reason})` : ''}`);
+      }
+      return { ok: true, canceled: false, sheets: layout.sheets.length, pages: indices.length };
+    } finally {
+      if (printWin && !printWin.isDestroyed()) printWin.destroy();
+      try {
+        fs.rmSync(work, { recursive: true, force: true });
+      } catch {
+        /* 임시 폴더 정리는 실패해도 인쇄 결과에 영향이 없다 */
+      }
+    }
   });
 
   // 파일 연결은 엔진이 아니라 이 앱(Neo) 실행 파일을 가리켜야 하므로 실행 명령을 함께 넘긴다.

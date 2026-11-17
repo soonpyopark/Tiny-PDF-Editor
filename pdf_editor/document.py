@@ -42,6 +42,17 @@ from pdf_editor.ink_draw import (
     is_ink_annot,
     stroke_hit_by_path,
 )
+from pdf_editor.shape_annot import (
+    KEY_PARAMS as SHAPE_KEY_PARAMS,
+    build_annot as build_shape_annot,
+    clean_geom as clean_shape_geom,
+    dump_params as dump_shape_params,
+    is_shape_annot_title,
+    load_params as load_shape_params,
+    normalize_params as normalize_shape_params,
+    read_geom as read_shape_geom,
+    same_geom as _same_geom,
+)
 from pdf_editor.signature_stamp import (
     SIGNATURE_ANNOT_TITLE,
     SIGNATURE_EMBFILE_PREFIX,
@@ -3878,6 +3889,100 @@ class PdfDocument:
         image, _mime = final_image(source, params, 0)
         self._record_undo_checkpoint()
         self._page_insert_image_stream(page, view, image, overlay=not below)
+        page.delete_annot(annot)
+        self._touch()
+
+    # ------------------------------------------------------------------ 도형 그리기 (표준 주석, shape_annot.py)
+
+    @staticmethod
+    def _is_shape_annot(annot) -> bool:
+        try:
+            return is_shape_annot_title((annot.info or {}).get("title"))
+        except (RuntimeError, ValueError, TypeError, AttributeError):
+            return False
+
+    def _shape_params_of(self, xref: int) -> dict | None:
+        kind, value = self._doc.xref_get_key(xref, SHAPE_KEY_PARAMS)
+        if kind == "null":
+            return None
+        return load_shape_params(value)
+
+    def _shape_item(self, page_index: int, page, annot) -> dict | None:
+        params = self._shape_params_of(annot.xref)
+        if params is None:
+            return None
+        geom = read_shape_geom(page, annot, params)
+        return {
+            "id": int(annot.xref),
+            "pageIndex": int(page_index),
+            "kind": params["kind"],
+            "params": params,
+            **geom,
+        }
+
+    def shape_items(self, page_index: int | None = None) -> list[dict]:
+        """이 앱이 그린 도형 목록. page_index 가 None 이면 모든 쪽 (그린 순서대로)."""
+        indices = range(len(self._doc)) if page_index is None else [page_index]
+        items: list[dict] = []
+        for index in indices:
+            if not (0 <= index < len(self._doc)):
+                continue
+            page = self._doc[index]
+            for annot in PdfDocument._iter_page_annots(page):
+                if not self._is_shape_annot(annot):
+                    continue
+                item = self._shape_item(index, page, annot)
+                if item is not None:
+                    items.append(item)
+        return items
+
+    def _load_shape_annot(self, page_index: int, xref: int):
+        if not (0 <= page_index < len(self._doc)):
+            raise ValueError("쪽 번호가 올바르지 않습니다.")
+        page = self._doc[page_index]
+        try:
+            annot = page.load_annot(int(xref))
+        except Exception:  # noqa: BLE001
+            annot = None
+        if annot is None or not self._is_shape_annot(annot):
+            raise ValueError("도형을 찾지 못했습니다.")
+        return page, annot
+
+    def add_shape(self, page_index: int, kind: str, geom: dict, params: dict | None = None) -> int:
+        """도형 하나를 그린다. geom: {points} 또는 {rect}(화면 좌표 pt). 반환: 주석 id(xref)."""
+        if not (0 <= page_index < len(self._doc)):
+            raise ValueError("쪽 번호가 올바르지 않습니다.")
+        full = normalize_shape_params(params, kind)
+        clean = clean_shape_geom(kind, geom)
+        self._record_undo_checkpoint()
+        xref = build_shape_annot(self._doc[page_index], kind, clean, full)
+        self._touch()
+        return xref
+
+    def update_shape(self, page_index: int, xref: int, geom: dict | None = None, params: dict | None = None) -> dict:
+        """도형을 고친다(위치·모양·글). 바뀐 것이 없으면 아무것도 하지 않는다. 반환: {id, newId, changed}."""
+        page, annot = self._load_shape_annot(page_index, int(xref))
+        old_params = self._shape_params_of(annot.xref)
+        if old_params is None:
+            raise ValueError("도형 정보를 읽지 못했습니다.")
+        kind = old_params["kind"]
+        old_geom = read_shape_geom(page, annot, old_params)
+        merged = dict(old_params)
+        merged.update(params or {})
+        new_params = normalize_shape_params(merged, kind)
+        new_geom = clean_shape_geom(kind, geom) if geom else old_geom
+        if dump_shape_params(new_params) == dump_shape_params(old_params) and _same_geom(new_geom, old_geom):
+            return {"id": int(xref), "newId": int(xref), "changed": False}
+        self._record_undo_checkpoint()
+        old_id = int(annot.xref)
+        new_id = build_shape_annot(page, kind, new_geom, new_params)
+        page.delete_annot(annot)
+        self._touch()
+        return {"id": old_id, "newId": int(new_id), "changed": True}
+
+    def delete_shape(self, page_index: int, xref: int) -> None:
+        page, annot = self._load_shape_annot(page_index, int(xref))
+        self._record_undo_checkpoint()
         page.delete_annot(annot)
         self._touch()
 

@@ -100,6 +100,8 @@ export function registerCoreApi() {
       runtime.autoLaunch.set(Boolean(body.autoLaunch));
     }
     await updateSettings(patch);
+    // 트레이 아이콘은 '창을 닫으면 트레이로 보내기' 설정을 따른다. 바꾸면 바로 나타나거나 사라진다.
+    if ('closeToTray' in patch) runtime.syncTray?.();
     return settingsPayload();
   });
 

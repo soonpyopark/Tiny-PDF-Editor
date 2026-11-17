@@ -8,6 +8,7 @@ import { useRegisterEditorCommands } from './editorCommands.jsx';
 import PageSide, { PanelToggleTab } from './PageSide.jsx';
 import { ReduceSizeDialog, SearchDropdown } from './editorDialogs.jsx';
 import PageNumberDialog from './PageNumberDialog.jsx';
+import PrintDialog from './PrintDialog.jsx';
 import ExportImagesDialog from './ExportImagesDialog.jsx';
 import PdfConvertDialog from './PdfConvertDialog.jsx';
 import PasswordOpenDialog from './PasswordOpenDialog.jsx';
@@ -20,7 +21,10 @@ import ImageToolbar from './ImageToolbar.jsx';
 import { noteCopyKind, useImageEditing } from './useImageEditing.js';
 import DrawLayer from './draw/DrawLayer.jsx';
 import DrawToolbar from './draw/DrawToolbar.jsx';
+import ShapeLayer from './draw/ShapeLayer.jsx';
 import { hexToRgb01, loadDrawState, saveDrawState } from './draw/drawSettings.js';
+import { SELECT_TOOL, SHAPE_TOOL_IDS, styleGroupOf, styleToParams } from './draw/shapeSettings.js';
+import { useShapeEditing } from './draw/useShapeEditing.js';
 import TerminalPanel from './TerminalPanel.jsx';
 
 const EMPTY_DOC = { open: false, name: '', path: null, pageCount: 0, modified: false };
@@ -247,6 +251,7 @@ export default function EditorPage({
   const [exportScope, setExportScope] = useState(null);
   // OCR 옵션창: null 이면 닫힘, { indices: null } 은 범위 입력 모드, { indices: [..] } 은 썸네일 선택 모드.
   const [ocrScope, setOcrScope] = useState(null);
+  const [printScope, setPrintScope] = useState(/** @type {{ indices: number[] | null } | null} */ (null));
   // 전체화면은 앱 전체가 공유한다 (메뉴·F11·종료 버튼은 AppShell 이 처리).
   const fullscreen = useFullscreen();
   // 전체화면에서 왼쪽 패널은 숨기되 토글 탭은 남기고, 탭을 누르면 패널을 잠시 펼친다 (원본 동작).
@@ -299,6 +304,22 @@ export default function EditorPage({
   });
   const imageEditRef = useRef(imageEdit);
   imageEditRef.current = imageEdit;
+
+  // 도형(선·화살표·사각형·…·텍스트 상자): 그리기 모드에서 '선택' 또는 도형 도구일 때만 켠다.
+  const shapeToolOn = drawOn && (drawState.tool === SELECT_TOOL || SHAPE_TOOL_IDS.includes(drawState.tool));
+  const shapeEdit = useShapeEditing({
+    api,
+    doc,
+    pageIndex,
+    enabled: shapeToolOn,
+    setError,
+    refreshPage: (nextDoc, index) => refreshInkPage(nextDoc, index),
+  });
+  const shapeEditRef = useRef(shapeEdit);
+  shapeEditRef.current = shapeEdit;
+  const newShapeParams = SHAPE_TOOL_IDS.includes(drawState.tool)
+    ? styleToParams(drawState.tool, drawState.shapes[styleGroupOf(drawState.tool)])
+    : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -491,6 +512,38 @@ export default function EditorPage({
     setError('');
     setPageIndex(target);
     scrollToPage(target);
+  }
+
+  // 검색 결과로 이동: 해당 쪽으로 간 뒤, 찾은 글자가 화면 가운데 오도록 본문을 움직인다.
+  // 이미 화면 안(가장자리 여유 포함)에 보이면 그대로 둔다.
+  function goToHit(hit) {
+    if (!hit) return;
+    goTo(hit.pageIndex);
+    const view = viewRef.current;
+    const el = view?.querySelector(`[data-page="${hit.pageIndex}"]`);
+    if (!view || !el) return;
+    const [, ptH] = pageSizes[hit.pageIndex] ?? FALLBACK_PAGE_PT;
+    const pageRect = el.getBoundingClientRect();
+    const viewRect = view.getBoundingClientRect();
+    const scale = pageRect.height / Math.max(1, ptH);
+    const originX = pageRect.left - viewRect.left + view.scrollLeft;
+    const originY = pageRect.top - viewRect.top + view.scrollTop;
+    const left = originX + hit.x0 * scale;
+    const right = originX + hit.x1 * scale;
+    const top = originY + hit.y0 * scale;
+    const bottom = originY + hit.y1 * scale;
+    const margin = 48;
+    const visible =
+      top >= view.scrollTop + margin &&
+      bottom <= view.scrollTop + view.clientHeight - margin &&
+      left >= view.scrollLeft + margin &&
+      right <= view.scrollLeft + view.clientWidth - margin;
+    if (visible) return;
+    view.scrollTo({
+      top: Math.max(0, (top + bottom) / 2 - view.clientHeight / 2),
+      left: Math.max(0, (left + right) / 2 - view.clientWidth / 2),
+      behavior: 'auto',
+    });
   }
 
   // 배율만 바꾼다. 그림은 effect 가 새 배율로 다시 그리고, 화면 중심은 같은 문서 위치에 남긴다.
@@ -887,11 +940,11 @@ export default function EditorPage({
           return;
         case 'print': {
           if (!indices.length) return;
-          await api('pdf.print', { indices });
+          await openPrint(indices);
           return;
         }
         case 'printAll':
-          await printDoc();
+          await openPrint(null);
           return;
         default:
           break;
@@ -963,7 +1016,7 @@ export default function EditorPage({
       setSearchHits(hits);
       setSearchIndex(0);
       setSearchRanQuery(text);
-      if (hits.length) await goTo(hits[0].pageIndex);
+      if (hits.length) goToHit(hits[0]);
     } catch (err) {
       setError(err instanceof Error ? err.message : '검색하지 못했습니다.');
     }
@@ -983,7 +1036,7 @@ export default function EditorPage({
     }
     const next = (searchIndex + delta + searchHits.length) % searchHits.length;
     setSearchIndex(next);
-    await goTo(searchHits[next].pageIndex);
+    goToHit(searchHits[next]);
   }
 
   async function submitSearch() {
@@ -1200,6 +1253,7 @@ export default function EditorPage({
   // 진행 중인 그리기 반영과 편집 중인 이미지 확정이 모두 끝날 때까지 기다린다. 저장·되돌리기·닫기 전에 부른다.
   async function flushInk() {
     await imageEditRef.current?.commit();
+    await shapeEditRef.current?.commit();
     await inkQueueRef.current;
   }
 
@@ -1351,18 +1405,20 @@ export default function EditorPage({
     [],
   );
 
-  async function printDoc() {
+  // 인쇄 대화상자를 연다. 그리던 것·편집 중인 이미지를 먼저 반영해야 인쇄물에 들어간다.
+  async function openPrint(indices) {
+    if (!doc.pageCount) return;
     setError('');
     try {
-      console.log('[printDoc] Starting print with path:', doc.path);
-      // 백엔드에서 임시 PDF를 생성하고 인쇄 대화상자를 띄운다
-      const result = await api('pdf.printWithDialog', { path: doc.path });
-      console.log('[printDoc] Print result:', result);
+      await flushInk();
+      setPrintScope({ indices: Array.isArray(indices) && indices.length ? indices : null });
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : '인쇄하지 못했습니다.';
-      console.error('[printDoc] Error:', errMsg, err);
-      setToast({ message: errMsg, type: 'error' });
+      setError(err instanceof Error ? err.message : '인쇄를 준비하지 못했습니다.');
     }
+  }
+
+  function printDoc() {
+    return openPrint(null);
   }
 
   async function manageAssoc() {
@@ -1628,7 +1684,7 @@ export default function EditorPage({
             />
           ) : null}
           {drawOn && doc.open ? (
-            <DrawToolbar state={drawState} onChange={setDrawState} onDone={() => void endDrawing()} />
+            <DrawToolbar state={drawState} onChange={setDrawState} onDone={() => void endDrawing()} shapeEdit={shapeEdit} />
           ) : null}
           {imageEdit.active && doc.open && !drawOn ? (
             <ImageToolbar controller={imageEdit} pageCount={doc.pageCount} confirm={dialog.confirm} />
@@ -1681,7 +1737,17 @@ export default function EditorPage({
                               showHits={doc.open && !busy && !drawOn}
                             />
                           ) : null}
-                          {drawOn && src && !imageEdit.active ? (
+                          {shapeToolOn && src && !imageEdit.active ? (
+                            <ShapeLayer
+                              pageIndex={index}
+                              ptW={ptW}
+                              ptH={ptH}
+                              tool={drawState.tool}
+                              newParams={newShapeParams}
+                              controller={shapeEdit}
+                            />
+                          ) : null}
+                          {drawOn && !shapeToolOn && src && !imageEdit.active ? (
                             <DrawLayer
                               pageIndex={index}
                               ptW={ptW}
@@ -1694,6 +1760,18 @@ export default function EditorPage({
                               }
                               onStroke={commitInk}
                               onErase={commitErase}
+                            />
+                          ) : null}
+                          {src && searchOpen && searchHits[searchIndex]?.pageIndex === index ? (
+                            <div
+                              data-search-hit
+                              className="pointer-events-none absolute rounded-sm border border-orange-400 bg-yellow-300/40"
+                              style={{
+                                left: `${(searchHits[searchIndex].x0 / ptW) * 100}%`,
+                                top: `${(searchHits[searchIndex].y0 / ptH) * 100}%`,
+                                width: `${((searchHits[searchIndex].x1 - searchHits[searchIndex].x0) / ptW) * 100}%`,
+                                height: `${((searchHits[searchIndex].y1 - searchHits[searchIndex].y0) / ptH) * 100}%`,
+                              }}
                             />
                           ) : null}
                           {current && src && reviewRects && reviewRects.pageIndex === index ? (
@@ -1815,7 +1893,7 @@ export default function EditorPage({
                 disabled={!doc.open}
                 aria-label="확대/축소"
                 onChange={(event) => void changeZoom(Number(event.target.value) / 100)}
-                className="h-[22px] w-[88px] accent-sky-600 disabled:opacity-40"
+                className="h-[22px] w-[88px] disabled:opacity-40"
               />
               <button
                 type="button"
@@ -1877,6 +1955,19 @@ export default function EditorPage({
         indices={exportScope?.indices ?? null}
         onClose={() => setExportScope(null)}
         onApply={(options) => void runExportImages(exportScope, options)}
+      />
+      <PrintDialog
+        open={Boolean(printScope)}
+        api={api}
+        pageCount={doc.pageCount || 0}
+        pageIndex={pageIndex}
+        pageSizes={pageSizes}
+        indices={printScope?.indices ?? null}
+        onClose={() => setPrintScope(null)}
+        onPrinted={({ sheets }) => {
+          setPrintScope(null);
+          setToast({ message: `인쇄 작업을 프린터로 보냈습니다. (${sheets}장)`, type: 'success' });
+        }}
       />
       <OcrDialog
         open={Boolean(ocrScope)}

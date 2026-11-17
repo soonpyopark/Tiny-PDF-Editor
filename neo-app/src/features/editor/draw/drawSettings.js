@@ -1,6 +1,8 @@
 // 그리기 도구 설정. 값은 Whiteboard4Share 의 drawToolSettings.ts 와 같다 (단위: PDF pt / 불투명도 %).
 // 저장 키는 이 앱 전용이다 (다른 앱과 같은 origin 으로 열어도 섞이지 않게 접두사를 둔다).
 
+import { SELECT_TOOL, SHAPE_TOOL_IDS, normalizeShapeStyles } from './shapeSettings.js';
+
 export const DRAW_STORAGE_KEY = 'tinypdfneo.draw';
 
 export const HIGHLIGHTER_SIZE_MIN = 10;
@@ -88,9 +90,11 @@ export function normalizeDrawState(raw) {
     };
   }
   return {
-    tool: [...DRAW_TOOLS, 'eraser'].includes(source.tool) ? source.tool : 'pen',
+    tool: [...DRAW_TOOLS, 'eraser', SELECT_TOOL, ...SHAPE_TOOL_IDS].includes(source.tool) ? source.tool : 'pen',
     tools,
     eraserRadius: snapEraserRadius(source.eraserRadius ?? ERASER_DEFAULT_RADIUS),
+    shapes: normalizeShapeStyles(source.shapes),
+    lastShape: SHAPE_TOOL_IDS.includes(source.lastShape) ? source.lastShape : 'rect',
   };
 }
 

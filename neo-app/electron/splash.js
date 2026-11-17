@@ -3,7 +3,7 @@
  * 짙은 남색 배경에 앱 아이콘, 앱 이름·버전, 제작자 링크, 빌드 정보를 가운데 정렬로 보여준다.
  *
  * - 시작 스플래시: 메인 창이 준비되면 최소 표시 시간(700ms)을 채운 뒤 닫는다.
- * - 정보 스플래시(도움말 > 정보): 바깥을 클릭하거나 Esc 를 누르면 닫히고,
+ * - 정보 스플래시(상단 오른쪽 ? 단추): 바깥을 클릭하거나 Esc 를 누르면 닫히고,
  *   같은 메뉴를 다시 누르면 토글된다. 링크 클릭은 닫지 않는다.
  */
 import { BrowserWindow, ipcMain, nativeImage, shell } from 'electron';
@@ -28,7 +28,8 @@ const AUTHOR_LINK_TEXT = 'https://note4all.tistory.com';
 const SPLASH_BG = '#0a1a33';
 const ICON_SIZE = 72;
 const WIDTH = 540;
-const HEIGHT = 150;
+// 가로를 460 → 540 으로 80 늘렸으므로 세로도 150 → 230 으로 80 늘린다 (위·아래 여백이 각각 40 씩 늘어난다).
+const HEIGHT = 230;
 
 const PRELOAD_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'splashPreload.cjs');
 
@@ -170,7 +171,7 @@ function closeAbout() {
 }
 
 /**
- * 도움말 > 정보: 열려 있으면 닫고, 아니면 연다 (원본 toggle_about_splash).
+ * 상단 오른쪽 ? 단추: 열려 있으면 닫고, 아니면 연다 (원본 toggle_about_splash).
  * @param {{ iconPath?: string }} options
  * @returns {boolean} 열렸으면 true, 닫았으면 false
  */

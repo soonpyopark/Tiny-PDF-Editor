@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { useAppInfo } from '../../context/AppInfoContext.jsx';
 import { useDialog } from '../../context/DialogContext.jsx';
 import { useEditorCommands } from '../../features/editor/editorCommands.jsx';
 import { api, getNative } from '../../lib/apiClient.js';
+import { useAnchoredPlacement } from '../../lib/menuPlacement.js';
 import { toggleFullscreen as toggleAppFullscreen, useFullscreen } from '../../lib/fullscreen.js';
-import { runUpdateCheck } from '../../lib/updateCheckUi.js';
-import AppLogo from '../common/AppLogo.jsx';
 
 const isWindows = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
 
@@ -18,10 +16,9 @@ function sep(id) {
 }
 
 /**
- * In-window menu matching Tiny PDF Editor (파일 / 편집 / 기능 / 보기 / 도움말).
+ * In-window menu matching Tiny PDF Editor (파일 / 편집 / 보기 / 기능). 정보·업데이트 확인은 상단 오른쪽 단추.
  */
 export default function AppMenuBar() {
-  const appInfo = useAppInfo();
   const dialog = useDialog();
   const { run, ready, docOpen } = useEditorCommands();
   const [openId, setOpenId] = useState('');
@@ -30,7 +27,6 @@ export default function AppMenuBar() {
   const [openTarget, setOpenTarget] = useState('tab');
   const [facing, setFacing] = useState(false);
   const [recent, setRecent] = useState(/** @type {string[]} */ ([]));
-  const [updateChecking, setUpdateChecking] = useState(false);
   const [recentCtx, setRecentCtx] = useState(/** @type {null | { x: number, y: number, path: string }} */ (null));
   const rootRef = useRef(null);
   const recentCtxRef = useRef(null);
@@ -130,28 +126,6 @@ export default function AppMenuBar() {
     void run(name, ...args);
   };
 
-  const checkUpdate = () => {
-    if (updateChecking) return;
-    closeMenus();
-    setUpdateChecking(true);
-    void runUpdateCheck(dialog).finally(() => setUpdateChecking(false));
-  };
-
-  const showAbout = () => {
-    closeMenus();
-    // Electron 창은 스플래시 형태의 정보 창을 쓰고, 브라우저(LAN 접속)는 기존 대화상자를 쓴다.
-    const native = getNative();
-    if (native?.showAboutSplash) {
-      void native.showAboutSplash();
-      return;
-    }
-    void dialog.alert({
-      title: appInfo.name,
-      icon: <AppLogo size={72} />,
-      body: `버전: v${appInfo.version}\n빌드: ${appInfo.buildStampLabel}\n라이선스: MIT License`,
-    });
-  };
-
   const quit = () => {
     closeMenus();
     const native = getNative();
@@ -192,17 +166,17 @@ export default function AppMenuBar() {
   const fileItems = [
     item('new', '새 문서', { shortcut: 'Ctrl+N', disabled: !ready, run: () => go('new') }),
     item('recent', '최근 파일 열기', { children: recentChildren }),
-    item('open', '열기...', { shortcut: 'Ctrl+O', disabled: !ready, run: () => go('open') }),
-    item('add', '추가...', { disabled: needsDoc, run: () => go('add') }),
+    item('open', '열기', { shortcut: 'Ctrl+O', disabled: !ready, run: () => go('open') }),
+    item('add', '추가', { disabled: needsDoc, run: () => go('add') }),
     sep('file-1'),
     item('save', '저장', { shortcut: 'Ctrl+S', disabled: needsDoc, run: () => go('save') }),
-    item('saveAs', '다른 이름으로 저장...', { shortcut: 'Ctrl+Shift+S', disabled: needsDoc, run: () => go('saveAs') }),
-    item('images', '이미지로 저장...', { disabled: needsDoc, run: () => go('exportImages') }),
+    item('saveAs', '다른 이름으로 저장', { shortcut: 'Ctrl+Shift+S', disabled: needsDoc, run: () => go('saveAs') }),
+    item('images', '이미지로 저장', { disabled: needsDoc, run: () => go('exportImages') }),
     sep('file-2'),
-    item('print', '인쇄...', { shortcut: 'Ctrl+P', disabled: needsDoc, run: () => go('print') }),
+    item('print', '인쇄', { shortcut: 'Ctrl+P', disabled: needsDoc, run: () => go('print') }),
     sep('file-3'),
-    ...(isWindows ? [item('assoc', 'PDF 파일 연결...', { run: () => go('assoc') })] : []),
-    item('printer', '가상 프린터...', { run: () => go('printer') }),
+    ...(isWindows ? [item('assoc', 'PDF 파일 연결', { run: () => go('assoc') })] : []),
+    item('printer', '가상 프린터', { run: () => go('printer') }),
     sep('file-4'),
     item('quit', '종료', { shortcut: 'Ctrl+Q', run: quit }),
   ];
@@ -215,7 +189,7 @@ export default function AppMenuBar() {
     item('cut', '잘라내기', { shortcut: 'Ctrl+X', disabled: needsDoc, run: () => go('cut') }),
     item('paste', '붙여넣기', { shortcut: 'Ctrl+V', disabled: needsDoc, run: () => go('paste') }),
     sep('edit-2'),
-    item('find', '텍스트 검색...', { shortcut: 'Ctrl+F', disabled: needsDoc, run: () => go('find') }),
+    item('find', '텍스트 검색', { shortcut: 'Ctrl+F', disabled: needsDoc, run: () => go('find') }),
     item('delete', '선택 페이지 삭제', { shortcut: 'Delete', disabled: needsDoc, run: () => go('delete') }),
     item('rotateCw', '모두 시계방향 회전', { disabled: needsDoc, run: () => go('rotateCw') }),
     item('rotateCcw', '모두 반시계방향 회전', { disabled: needsDoc, run: () => go('rotateCcw') }),
@@ -223,9 +197,6 @@ export default function AppMenuBar() {
 
   // 기능: 원본 파일/OCR/보안 메뉴에 흩어져 있던 별도 기능을 한곳에 모았다. 기능끼리는 구분선으로 나눈다.
   const featureItems = [
-    // 용량 줄이기·쪽 번호·그리기는 기능 메뉴 맨 위에 둔다.
-    item('reduce', '용량 줄이기...', { disabled: needsDoc, run: () => go('reduce') }),
-    item('pageNumber', '쪽 번호 매기기...', { disabled: needsDoc, run: () => go('pageNumber') }),
     // 쪽 위에 직접 그린다 (펜·연필·형광펜·지우개). 켜진 동안 체크 표시.
     item('draw', '그리기', { disabled: needsDoc, checked: Boolean(run('getDraw')), run: () => go('draw') }),
     // 현재 쪽에 이미지를 올려 위치·크기를 정한 뒤 확정한다 (사진·도장·서명 그림 등).
@@ -233,24 +204,26 @@ export default function AppMenuBar() {
       disabled: needsDoc,
       children: [
         item('imgClip', '클립보드', { run: () => go('imgClip') }),
-        item('imgFile', '파일 선택...', { run: () => go('imgFile') }),
+        item('imgFile', '파일 선택', { run: () => go('imgFile') }),
       ],
     }),
+    sep('fn-0'),
+    item('reduce', '용량 줄이기', { disabled: needsDoc, run: () => go('reduce') }),
+    item('pageNumber', '쪽 번호 매기기', { disabled: needsDoc, run: () => go('pageNumber') }),
     sep('fn-1'),
-    item('pii', '개인정보 제거...', { disabled: needsDoc, run: () => go('pii') }),
+    item('pii', '개인정보 제거', { disabled: needsDoc, run: () => go('pii') }),
     sep('fn-3'),
-    item('setPw', '비밀번호 설정...', { disabled: needsDoc, run: () => go('setPw') }),
+    item('setPw', '비밀번호 설정', { disabled: needsDoc, run: () => go('setPw') }),
     item('clearPw', '비밀번호 제거', { disabled: needsDoc, run: () => go('clearPw') }),
-    // OCR 변환과 PDF 변환(병합 / 개별 변환)은 문서를 새로 만드는 변환 기능이라 맨 아래에 붙여 둔다.
+    // OCR 변환과 PDF로 변환하기(병합 / 개별 변환)는 문서를 새로 만드는 변환 기능이라 맨 아래에 붙여 둔다.
     sep('fn-4'),
-    item('ocr', 'OCR 변환하기...', { disabled: needsDoc, run: () => go('ocr') }),
-    item('convert', 'PDF 변환...', { disabled: !ready, run: () => go('convert') }),
+    item('ocr', 'OCR 변환하기', { disabled: needsDoc, run: () => go('ocr') }),
+    item('convert', 'PDF로 변환하기', { disabled: !ready, run: () => go('convert') }),
   ];
 
   const menus = [
     { id: 'file', label: '파일', mnemonic: 'f', items: fileItems },
     { id: 'edit', label: '편집', mnemonic: 'e', items: editItems },
-    { id: 'function', label: '기능', mnemonic: 'u', items: featureItems },
     {
       id: 'view',
       label: '보기',
@@ -281,15 +254,7 @@ export default function AppMenuBar() {
         }),
       ],
     },
-    {
-      id: 'help',
-      label: '도움말',
-      mnemonic: 'h',
-      items: [
-        item('update', '업데이트 확인', { disabled: updateChecking, run: checkUpdate }),
-        item('about', '정보(About)', { run: showAbout }),
-      ],
-    },
+    { id: 'function', label: '기능', mnemonic: 'u', badge: 'NEW', items: featureItems },
   ];
 
   useEffect(() => {
@@ -389,11 +354,18 @@ export default function AppMenuBar() {
           <div key={menu.id} className="relative">
             <button
               type="button"
-              className={`rounded-md px-2.5 py-1 text-sm ${
-                opened ? 'bg-slate-100 font-medium text-slate-900' : 'text-slate-700 hover:bg-slate-100'
+              className={`relative rounded-md px-2.5 py-1 text-sm ${
+                menu.id === 'function'
+                  ? opened
+                    ? 'bg-red-50 font-medium text-red-700'
+                    : 'text-red-600 hover:bg-red-50'
+                  : opened
+                    ? 'bg-slate-100 font-medium text-slate-900'
+                    : 'text-slate-700 hover:bg-slate-100'
               }`}
               aria-expanded={opened}
               aria-haspopup="menu"
+              style={menu.badge ? { paddingRight: 28 } : undefined}
               onClick={() => {
                 setSubId('');
                 setOpenId((current) => (current === menu.id ? '' : menu.id));
@@ -406,6 +378,15 @@ export default function AppMenuBar() {
               }}
             >
               {menu.label}
+              {menu.badge ? (
+                <span
+                  data-menu-badge={menu.id}
+                  aria-label="새 기능"
+                  className="pointer-events-none absolute right-0.5 top-0 rounded-full bg-red-500 px-1 text-[8px] font-bold leading-[11px] tracking-tight text-white"
+                >
+                  {menu.badge}
+                </span>
+              ) : null}
             </button>
             {opened ? (
               <MenuPanel
@@ -452,12 +433,13 @@ export default function AppMenuBar() {
 }
 
 function MenuPanel({ items, subId, onOpenSub, onActivate, nested = false }) {
+  const ref = useRef(null);
+  useAnchoredPlacement(ref, { side: nested ? 'right' : 'bottom', gap: nested ? 2 : 4 });
   return (
     <div
+      ref={ref}
       role="menu"
-      className={`absolute z-40 min-w-56 rounded-md border border-app-border bg-white py-1 shadow-lg ${
-        nested ? 'left-full top-0 ml-0.5' : 'left-0 top-full mt-1'
-      }`}
+      className="fixed left-0 top-0 z-40 w-max min-w-56 rounded-md border border-app-border bg-white py-1 shadow-lg"
     >
       {items.map((entry) => {
         if (entry.type === 'separator') {

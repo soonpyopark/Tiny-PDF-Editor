@@ -261,7 +261,10 @@ async function boot() {
     focusMainWindow,
     quitApp: quitFromTray,
   });
-  trayController.create();
+  // 트레이 아이콘은 설정 '창을 닫으면 트레이로 보내기'가 켜져 있을 때만 둔다.
+  // 꺼져 있으면 닫기(X)가 종료이므로 트레이가 필요 없고, 종료 뒤에도 인쇄 감시자는 따로 살아 있다.
+  runtime.syncTray = syncTray;
+  syncTray();
   startBackupScheduler();
   // 가상 프린터 + 백그라운드 인쇄 감시. 창이 뜬 뒤에 하므로 시작 속도에 영향이 없다.
   void ensurePrintService().catch((err) => console.warn('[print] ensure failed:', err));
@@ -453,6 +456,13 @@ function createAppWindow(appUrl, { main, windowId }) {
   return win;
 }
 
+/** 설정에 맞게 트레이 아이콘을 만들거나 없앤다. */
+function syncTray() {
+  if (!trayController) return;
+  if (closeToTrayEnabled()) trayController.create();
+  else trayController.destroy();
+}
+
 /** 설정 '창을 닫으면 트레이로 보내기'. 읽지 못하면 기존 동작(트레이)을 유지한다. */
 function closeToTrayEnabled() {
   try {
@@ -486,7 +496,8 @@ function applyCloseDecision(proceed) {
   const reason = closeReason;
   closeReason = null;
   if (!reason || !proceed || !mainWindow || mainWindow.isDestroyed()) return;
-  if (reason === 'quit') {
+  // 숨겨 둘 트레이가 없으면(설정이 막 꺼진 경우 등) 창을 되살릴 길이 없으므로 숨기지 않고 종료한다.
+  if (reason === 'quit' || !trayController?.isActive()) {
     mainCloseApproved = true;
     app.quit();
   } else {
@@ -637,7 +648,7 @@ function registerIpc() {
     quitFromTray();
   });
 
-  /** 도움말 > 정보: 스플래시 형태의 정보 창을 토글한다. */
+  /** 상단 오른쪽 ? 단추: 스플래시 형태의 정보 창을 토글한다. */
   ipcMain.handle('frame:showAboutSplash', () => toggleAboutSplash({ iconPath: resolveIconPath() }));
   registerSplashIpc();
 
