@@ -100,8 +100,8 @@ function ColorPopover({ value, onPick, onClose }) {
   }, [onClose]);
   const isCustom = !MAIN_COLOR_PALETTE.includes(value);
   return (
-    <div ref={ref} className="absolute left-0 top-full z-40 mt-1.5 rounded-lg border border-slate-300 bg-white p-2 shadow-lg" role="dialog" aria-label="색상">
-      <div className="grid grid-cols-4 gap-1.5">
+    <div ref={ref} className="absolute left-0 top-full z-40 mt-1.5 w-max rounded-lg border border-slate-300 bg-white p-2 shadow-lg" role="dialog" aria-label="색상">
+      <div className="grid grid-cols-4 gap-2">
         {MAIN_COLOR_PALETTE.map((hex) => (
           <button
             key={hex}

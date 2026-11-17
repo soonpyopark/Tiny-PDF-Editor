@@ -15,6 +15,7 @@ import PasswordSetDialog from './PasswordSetDialog.jsx';
 import PiiRemoveDialog from './PiiRemoveDialog.jsx';
 import OcrDialog from './OcrDialog.jsx';
 import TextMarkupLayer from './TextMarkupLayer.jsx';
+import ImagePlaceOverlay from './ImagePlaceOverlay.jsx';
 import DrawLayer from './draw/DrawLayer.jsx';
 import DrawToolbar from './draw/DrawToolbar.jsx';
 import { hexToRgb01, loadDrawState, saveDrawState } from './draw/drawSettings.js';
@@ -197,6 +198,53 @@ export default function EditorPage({
   // 마지막으로 Enter 로 실행한 검색어. 입력만 바뀌고 아직 Enter 를 안 누른 상태와 구분한다.
   const [searchRanQuery, setSearchRanQuery] = useState('');
   const [searchIndex, setSearchIndex] = useState(0);
+  // 이미지 넣기 세션: PDF 에 확정하기 전의 미리보기(이동·크기 조절) 상태.
+  const [imgEdit, setImgEdit] = useState(
+    /** @type {{ pageIndex: number, image: string, mime: string, width: number, height: number, rect: number[], page: number[] } | null} */ (
+      null
+    ),
+  );
+  const imgEditRef = useRef(imgEdit);
+  imgEditRef.current = imgEdit;
+  const imgIgnoreOutsideRef = useRef(false);
+  const imgDraggingRef = useRef(false);
+  const imgCommittingRef = useRef(/** @type {null | Promise<void>} */ (null));
+  const commitImageRef = useRef(/** @type {null | (() => Promise<void>)} */ (null));
+  const cancelImageRef = useRef(/** @type {null | (() => void)} */ (null));
+
+  // 바깥 클릭으로 이미지 확정(기본) + 편집 중 단축키. 막 연 직후·드래그 중 클릭은 무시한다.
+  useEffect(() => {
+    if (!imgEdit) return undefined;
+    imgIgnoreOutsideRef.current = true;
+    imgDraggingRef.current = false;
+    const arm = window.setTimeout(() => {
+      imgIgnoreOutsideRef.current = false;
+    }, 400);
+    function onPointerDown(event) {
+      if (imgIgnoreOutsideRef.current || imgDraggingRef.current) return;
+      const target = event.target;
+      if (target instanceof Element && target.closest('[data-img-overlay="1"]')) return;
+      void commitImageRef.current?.();
+    }
+    function onKeyDown(event) {
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        void commitImageRef.current?.();
+      } else if (event.key === 'Escape' || event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault();
+        cancelImageRef.current?.();
+      }
+    }
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      window.clearTimeout(arm);
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [imgEdit]);
+
   // 그리기 모드: 켜져 있는 동안 쪽 위에 DrawLayer 가 올라가고, 손을 뗀 획은 PDF 잉크 주석으로 들어간다.
   const [drawOn, setDrawOn] = useState(false);
   const [drawState, setDrawState] = useState(loadDrawState);
@@ -387,6 +435,7 @@ export default function EditorPage({
       setPageSizes([]);
       setThumbs(Array.from({ length: nextDoc.pageCount || 0 }, () => ''));
       setMarkups(nextDoc.open ? null : []);
+      setImgEdit(null);
       setError('');
       if (!nextDoc.open || nextDoc.pageCount < 1) {
         setBusy('');
@@ -1160,9 +1209,10 @@ export default function EditorPage({
     }
   }
 
-  // 진행 중인 그리기 반영이 모두 끝날 때까지 기다린다. 저장·되돌리기·닫기 전에 부른다.
-  function flushInk() {
-    return inkQueueRef.current;
+  // 진행 중인 그리기 반영과 편집 중인 이미지 확정이 모두 끝날 때까지 기다린다. 저장·되돌리기·닫기 전에 부른다.
+  async function flushInk() {
+    if (imgEditRef.current) await commitImageRef.current?.();
+    await inkQueueRef.current;
   }
 
   function scheduleInkThumb(index) {
@@ -1250,8 +1300,68 @@ export default function EditorPage({
   async function startDrawing() {
     if (!docRef.current.open) return;
     setError('');
+    if (imgEditRef.current) await commitImageRef.current?.();
     setDrawOn(true);
   }
+
+  // 이미지 넣기: 클립보드/파일의 이미지를 현재 쪽에 올려 놓고 위치·크기를 고르게 한다. Enter·바깥 클릭으로 확정.
+  async function placeImage(fromClipboard) {
+    if (!docRef.current.open) return;
+    setError('');
+    try {
+      if (imgEditRef.current) await commitImageRef.current?.();
+      if (drawOnRef.current) await endDrawing();
+      const result = await api('pdf.imagePrepare', { pageIndex, fromClipboard: Boolean(fromClipboard) });
+      if (result.canceled) return;
+      setImgEdit({
+        pageIndex,
+        image: result.image,
+        mime: result.mime,
+        width: result.width,
+        height: result.height,
+        rect: result.rect,
+        page: result.page,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '이미지를 넣지 못했습니다.');
+    }
+  }
+
+  async function commitImage() {
+    const session = imgEditRef.current;
+    if (!session) return;
+    // 확정 중에 바깥 클릭·Enter 가 겹쳐 들어와도 한 번만 넣는다.
+    if (imgCommittingRef.current) return imgCommittingRef.current;
+    const job = commitImageNow(session);
+    imgCommittingRef.current = job;
+    try {
+      await job;
+    } finally {
+      imgCommittingRef.current = null;
+    }
+  }
+
+  async function commitImageNow(session) {
+    setError('');
+    try {
+      const result = await api('pdf.imageCommit', {
+        pageIndex: session.pageIndex,
+        image: session.image,
+        rect: session.rect,
+      });
+      // 쪽 그림을 먼저 갱신해 오버레이 아래에 같은 크기·위치로 그린 뒤 오버레이를 걷는다.
+      await refreshAfterMarkup(result.doc);
+      setImgEdit(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '이미지를 확정하지 못했습니다.');
+    }
+  }
+  commitImageRef.current = commitImage;
+
+  function cancelImage() {
+    setImgEdit(null);
+  }
+  cancelImageRef.current = cancelImage;
 
   async function endDrawing() {
     await flushInk();
@@ -1442,6 +1552,8 @@ export default function EditorPage({
       ocr: () => setOcrScope({ indices: null }),
       draw: () => toggleDrawing(),
       getDraw: () => drawOnRef.current,
+      imgClip: () => void placeImage(true),
+      imgFile: () => void placeImage(false),
       setPw: () => void setDocPassword(),
       clearPw: () => void clearPassword(),
       pii: () => void removePii(),
@@ -1575,12 +1687,36 @@ export default function EditorPage({
                           {current && src ? (
                             <TextMarkupLayer
                               pageIndex={pageIndex}
-                              enabled={doc.open && !busy && !drawOn}
+                              enabled={doc.open && !busy && !drawOn && !imgEdit}
                               onMarkupChanged={(nextDoc) => void refreshAfterMarkup(nextDoc)}
                               onNotice={notifyMarkup}
                             />
                           ) : null}
-                          {drawOn && src ? (
+                          {imgEdit && imgEdit.pageIndex === index ? (
+                            <ImagePlaceOverlay
+                              image={imgEdit.image}
+                              mime={imgEdit.mime}
+                              rect={imgEdit.rect}
+                              page={imgEdit.page}
+                              imageWidth={imgEdit.width}
+                              imageHeight={imgEdit.height}
+                              onChangeRect={(next) => {
+                                setImgEdit((prev) => {
+                                  if (!prev) return prev;
+                                  const updated = { ...prev, rect: next };
+                                  imgEditRef.current = updated;
+                                  return updated;
+                                });
+                              }}
+                              onCommit={() => void commitImage()}
+                              onCancel={cancelImage}
+                              onDelete={cancelImage}
+                              onDraggingChange={(dragging) => {
+                                imgDraggingRef.current = dragging;
+                              }}
+                            />
+                          ) : null}
+                          {drawOn && src && !imgEdit ? (
                             <DrawLayer
                               pageIndex={index}
                               ptW={ptW}

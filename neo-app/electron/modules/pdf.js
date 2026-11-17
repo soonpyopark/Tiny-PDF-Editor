@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, shell } from 'electron';
 import { ApiError, currentWindowId, defineApi } from '../api/registry.js';
 import {
   disablePrinter,
@@ -998,6 +998,61 @@ export function register() {
       style: body?.style ? String(body.style) : undefined,
     });
     return { doc: result.doc, hitCount: result.hitCount, areaCount: result.areaCount };
+  });
+
+  // 이미지 넣기: 클립보드 또는 파일에서 이미지를 읽어 base64 로 돌려준다.
+  async function readImageToPlace(body) {
+    if (body?.image) return { canceled: false, image: String(body.image) };
+    if (body?.fromClipboard) {
+      // Electron 44+ 의 clipboard 는 Promise 기반(read) 이다.
+      const items = await clipboard.read();
+      for (const item of items) {
+        const type = item.types.find((t) => t.startsWith('image/'));
+        if (!type) continue;
+        const blob = await item.getType(type);
+        return { canceled: false, image: Buffer.from(await blob.arrayBuffer()).toString('base64') };
+      }
+      throw new ApiError('클립보드에 이미지가 없습니다.');
+    }
+    const win = ownerWindow();
+    const options = {
+      title: '넣을 이미지 선택',
+      filters: [{ name: '이미지', extensions: ['png', 'jpg', 'jpeg', 'bmp', 'gif', 'tif', 'tiff', 'webp'] }],
+      properties: ['openFile'],
+    };
+    const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    if (picked.canceled || !picked.filePaths[0]) return { canceled: true };
+    return { canceled: false, image: fs.readFileSync(picked.filePaths[0]).toString('base64') };
+  }
+
+  // 이미지 넣기: PDF 에 바로 넣지 않고, 미리보기(이동·크기 조절)용으로 이미지를 정리해 돌려준다.
+  defineApi('pdf.imagePrepare', 'user', async (body) => {
+    const picked = await readImageToPlace(body);
+    if (picked.canceled) return { canceled: true };
+    const result = await engineOp({
+      op: 'imagePrepare',
+      pageIndex: Number(body?.pageIndex) || 0,
+      image: picked.image,
+    });
+    return {
+      canceled: false,
+      image: result.image,
+      mime: result.mime,
+      width: result.width,
+      height: result.height,
+      rect: result.rect,
+      page: result.page,
+    };
+  });
+
+  defineApi('pdf.imageCommit', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'imageCommit',
+      pageIndex: Number(body?.pageIndex) || 0,
+      image: body?.image,
+      rect: body?.rect,
+    });
+    return { doc: result.doc };
   });
 
   // 그리기: 쪽 화면 좌표(pt)의 획을 잉크 주석으로 넣는다. continueGroup 이면 바로 앞 그리기와 실행 취소 한 단계로 묶는다.

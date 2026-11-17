@@ -189,6 +189,79 @@ def _prepare_signature(data: bytes) -> tuple[bytes, int, int]:
     return buf.getvalue(), int(width), int(height)
 
 
+PLACED_IMAGE_MAX_SIDE = 2400
+
+
+def _prepare_placed_image(data: bytes) -> tuple[bytes, str, int, int]:
+    """이미지 넣기용 정리: 방향(EXIF) 보정, 너무 큰 그림 축소, PDF 에 넣기 좋은 PNG/JPEG 로 통일.
+
+    서명과 달리 흰 배경을 투명하게 하거나 여백을 자르지 않는다. 사진도 그대로 들어간다.
+    반환: (바이트, mime, 가로 px, 세로 px)
+    """
+    import io
+
+    from PIL import Image, ImageOps
+
+    try:
+        src = Image.open(io.BytesIO(data))
+        src.load()
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("이미지를 읽지 못했습니다.") from exc
+    with src:
+        was_jpeg = (src.format or "").upper() == "JPEG"
+        try:
+            rotated_by_exif = int(src.getexif().get(0x0112, 1) or 1) != 1
+        except Exception:  # noqa: BLE001
+            rotated_by_exif = False
+        image = ImageOps.exif_transpose(src) if rotated_by_exif else src
+        changed = rotated_by_exif
+        if max(image.size) > PLACED_IMAGE_MAX_SIDE:
+            image = image.copy()
+            image.thumbnail((PLACED_IMAGE_MAX_SIDE, PLACED_IMAGE_MAX_SIDE), Image.LANCZOS)
+            changed = True
+        if image.width < 2 or image.height < 2:
+            raise ValueError("이미지가 너무 작습니다.")
+        has_alpha = image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info)
+        if has_alpha:
+            rgba = image.convert("RGBA")
+            if rgba.getchannel("A").getextrema()[0] >= 255:
+                has_alpha = False
+                image = rgba.convert("RGB")
+            else:
+                image = rgba
+        elif image.mode != "RGB":
+            image = image.convert("RGB")
+        width, height = image.size
+        buf = io.BytesIO()
+        if has_alpha:
+            image.save(buf, format="PNG")
+            return buf.getvalue(), "image/png", int(width), int(height)
+        if was_jpeg:
+            if not changed:
+                return bytes(data), "image/jpeg", int(width), int(height)
+            image.save(buf, format="JPEG", quality=92)
+            return buf.getvalue(), "image/jpeg", int(width), int(height)
+        image.save(buf, format="PNG")
+        return buf.getvalue(), "image/png", int(width), int(height)
+
+
+def _placed_image_rect(page: fitz.Rect, width: int, height: int) -> fitz.Rect:
+    """처음 놓을 자리: 쪽 가운데. 쪽 가로의 20~50%, 세로는 60% 이내로 비율을 지킨다."""
+    aspect = max(1, width) / max(1, height)
+    target_w = min(page.width * 0.5, max(page.width * 0.2, width * 0.75))
+    target_h = target_w / aspect
+    max_h = page.height * 0.6
+    if target_h > max_h:
+        target_h = max_h
+        target_w = target_h * aspect
+    # 아주 가늘어도(예: 1:10) 쪽 밖으로 나가지 않게 최소 가로만 8pt 로 둔다.
+    target_w = max(8.0, target_w)
+    target_h = target_w / aspect
+    cx = (page.x0 + page.x1) / 2
+    cy = (page.y0 + page.y1) / 2
+    return fitz.Rect(cx - target_w / 2, cy - target_h / 2, cx + target_w / 2, cy + target_h / 2)
+
+
 def _apply_launcher(req: dict[str, Any]) -> None:
     """파일 연결 대상을 엔진이 아니라 앱(Neo) 실행 파일로 맞춘다."""
     from pdf_editor.windows_file_assoc import set_launcher
@@ -948,6 +1021,36 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
         # 기존 서명을 걷어낸 뒤 삭제 확정(Esc 복원이 아니라 Delete). 이미 쪽에서 지워진 상태를 유지한다.
         _require_open(opened)
         _signature_lift["active"] = False
+        return True, {"doc": _summary(doc, True)}
+    if op == "imagePrepare":
+        # 이미지 넣기: 이미지를 정리하고 처음 놓을 위치를 정한다. PDF 는 확정(imageCommit)할 때 바뀐다.
+        _require_open(opened)
+        page_index = int(req.get("pageIndex") or 0)
+        if not (0 <= page_index < doc.page_count):
+            raise ValueError("쪽 번호가 올바르지 않습니다.")
+        raw = str(req.get("image") or "").strip()
+        if not raw:
+            raise ValueError("넣을 이미지가 없습니다.")
+        if raw.startswith("data:") and "," in raw:
+            raw = raw.split(",", 1)[1]
+        data, mime, width, height = _prepare_placed_image(base64.b64decode(raw))
+        page = doc.get_page_rect(page_index)
+        rect = _placed_image_rect(page, width, height)
+        return True, {
+            "image": base64.b64encode(data).decode("ascii"),
+            "mime": mime,
+            "width": width,
+            "height": height,
+            "rect": _rect_list(rect),
+            "page": _page_box(page),
+        }
+    if op == "imageCommit":
+        _require_open(opened)
+        page_index = int(req.get("pageIndex") or 0)
+        raw = str(req.get("image") or "").strip()
+        if not raw:
+            raise ValueError("넣을 이미지가 없습니다.")
+        doc.place_image(page_index, base64.b64decode(raw), _rect_from_list(req.get("rect")))
         return True, {"doc": _summary(doc, True)}
     if op == "inkAdd":
         # 그리기: 획마다 잉크 주석 하나. 점은 쪽 화면 좌표(pt, 회전 반영)로 받는다.

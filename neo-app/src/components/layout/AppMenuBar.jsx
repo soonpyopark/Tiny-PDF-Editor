@@ -228,15 +228,22 @@ export default function AppMenuBar() {
     item('pageNumber', '쪽 번호 매기기...', { disabled: needsDoc, run: () => go('pageNumber') }),
     // 쪽 위에 직접 그린다 (펜·연필·형광펜·지우개). 켜진 동안 체크 표시.
     item('draw', '그리기', { disabled: needsDoc, checked: Boolean(run('getDraw')), run: () => go('draw') }),
+    // 현재 쪽에 이미지를 올려 위치·크기를 정한 뒤 확정한다 (사진·도장·서명 그림 등).
+    item('image', '이미지 넣기', {
+      disabled: needsDoc,
+      children: [
+        item('imgClip', '클립보드', { run: () => go('imgClip') }),
+        item('imgFile', '파일 선택...', { run: () => go('imgFile') }),
+      ],
+    }),
     sep('fn-1'),
-    item('ocr', 'OCR 변환하기...', { disabled: needsDoc, run: () => go('ocr') }),
-    sep('fn-2'),
     item('pii', '개인정보 제거...', { disabled: needsDoc, run: () => go('pii') }),
     sep('fn-3'),
     item('setPw', '비밀번호 설정...', { disabled: needsDoc, run: () => go('setPw') }),
     item('clearPw', '비밀번호 제거', { disabled: needsDoc, run: () => go('clearPw') }),
-    // PDF 변환(병합 / 개별 변환)은 문서를 새로 만드는 기능이라 맨 아래에 따로 둔다.
+    // OCR 변환과 PDF 변환(병합 / 개별 변환)은 문서를 새로 만드는 변환 기능이라 맨 아래에 붙여 둔다.
     sep('fn-4'),
+    item('ocr', 'OCR 변환하기...', { disabled: needsDoc, run: () => go('ocr') }),
     item('convert', 'PDF 변환...', { disabled: !ready, run: () => go('convert') }),
   ];
 

@@ -3537,6 +3537,23 @@ class PdfDocument:
         )
         self._touch()
 
+    def place_image(
+        self,
+        page_index: int,
+        image_bytes: bytes,
+        rect: fitz.Rect,
+    ) -> None:
+        """이미지 넣기: 쪽 위(화면 좌표 rect)에 이미지를 그대로 얹는다. 서명 표식은 남기지 않는다."""
+        dest = self._signature_dest_rect(page_index, rect)
+        if dest is None:
+            raise ValueError("이미지 위치가 페이지 밖입니다.")
+        if not image_bytes:
+            raise ValueError("넣을 이미지가 없습니다.")
+        self._record_undo_checkpoint()
+        page = self._doc[page_index]
+        self._page_insert_image_stream(page, dest, image_bytes)
+        self._touch()
+
     def find_signature_stamp_at(
         self,
         page_index: int,

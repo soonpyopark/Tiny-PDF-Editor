@@ -27,7 +27,7 @@ const AUTHOR_URL =
 const AUTHOR_LINK_TEXT = 'https://note4all.tistory.com';
 const SPLASH_BG = '#0a1a33';
 const ICON_SIZE = 72;
-const WIDTH = 460;
+const WIDTH = 540;
 const HEIGHT = 150;
 
 const PRELOAD_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'splashPreload.cjs');
@@ -68,7 +68,7 @@ function buildHtml(iconPath) {
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: ${SPLASH_BG};
     font-family: "Segoe UI", "Malgun Gothic", sans-serif; user-select: none; }
-  .row { height: 100%; box-sizing: border-box; padding: 0 36px;
+  .row { height: 100%; box-sizing: border-box; padding: 0 56px 0 36px;
     display: flex; align-items: center; justify-content: center; gap: 16px; }
   img { width: ${ICON_SIZE}px; height: ${ICON_SIZE}px; flex: none; }
   .title { color: #ffffff; font-size: 22px; font-weight: 700; white-space: nowrap; }
