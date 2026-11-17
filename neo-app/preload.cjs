@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('frame', {
   openExternal: (url) => ipcRenderer.invoke('frame:openExternal', url),
   openStateFolder: (sub) => ipcRenderer.invoke('frame:openStateFolder', sub),
   quit: () => ipcRenderer.invoke('frame:quit'),
+  /** 창 최소 너비(콘텐츠 기준 px). 하단 막대 단추가 접히기 전까지만 창을 줄일 수 있게 한다. */
+  setMinContentWidth: (width) => ipcRenderer.send('frame:setMinContentWidth', Number(width) || 0),
   /** 상단 오른쪽 ? 단추: 스플래시 형태의 정보 창을 연다/닫는다. */
   showAboutSplash: () => ipcRenderer.invoke('frame:showAboutSplash'),
   /** Real path of a dropped File (sandboxed pages cannot read File.path). */

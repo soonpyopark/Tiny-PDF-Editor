@@ -86,6 +86,7 @@ export default function PageSide({
   collapsed,
   onCollapsedChange,
   markupTabRequest = 0,
+  pendingInsert = null,
 }) {
   const dialog = useDialog();
   const [tab, setTab] = useState('thumbs');
@@ -185,6 +186,7 @@ export default function PageSide({
           pageIndex={pageIndex}
           pageCount={pageCount || thumbs.length || 0}
           clipboardCount={clipboardCount || 0}
+          pending={pendingInsert}
           onSelectPage={onSelectPage}
           onAction={onThumbAction}
         />

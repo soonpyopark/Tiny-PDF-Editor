@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import pymupdf as fitz
-from PIL import Image
+from PIL import Image, ImageOps
 
 from pdf_editor.cross_page_selection import PageSelectionSegment
 from pdf_editor.hwp_convert import (
@@ -413,12 +413,36 @@ class PdfDocument:
 
     @staticmethod
     def _open_image_as_document(path: str) -> fitz.Document:
-        img_doc = fitz.open(path)
         try:
-            pdf_bytes = img_doc.convert_to_pdf()
-        finally:
-            img_doc.close()
+            img_doc = fitz.open(path)
+            try:
+                pdf_bytes = img_doc.convert_to_pdf()
+            finally:
+                img_doc.close()
+        except Exception:
+            # MuPDF 가 열지 못하는 형식(예: WebP)은 Pillow 로 읽어 PNG 로 바꾼 뒤 PDF 로 만든다.
+            pdf_bytes = PdfDocument._image_to_pdf_bytes_via_pillow(path)
         return fitz.open(stream=pdf_bytes, filetype="pdf")
+
+    @staticmethod
+    def _image_to_pdf_bytes_via_pillow(path: str) -> bytes:
+        try:
+            with Image.open(path) as source:
+                source.load()
+                image = ImageOps.exif_transpose(source)
+                if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+                    image = image.convert("RGBA")
+                elif image.mode != "RGB":
+                    image = image.convert("RGB")
+                buffer = io.BytesIO()
+                image.save(buffer, format="PNG")
+        except Exception as exc:
+            raise ValueError(f"이미지를 열 수 없습니다: {Path(path).name}") from exc
+        png_doc = fitz.open(stream=buffer.getvalue(), filetype="png")
+        try:
+            return png_doc.convert_to_pdf()
+        finally:
+            png_doc.close()
 
     def new_document(self) -> None:
         self._doc.close()
@@ -3342,6 +3366,7 @@ class PdfDocument:
         page_to: int | None = None,
         include_annotations: bool = True,
         progress: Callable[[int, int], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> Path:
         """Render pages into *output_dir* as zero-padded image files.
 
@@ -3363,6 +3388,8 @@ class PdfDocument:
         total = end - start + 1
 
         for offset, page_number in enumerate(range(start, end + 1), start=1):
+            if should_cancel is not None and should_cancel():
+                break
             if progress is not None:
                 progress(offset, total)
             pix = self.render_page_pixmap(
@@ -3475,13 +3502,27 @@ class PdfDocument:
         *,
         record_undo: bool = True,
         resolve_pdf_password: Callable[[str, bool], str | None] | None = None,
+        progress: Callable[[int, int, str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> int:
-        """Insert PDF pages or images at *index*. Returns number of pages added."""
+        """Insert PDF pages or images at *index*. Returns number of pages added.
+
+        progress(done, total, name): called before each file (done = files finished so far).
+        should_cancel(): checked between files; True stops with what was added so far.
+        """
         index = max(0, min(index, len(self._doc)))
         if not file_paths:
             return 0
         was_empty = len(self._doc) == 0
         added = 0
+        files_total = sum(
+            1
+            for file_path in file_paths
+            if Path(file_path).suffix.lower() in PDF_EXTENSIONS
+            or Path(file_path).suffix.lower() in IMAGE_EXTENSIONS
+            or Path(file_path).suffix.lower() in HWP_EXTENSIONS
+        )
+        files_done = 0
         for file_path in file_paths:
             ext = Path(file_path).suffix.lower()
             if (
@@ -3490,6 +3531,10 @@ class PdfDocument:
                 and ext not in HWP_EXTENSIONS
             ):
                 continue
+            if should_cancel is not None and should_cancel():
+                break
+            if progress is not None:
+                progress(files_done, files_total, Path(file_path).name)
             if record_undo and added == 0:
                 self._record_undo_checkpoint()
             if ext in PDF_EXTENSIONS:
@@ -3516,6 +3561,9 @@ class PdfDocument:
                             tmp_pdf.unlink(missing_ok=True)
                         except OSError:
                             pass
+            files_done += 1
+        if progress is not None and files_done:
+            progress(files_done, files_total, "")
         if added:
             self._touch()
             if was_empty and self._source_path is None:
@@ -4824,6 +4872,8 @@ class PdfDocument:
         image_format: str = "png",
         jpeg_quality: int = 92,
         include_annotations: bool = True,
+        progress: Callable[[int, int], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> list[str]:
         if not indices:
             raise ValueError("보낼 페이지를 선택하세요.")
@@ -4840,7 +4890,11 @@ class PdfDocument:
         saved: list[str] = []
         zoom = max(0.1, float(dpi) / 72.0)
         ext = "jpg" if image_format.lower() in ("jpg", "jpeg") else "png"
-        for index in valid:
+        for position, index in enumerate(valid, start=1):
+            if should_cancel is not None and should_cancel():
+                break
+            if progress is not None:
+                progress(position, len(valid))
             pix = self.render_page_pixmap(index, zoom, annots=include_annotations)
             try:
                 filename = folder_path / f"{stem}_{index + 1}.{ext}"
@@ -4852,6 +4906,8 @@ class PdfDocument:
             finally:
                 pix = None
         if not saved:
+            if should_cancel is not None and should_cancel():
+                return saved
             raise ValueError("이미지를 저장하지 못했습니다.")
         return saved
 

@@ -336,13 +336,16 @@ function openDocumentWindow(filePath) {
  * @param {{ main: boolean, windowId: string }} options
  * @returns {BrowserWindow}
  */
+/** 창이 줄어들 수 있는 가장 작은 콘텐츠 너비(렌더러가 더 큰 값을 알려 주면 그 값을 쓴다). */
+const MIN_WINDOW_WIDTH = 960;
+
 function createAppWindow(appUrl, { main, windowId }) {
   const icon = resolveIconPath();
 
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
-    minWidth: 960,
+    minWidth: MIN_WINDOW_WIDTH,
     minHeight: 600,
     title: APP_NAME,
     backgroundColor: '#0f172a',
@@ -646,6 +649,22 @@ function registerIpc() {
 
   ipcMain.handle('frame:quit', () => {
     quitFromTray();
+  });
+
+  /** 렌더러가 알려 준 콘텐츠 최소 너비로 창의 최소 크기를 바꾼다(너무 좁아지면 하단 단추가 접힌다). */
+  ipcMain.on('frame:setMinContentWidth', (event, width) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return;
+    const content = Math.min(3000, Math.max(MIN_WINDOW_WIDTH, Math.round(Number(width) || 0)));
+    const [outerW, outerH] = win.getSize();
+    const [contentW] = win.getContentSize();
+    const frameW = Math.max(0, outerW - contentW);
+    const [, minH] = win.getMinimumSize();
+    win.setMinimumSize(content + frameW, minH);
+    // 이미 더 좁게 열려 있으면 최소 너비까지 넓힌다(전체화면·최대화 중이면 건드리지 않는다).
+    if (!win.isFullScreen() && !win.isMaximized() && outerW < content + frameW) {
+      win.setSize(content + frameW, outerH);
+    }
   });
 
   /** 상단 오른쪽 ? 단추: 스플래시 형태의 정보 창을 토글한다. */

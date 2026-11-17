@@ -60,6 +60,7 @@ const sessions = new Map();
 let pageClipboard = null;
 
 const SLOW_OPS = new Set([
+  'insert',
   'ocr',
   'reduceSize',
   'hwpConvert',
@@ -301,6 +302,24 @@ function ensureEngine(session) {
     try {
       message = JSON.parse(line);
     } catch {
+      return;
+    }
+    if (message?.type === 'progress') {
+      // 파일·쪽 단위 진행. 요청을 끝내지 않고 이 세션(창)의 화면으로만 보낸다.
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) {
+          win.webContents.send('pdf:log', {
+            windowId: session.windowId,
+            id: message.id,
+            progress: {
+              op: String(message.op ?? ''),
+              current: Number(message.current) || 0,
+              total: Number(message.total) || 0,
+              label: String(message.label ?? ''),
+            },
+          });
+        }
+      }
       return;
     }
     if (message?.type === 'log') {
@@ -663,7 +682,17 @@ export function register() {
     }
     const index = Number.isInteger(body?.index) ? Number(body.index) : undefined;
     const result = await engineOp({ op: 'insert', paths, index });
-    return { canceled: false, doc: result.doc, added: result.added };
+    return { canceled: false, doc: result.doc, added: result.added, stopped: Boolean(result.stopped) };
+  });
+
+  /** 진행 중인 긴 작업(파일 추가·이미지 저장)을 멈추게 한다. 엔진이 다음 파일/쪽 사이에서 알아채고 그때까지 한 것만 남긴다. */
+  defineApi('pdf.cancel', 'user', async () => {
+    const session = sessionFor(currentWindowId());
+    const child = session.child;
+    if (child && !child.killed && child.exitCode == null) {
+      child.stdin.write(`${JSON.stringify({ op: 'cancel' })}\n`);
+    }
+    return { ok: true };
   });
 
   /**
@@ -823,7 +852,13 @@ export function register() {
       dir: folder,
       ...exportImageOptions(body?.options),
     });
-    return { canceled: false, dir: saved.dir, files: saved.files ?? [], count: saved.files?.length ?? 0 };
+    return {
+      canceled: false,
+      dir: saved.dir,
+      files: saved.files ?? [],
+      count: saved.files?.length ?? 0,
+      stopped: Boolean(saved.stopped),
+    };
   });
 
   defineApi('pdf.pageClipboard', 'user', async () => ({
@@ -893,8 +928,19 @@ export function register() {
       pageFrom,
       pageTo,
     });
+    // 완료 질문(폴더 열기)을 띄우기 전에 진행 안내를 거둔다.
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) {
+        win.webContents.send('pdf:log', { windowId: currentWindowId(), progress: { op: 'exportImages', done: true } });
+      }
+    }
+    const stopped = Boolean(saved.stopped);
     const count = pageTo ? pageTo - pageFrom + 1 : null;
-    const head = count ? `${count}개 이미지를 저장했습니다.` : '이미지를 저장했습니다.';
+    const head = stopped
+      ? '작업을 취소했습니다. 그때까지 저장된 이미지는 남아 있습니다.'
+      : count
+        ? `${count}개 이미지를 저장했습니다.`
+        : '이미지를 저장했습니다.';
     const reply = await askMessage({
       type: 'question',
       buttons: ['예', '아니요'],
@@ -905,7 +951,7 @@ export function register() {
       detail: '폴더를 여시겠습니까?',
     });
     if (reply.response === 0) await shell.openPath(saved.dir);
-    return { canceled: false, dir: saved.dir, count };
+    return { canceled: false, dir: saved.dir, count, stopped };
   });
 
   defineApi('pdf.search', 'user', async (body) => {
@@ -946,6 +992,7 @@ export function register() {
       quality: Number(body?.quality) || 100,
       sizePercent: Number(body?.sizePercent) || 100,
     });
+    if (result.stopped) return { stopped: true };
     return { doc: result.doc, before: result.before, after: result.after };
   });
 
@@ -967,6 +1014,7 @@ export function register() {
       indices: Array.isArray(body?.indices) ? body.indices.map(Number) : undefined,
     });
     return {
+      stopped: Boolean(result.stopped),
       doc: result.doc,
       applied: result.applied,
       skipped: result.skipped,
@@ -1009,6 +1057,7 @@ export function register() {
       hits: body?.hits || [],
       style: body?.style ? String(body.style) : undefined,
     });
+    if (result.stopped) return { stopped: true };
     return { doc: result.doc, hitCount: result.hitCount, areaCount: result.areaCount };
   });
 

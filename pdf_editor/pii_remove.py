@@ -561,6 +561,7 @@ def redact_document_bytes(
     *,
     style: RedactStyle = DEFAULT_REDACT_STYLE,
     status_callback: Callable[[str], None] | None = None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> tuple[bytes, int, int]:
     """Apply redactions. Returns (pdf, hit_count, area_count)."""
     if not pdf_bytes:
@@ -579,6 +580,8 @@ def redact_document_bytes(
 
         total_pages = len(by_page)
         for step, (page_index, page_hits) in enumerate(sorted(by_page.items()), start=1):
+            if progress is not None:
+                progress(step - 1, total_pages)
             if status_callback is not None:
                 status_callback(
                     f"개인정보 제거 중... {step}/{total_pages} "

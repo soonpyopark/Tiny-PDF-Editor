@@ -54,6 +54,7 @@ export default function ThumbnailPanel({
   pageIndex,
   pageCount,
   clipboardCount = 0,
+  pending = null,
   onSelectPage,
   onAction,
 }) {
@@ -70,6 +71,22 @@ export default function ThumbnailPanel({
   const [bandRect, setBandRect] = useState(/** @type {null | { left: number, top: number, width: number, height: number }} */ (null));
 
   const thumbWidth = THUMB_SCALE_LEVELS[Math.max(0, Math.min(THUMB_SCALE_LEVELS.length, scaleLevel) - 1)];
+  // 파일을 여러 개 추가하는 동안, 들어올 자리에 미리 보여 주는 빈 카드. 파일이 처리될 때마다 하나씩 줄어든다.
+  const skeletons = pending
+    ? Array.from({ length: Math.max(0, Math.min(pending.count, 50)) }, (_, k) => (
+        <div
+          key={`pending-${k}`}
+          data-thumb-pending="1"
+          className="mb-2 block w-full rounded-md border border-dashed border-slate-300 bg-white p-1"
+        >
+          <div
+            className="mx-auto animate-pulse bg-slate-100"
+            style={{ width: thumbWidth, height: Math.max(45, Math.round(thumbWidth * 1.4)) }}
+          />
+          <div className="pt-1 text-center text-xs text-slate-300">…</div>
+        </div>
+      ))
+    : null;
 
   useEffect(() => {
     if (!docOpen || pageCount <= 0) {
@@ -430,13 +447,13 @@ export default function ThumbnailPanel({
           }
         }}
       >
-        {!docOpen ? (
+        {!docOpen && !pending ? (
           <div className="flex h-full items-center justify-center">
             <p className="text-center text-sm text-slate-400">
               Drag & Drop files here.
             </p>
           </div>
-        ) : pageCount === 0 ? (
+        ) : pageCount === 0 && !pending ? (
           <div className="flex h-full items-center justify-center">
             <p className="text-center text-sm text-slate-400">
               Drag & Drop files here.
@@ -448,7 +465,9 @@ export default function ThumbnailPanel({
             const isCurrent = index === pageIndex;
             const showLine = dragOverIndex === index;
             return (
-              <div key={index} className="relative">
+              <div key={index}>
+              {pending && pending.at === index ? skeletons : null}
+              <div className="relative">
                 {showLine ? <DropLine /> : null}
                 <button
                   ref={(element) => {
@@ -483,9 +502,11 @@ export default function ThumbnailPanel({
                   <div className="pt-1 text-center text-xs text-slate-500">{index + 1}</div>
                 </button>
               </div>
+              </div>
             );
           })
         )}
+        {pending && (pending.at >= thumbs.length || !thumbs.length) ? skeletons : null}
         {dragOverIndex === pageCount && docOpen ? <DropLine className="relative -top-1" /> : null}
         {bandRect ? (
           <div

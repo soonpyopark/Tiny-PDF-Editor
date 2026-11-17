@@ -255,13 +255,22 @@ def run_ocr_on_document(
     *,
     skip_native_text: bool = True,
     status_callback: ProgressCallback | None = None,
+    progress: Callable[[int, int], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> OcrRunResult:
     """OCR 을 돌린다. 끝나면(실패해도) 모델을 해제해, 엔진 프로세스가 수백 MB 를 붙잡고 있지 않게 한다.
 
     다음 OCR 때 모델을 다시 올리는 데 1~2초가 든다. 한 번에 여러 쪽을 돌리면 모델은 한 번만 올린다.
     """
     try:
-        return _run_ocr(document, indices, skip_native_text=skip_native_text, status_callback=status_callback)
+        return _run_ocr(
+            document,
+            indices,
+            skip_native_text=skip_native_text,
+            status_callback=status_callback,
+            progress=progress,
+            should_cancel=should_cancel,
+        )
     finally:
         release_ocr_engine()
         fitz.TOOLS.store_shrink(100)
@@ -273,6 +282,8 @@ def _run_ocr(
     *,
     skip_native_text: bool = True,
     status_callback: ProgressCallback | None = None,
+    progress: Callable[[int, int], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> OcrRunResult:
     if not indices:
         return OcrRunResult(0, 0, 0, 0)
@@ -287,6 +298,11 @@ def _run_ocr(
     lines = 0
     total = len(indices)
     for step, page_index in enumerate(indices, start=1):
+        # 취소하면 여기서 멈춘다. 그때까지 글자를 넣은 쪽은 그대로 남는다.
+        if should_cancel is not None and should_cancel():
+            break
+        if progress is not None:
+            progress(step - 1, total)
         if not (0 <= page_index < document.page_count):
             failed += 1
             continue

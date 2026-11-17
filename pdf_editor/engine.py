@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import base64
 import json
+import queue
 import re
 import sys
+import threading
 import uuid
 from pathlib import Path
 
@@ -121,6 +123,34 @@ _active_request_id = None
 def _log(message: str) -> None:
     """Stream one progress line for the running request (does not finish it)."""
     _write({"type": "log", "id": _active_request_id, "message": str(message)})
+
+
+class _OperationCancelled(BaseException):
+    """작업 도중 사용자가 취소했다. 문서는 아직 바뀌지 않은 단계에서만 던진다 (BaseException: 안쪽 `except Exception` 이 삼키지 못하게)."""
+
+
+# 사용자가 [취소] 를 누르면 stdin 읽기 스레드가 이 표시를 켠다. 긴 작업은 파일·쪽 사이에서 확인하고 멈춘다.
+_cancel_event = threading.Event()
+# 지금 처리 중인 요청의 종류(op). 진행 알림에 같이 실어 화면이 어떤 작업인지 알 수 있게 한다.
+_active_request_op = ""
+
+
+def _cancelled() -> bool:
+    return _cancel_event.is_set()
+
+
+def _progress(current: int, total: int, label: str = "") -> None:
+    """Report progress of the running request: `current` of `total` units done, `label` = what is being processed."""
+    _write(
+        {
+            "type": "progress",
+            "id": _active_request_id,
+            "op": _active_request_op,
+            "current": int(current),
+            "total": int(total),
+            "label": str(label),
+        }
+    )
 
 
 def _image_progress_logger():
@@ -481,7 +511,7 @@ def _preview_file(raw_path: str, password: str | None) -> dict:
         return {"unsupported": True}
     try:
         if ext in IMAGE_EXTENSIONS:
-            src = fitz.open(str(target))
+            src = PdfDocument._open_image_as_document(str(target))
         elif ext in PDF_EXTENSIONS:
             src = PdfDocument._open_pdf_path(str(target), password)
         else:
@@ -614,14 +644,14 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
         paths = [str(path) for path in (req.get("paths") or []) if str(path).strip()]
         if not paths:
             raise ValueError("추가할 파일이 없습니다.")
-        added = doc.insert_files_at(index, paths)
-        return True, {"doc": _summary(doc, True), "added": added}
+        added = doc.insert_files_at(index, paths, progress=_progress, should_cancel=_cancelled)
+        return True, {"doc": _summary(doc, True), "added": added, "stopped": _cancelled()}
     if op == "merge":
         paths = [str(path) for path in (req.get("paths") or []) if str(path).strip()]
         if len(paths) < 1:
             raise ValueError("병합할 파일이 없습니다.")
         doc.new_document()
-        added = doc.insert_files_at(0, paths)
+        added = doc.insert_files_at(0, paths, progress=_progress)
         return True, {"doc": _summary(doc, True), "added": added}
     if op == "mergeInspect":
         paths = [str(path) for path in (req.get("paths") or []) if str(path).strip()]
@@ -704,8 +734,10 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
             image_format=str(req.get("format") or "png"),
             jpeg_quality=int(req.get("jpegQuality") or 92),
             include_annotations=req.get("includeAnnotations") is not False,
+            progress=lambda done, total: _progress(done - 1, total, f"{done}/{total}쪽"),
+            should_cancel=_cancelled,
         )
-        return opened, {"dir": raw_dir, "files": [str(item) for item in saved]}
+        return opened, {"dir": raw_dir, "files": [str(item) for item in saved], "stopped": _cancelled()}
     if op == "textSelect":
         # 드래그 선택: 원본 PageCanvas 와 같은 단어 단위 선택 (줄 단위로 이어짐).
         _require_open(opened)
@@ -797,8 +829,10 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
             page_from=int(req.get("pageFrom") or 1),
             page_to=int(req["pageTo"]) if req.get("pageTo") is not None else None,
             include_annotations=req.get("includeAnnotations") is not False,
+            progress=lambda done, total: _progress(done - 1, total, f"{done}/{total}쪽"),
+            should_cancel=_cancelled,
         )
-        return opened, {"dir": str(out)}
+        return opened, {"dir": str(out), "stopped": _cancelled()}
     if op == "search":
         _require_open(opened)
         query = str(req.get("query") or "")
@@ -853,11 +887,20 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
             image_size_percent=int(req.get("sizePercent") or 100),
         )
         source = doc.save_to_bytes()
+        log_images = _image_progress_logger()
+
+        def on_image(index: int, total: int) -> None:
+            log_images(index, total)
+            _progress(index - 1, total, f"이미지 {index}/{total}")
+            if _cancelled():
+                raise _OperationCancelled()
+
+        # 새 PDF 가 다 만들어진 뒤에야 문서에 반영하므로, 중간에 취소해도 문서는 그대로다.
         payload = PdfDocument.build_optimized_payload(
             source,
             options,
             status_callback=_log,
-            image_progress=_image_progress_logger(),
+            image_progress=on_image,
         )
         before, after = doc.apply_reduced_payload(payload)
         return True, {"doc": _summary(doc, True), "before": before, "after": after}
@@ -886,8 +929,15 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
                 indices = list(range(doc.page_count))
             else:
                 indices = [int(req.get("index") or 0)]
-        result = run_ocr_on_document(doc, indices, status_callback=_log)
+        result = run_ocr_on_document(
+            doc,
+            indices,
+            status_callback=_log,
+            progress=lambda done, total: _progress(done, total, f"{done + 1}/{total}쪽"),
+            should_cancel=_cancelled,
+        )
         return True, {
+            "stopped": _cancelled(),
             "doc": _summary(doc, True),
             "applied": result.applied,
             "skipped": result.skipped,
@@ -961,8 +1011,14 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
                     rects=rects,
                 )
             )
+        def on_redact_page(done: int, total: int) -> None:
+            _progress(done, total, f"{done + 1}/{total}쪽")
+            if _cancelled():
+                raise _OperationCancelled()
+
+        # 복사본(bytes)에서 작업하고 끝난 뒤에 반영하므로, 중간에 취소해도 문서는 그대로다.
         payload, hit_count, area_count = redact_document_bytes(
-            doc.save_to_bytes(), hits, style=style, status_callback=_log
+            doc.save_to_bytes(), hits, style=style, status_callback=_log, progress=on_redact_page
         )
         doc.apply_reduced_payload(payload)
         return True, {
@@ -1238,8 +1294,27 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
     raise ValueError(f"지원하지 않는 작업입니다: {op}")
 
 
+def _stdin_reader(requests: "queue.Queue[str | None]") -> None:
+    """stdin 을 따로 읽는다. 취소 요청은 처리 중인 작업이 바로 알아채도록 표시만 하고, 나머지는 순서대로 큐에 쌓는다."""
+    try:
+        for line in sys.stdin:
+            text = line.strip()
+            if not text:
+                continue
+            if '"cancel"' in text:
+                try:
+                    if json.loads(text).get("op") == "cancel":
+                        _cancel_event.set()
+                        continue
+                except json.JSONDecodeError:
+                    pass
+            requests.put(text)
+    finally:
+        requests.put(None)
+
+
 def main() -> int:
-    global _active_request_id
+    global _active_request_id, _active_request_op
     configure_mupdf_messages()
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -1249,10 +1324,12 @@ def main() -> int:
 
     doc = PdfDocument()
     opened = False
-    for line in sys.stdin:
-        text = line.strip()
-        if not text:
-            continue
+    requests: "queue.Queue[str | None]" = queue.Queue()
+    threading.Thread(target=_stdin_reader, args=(requests,), daemon=True).start()
+    while True:
+        text = requests.get()
+        if text is None:
+            break
         try:
             req = json.loads(text)
         except json.JSONDecodeError:
@@ -1260,10 +1337,14 @@ def main() -> int:
             continue
         request_id = req.get("id")
         _active_request_id = request_id
+        _active_request_op = str(req.get("op") or "")
+        _cancel_event.clear()
         try:
             opened, result = _handle(doc, opened, req)
             # 결과에 "id" 키가 있어도 요청 번호를 덮어쓰지 못하게 마지막에 둔다(덮이면 응답이 영영 안 맞는다).
             _write({**result, "id": request_id, "ok": True})
+        except _OperationCancelled:
+            _write({"id": request_id, "ok": True, "stopped": True})
         except PdfPasswordRequired:
             _write(
                 {

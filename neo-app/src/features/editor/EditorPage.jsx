@@ -33,6 +33,27 @@ const MAX_ZOOM = 5;
 const ZOOM_STEP = 1.1;
 const ZOOM_PRESETS = [25, 50, 75, 100, 125, 150, 200, 250, 300, 350, 400, 500];
 
+/**
+ * 하단 막대의 왼쪽 칸 너비(px) = 왼쪽 탭(44) + 썸네일 패널(256). 패널을 접어도 이 폭을 비워 두어 오른쪽 단추가 움직이지 않는다.
+ * 단추 줄(약 670) + 좌우 여백이 한 줄로 유지되는 너비가 FOOTER_CONTROLS_MIN_WIDTH 이고,
+ * 창은 이 둘의 합보다 좁아지지 않는다.
+ */
+const SIDE_FOOTER_WIDTH = 300;
+const FOOTER_CONTROLS_MIN_WIDTH = 690;
+const MIN_CONTENT_WIDTH = SIDE_FOOTER_WIDTH + FOOTER_CONTROLS_MIN_WIDTH;
+
+/** 본문 가운데 진행 안내에 보여 줄 "3 / 20" 과 처리 중인 대상 이름. */
+function progressDetail(progress) {
+  if (!progress.total) return { count: '', name: progress.note || '' };
+  if (progress.op === 'insert') {
+    return {
+      count: `${Math.min(progress.current + 1, progress.total)} / ${progress.total}`,
+      name: progress.label || '',
+    };
+  }
+  return { count: progress.label || `${progress.current} / ${progress.total}`, name: '' };
+}
+
 const barBtnClass =
   'inline-flex h-[22px] w-6 shrink-0 items-center justify-center rounded border border-slate-300 bg-white text-[12px] text-slate-700 hover:bg-slate-50 disabled:opacity-40';
 const fitBtnClass =
@@ -161,14 +182,12 @@ export default function EditorPage({
   const [markups, setMarkups] = useState(/** @type {any[] | null} */ (null));
   const [markupTabRequest, setMarkupTabRequest] = useState(0);
   const [busy, setBusy] = useState('');
+  // 파일 추가·이미지 저장처럼 오래 걸리는 작업의 진행 상황: { op, title, label, current, total, blocking, cancelling, at }
+  const [progress, setProgress] = useState(/** @type {any} */ (null));
   const [error, setError] = useState('');
   const [toast, setToast] = useState(/** @type {{ message: string, type: 'error' | 'success' | 'info' | 'warning' } | null} */ (null));
-  // 원본 하단 "터미널": 작업 시작 시 열리고, 엔진 진행 로그가 쌓인다.
+  // 하단 "터미널": 오래 걸리는 작업의 세부 진행 로그가 쌓인다. 진행 안내의 [세부진행상황 보기] 로 연다.
   const [terminal, setTerminal] = useState({ open: false, expanded: true, lines: /** @type {string[]} */ ([]) });
-
-  const startTerminal = useCallback((title) => {
-    setTerminal({ open: true, expanded: true, lines: [`> ${title}`] });
-  }, []);
 
   const appendTerminal = useCallback((line) => {
     setTerminal((prev) => ({ ...prev, lines: [...prev.lines, line] }));
@@ -183,11 +202,71 @@ export default function EditorPage({
     const subscribe = window.frame?.onPdfLog;
     if (typeof subscribe !== 'function') return undefined;
     const myScope = engineScope(tabKey);
-    return subscribe((/** @type {{ message?: string, windowId?: string }} */ payload) => {
+    return subscribe((/** @type {{ message?: string, windowId?: string, progress?: any }} */ payload) => {
       // 다른 문서 창/탭의 엔진 로그는 이 터미널에 섞지 않는다.
-      if (payload?.message && payload.windowId === myScope) appendTerminal(payload.message);
+      if (payload?.windowId !== myScope) return;
+      if (payload.message) {
+        appendTerminal(payload.message);
+        // 쪽·파일 수를 아직 모르는 단계(준비 중 등)에서는 최근 로그를 안내 카드에 보여 준다.
+        setProgress((prev) => (prev ? { ...prev, note: String(payload.message).trim() } : prev));
+      }
+      const p = payload.progress;
+      if (!p) return;
+      if (p.done) {
+        setProgress((prev) => (prev && prev.op === p.op ? null : prev));
+        return;
+      }
+      // 시작해 둔 작업(withProgress)의 진행만 갱신한다. 대화상자(병합 등)가 일으킨 진행은 그 대화상자가 맡는다.
+      setProgress((prev) =>
+        prev && prev.op === p.op
+          ? {
+              ...prev,
+              current: p.current,
+              total: p.total,
+              label: p.label,
+              // 첫 진행 알림이 와야(= 파일 선택·폴더 선택 창이 닫히고 실제 작업이 시작돼야) 본문을 흐리게 한다.
+              blocking: true,
+            }
+          : prev,
+      );
+      // 이 작업들은 엔진이 따로 로그를 남기지 않으므로 진행 알림을 터미널에도 적는다.
+      if (p.label && (p.op === 'insert' || p.op === 'exportImages' || p.op === 'exportPagesImages')) {
+        appendTerminal(p.op === 'insert' ? `(${Math.min(p.current + 1, p.total)}/${p.total}) ${p.label}` : p.label);
+      }
     });
   }, [appendTerminal, tabKey]);
+
+  const cancelRequestedRef = useRef(false);
+
+  /** 오래 걸리는 작업을 진행 표시와 함께 실행한다. 끝나면(결과 화면 반영까지) 표시를 지운다. */
+  async function withProgress(meta, run) {
+    cancelRequestedRef.current = false;
+    // immediate: 파일·폴더 선택 창이 없는 작업은 시작하자마자 본문을 흐리게 하고 안내를 보여 준다.
+    setProgress({
+      op: meta.op,
+      title: meta.title,
+      label: '',
+      note: '',
+      current: 0,
+      total: 0,
+      blocking: Boolean(meta.immediate),
+      cancelling: false,
+      at: meta.at ?? 0,
+    });
+    setTerminal((prev) => ({ ...prev, lines: [`> ${meta.title}`] }));
+    try {
+      return await run();
+    } finally {
+      setProgress(null);
+    }
+  }
+
+  /** 진행 중인 작업을 멈추게 한다. 엔진이 다음 파일/쪽 사이에서 멈추고, 그때까지 한 것은 남는다. */
+  function cancelProgress() {
+    cancelRequestedRef.current = true;
+    setProgress((prev) => (prev && !prev.cancelling ? { ...prev, cancelling: true } : prev));
+    void api('pdf.cancel', {}).catch(() => {});
+  }
 
   // 넘어온 파일(?open= 또는 새 탭으로 연 파일)을 이 탭의 엔진으로 연다.
   useEffect(() => {
@@ -724,12 +803,22 @@ export default function EditorPage({
     }
   }
 
+  /** 취소로 중간에 멈췄다면 알려 준다 (그때까지 추가된 것은 남아 있고 되돌리기로 한 번에 취소할 수 있다). */
+  function noticeStopped(result) {
+    if (result?.stopped) {
+      setToast({ message: `취소했습니다. ${result.added ?? 0}쪽까지 추가되었고, Ctrl+Z 로 되돌릴 수 있습니다.`, type: 'info' });
+    }
+  }
+
   async function insertFiles() {
     setError('');
     try {
-      const result = await api('pdf.insert', { index: pageIndex + 1 });
-      if (result.canceled) return;
-      await applyDocResult(result, pageIndex);
+      await withProgress({ op: 'insert', title: '파일 추가 중', at: pageIndex + 1 }, async () => {
+        const result = await api('pdf.insert', { index: pageIndex + 1 });
+        if (result.canceled) return;
+        await applyDocResult(result, pageIndex);
+        noticeStopped(result);
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : '파일을 추가하지 못했습니다.');
     }
@@ -855,19 +944,32 @@ export default function EditorPage({
         }
         // HWP 파일을 자동 변환
         if (hwpFiles.length) {
-          setBusy(`한글 문서 변환 중 (${hwpFiles.length}개)`);
           try {
             const convertedPdfs = [];
-            for (const hwpPath of hwpFiles) {
-              const result = await api('pdf.hwpConvertQuick', { source: hwpPath });
-              convertedPdfs.push(result.path);
+            let stopped = false;
+            await withProgress({ op: 'hwpConvert', title: '한글 문서 변환 중', immediate: true }, async () => {
+              for (let k = 0; k < hwpFiles.length; k += 1) {
+                // 한글 변환은 중간에 끊을 수 없어서, 취소는 지금 파일이 끝난 뒤 다음 파일부터 멈춘다.
+                if (cancelRequestedRef.current) {
+                  stopped = true;
+                  break;
+                }
+                const hwpPath = hwpFiles[k];
+                const name = hwpPath.split(/[\\/]/).pop();
+                setProgress((prev) => (prev ? { ...prev, current: k, total: hwpFiles.length, label: `${k + 1} / ${hwpFiles.length}`, note: name } : prev));
+                appendTerminal(`(${k + 1}/${hwpFiles.length}) ${name}`);
+                const result = await api('pdf.hwpConvertQuick', { source: hwpPath });
+                convertedPdfs.push(result.path);
+              }
+            });
+            if (stopped) {
+              setToast({ message: '취소했습니다. 파일은 추가되지 않았습니다.', type: 'info' });
+              return;
             }
-            setBusy('');
             // 변환된 PDF + 나머지 파일을 모두 추가
             action.paths = [...convertedPdfs, ...otherFiles];
             if (!action.paths.length) return;
           } catch (err) {
-            setBusy('');
             const message = err instanceof Error ? err.message : '한글 문서 변환에 실패했습니다.';
             setError(message);
             return;
@@ -897,12 +999,15 @@ export default function EditorPage({
           return;
         }
         case 'insertFiles': {
-          const result = await api('pdf.insert', {
-            index: targetIndex,
-            paths: Array.isArray(action.paths) ? action.paths : undefined,
+          await withProgress({ op: 'insert', title: '파일 추가 중', at: targetIndex }, async () => {
+            const result = await api('pdf.insert', {
+              index: targetIndex,
+              paths: Array.isArray(action.paths) ? action.paths : undefined,
+            });
+            if (result.canceled) return;
+            await applyDocResult(result, targetIndex);
+            noticeStopped(result);
           });
-          if (result.canceled) return;
-          await applyDocResult(result, targetIndex);
           return;
         }
         case 'copy': {
@@ -996,20 +1101,23 @@ export default function EditorPage({
   async function runExportImages(scope, options) {
     setExportScope(null);
     setError('');
-    setBusy('이미지로 저장 중');
     try {
-      if (scope?.indices) {
-        const result = await api('pdf.exportPagesImages', { indices: scope.indices, options });
-        if (result.canceled) return;
-        void dialog.alert({ title: '이미지로 저장', body: `${result.count}개 이미지를 저장했습니다.\n${result.dir}` });
-      } else {
-        // 완료 후 폴더 열기 질문은 Electron 쪽 대화상자에서 처리한다.
-        await api('pdf.exportImages', { options });
-      }
+      const exportOp = scope?.indices ? 'exportPagesImages' : 'exportImages';
+      await withProgress({ op: exportOp, title: '이미지 저장 중' }, async () => {
+        if (scope?.indices) {
+          const result = await api('pdf.exportPagesImages', { indices: scope.indices, options });
+          if (result.canceled) return;
+          void dialog.alert({
+            title: '이미지로 저장',
+            body: `${result.stopped ? `작업을 취소했습니다. ${result.count}개 이미지가 저장되어 있습니다.` : `${result.count}개 이미지를 저장했습니다.`}\n${result.dir}`,
+          });
+        } else {
+          // 완료 후 폴더 열기 질문은 Electron 쪽 대화상자에서 처리한다.
+          await api('pdf.exportImages', { options });
+        }
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : '이미지로 저장하지 못했습니다.');
-    } finally {
-      setBusy('');
     }
   }
 
@@ -1100,17 +1208,19 @@ export default function EditorPage({
   async function applyReduceSize(options) {
     setReduceOpen(false);
     setError('');
-    startTerminal('용량 줄이기 작업을 시작합니다...');
     try {
-      setBusy('용량을 줄이는 중');
-      const result = await api('pdf.reduceSize', options);
-      setBusy('');
-      await applyDocResult(result, pageIndex);
-      const sizeText = `${formatMb(result.before || 0)} → ${formatMb(result.after || 0)}`;
-      appendTerminal(`완료: ${sizeText}`);
-      void dialog.alert({ title: '용량 줄이기', body: sizeText });
+      await withProgress({ op: 'reduceSize', title: '용량 줄이는 중', immediate: true }, async () => {
+        const result = await api('pdf.reduceSize', options);
+        if (result.stopped) {
+          setToast({ message: '용량 줄이기를 취소했습니다. 문서는 그대로입니다.', type: 'info' });
+          return;
+        }
+        await applyDocResult(result, pageIndex);
+        const sizeText = `${formatMb(result.before || 0)} → ${formatMb(result.after || 0)}`;
+        appendTerminal(`완료: ${sizeText}`);
+        void dialog.alert({ title: '용량 줄이기', body: sizeText });
+      });
     } catch (err) {
-      setBusy('');
       const message = err instanceof Error ? err.message : '용량을 줄이지 못했습니다.';
       appendTerminal(`오류: ${message}`);
       setError(message);
@@ -1150,25 +1260,26 @@ export default function EditorPage({
 
   async function runOcr(mode, indices) {
     setError('');
-    startTerminal('OCR을 시작합니다...');
     try {
-      const targets = mode === 'all' ? doc.pageCount : mode === 'selected' ? (indices?.length ? indices.length : 1) : 1;
-      setBusy(`OCR 중 · ${targets}페이지 인식 (시간이 걸릴 수 있습니다)`);
       const body =
         mode === 'all'
           ? { mode: 'all' }
           : mode === 'selected'
             ? { indices: indices?.length ? indices : [pageIndex] }
             : { mode: 'current', index: pageIndex };
-      const result = await api('pdf.ocr', body);
-      setBusy('');
-      await applyDocResult(result, pageIndex);
-      appendTerminal(
-        `완료: ${result.applied}페이지, ${result.lines}줄 (건너뜀 ${result.skipped}, 실패 ${result.failed})`,
-      );
-      void dialog.alert({ title: 'OCR', body: ocrResultMessage(result) });
+      await withProgress({ op: 'ocr', title: 'OCR 중', immediate: true }, async () => {
+        const result = await api('pdf.ocr', body);
+        await applyDocResult(result, pageIndex);
+        appendTerminal(
+          `완료: ${result.applied}페이지, ${result.lines}줄 (건너뜀 ${result.skipped}, 실패 ${result.failed})`,
+        );
+        if (result.stopped) {
+          setToast({ message: `OCR을 취소했습니다. ${result.applied}쪽까지 인식되었고, Ctrl+Z 로 되돌릴 수 있습니다.`, type: 'info' });
+        } else {
+          void dialog.alert({ title: 'OCR', body: ocrResultMessage(result) });
+        }
+      });
     } catch (err) {
-      setBusy('');
       const message = err instanceof Error ? err.message : 'OCR을 하지 못했습니다.';
       appendTerminal(`오류: ${message}`);
       setError(message);
@@ -1244,19 +1355,21 @@ export default function EditorPage({
     closePiiDialog();
     setError('');
     try {
-      startTerminal('개인정보 제거를 시작합니다...');
-      setBusy('개인정보 제거 중');
-      const result = await api('pdf.piiRedact', { hits, style });
-      setBusy('');
-      await applyDocResult(result, pageIndex);
-      const summary = countText(result.hitCount, result.areaCount);
-      appendTerminal(`완료: ${summary}를 제거했습니다.`);
-      void dialog.alert({
-        title: '개인정보 제거',
-        body: `${summary}의 원본 내용을 제거했습니다.\n저장 전에 결과를 확인하세요.`,
+      await withProgress({ op: 'piiRedact', title: '개인정보 제거 중', immediate: true }, async () => {
+        const result = await api('pdf.piiRedact', { hits, style });
+        if (result.stopped) {
+          setToast({ message: '개인정보 제거를 취소했습니다. 문서는 그대로입니다.', type: 'info' });
+          return;
+        }
+        await applyDocResult(result, pageIndex);
+        const summary = countText(result.hitCount, result.areaCount);
+        appendTerminal(`완료: ${summary}를 제거했습니다.`);
+        void dialog.alert({
+          title: '개인정보 제거',
+          body: `${summary}의 원본 내용을 제거했습니다.\n저장 전에 결과를 확인하세요.`,
+        });
       });
     } catch (err) {
-      setBusy('');
       const message = err instanceof Error ? err.message : '개인정보를 제거하지 못했습니다.';
       appendTerminal(`오류: ${message}`);
       setError(message);
@@ -1623,6 +1736,12 @@ export default function EditorPage({
     });
   }, [onDocChange, tabKey, doc.open, doc.name, doc.path, doc.modified]);
 
+  // 하단 단추가 접히기 직전에서 창 줄이기가 멈추도록 창 최소 너비를 알린다. 값은 항상 같다(왼쪽 칸 고정 + 단추 줄).
+  useEffect(() => {
+    if (!active || fullscreen) return;
+    window.frame?.setMinContentWidth?.(MIN_CONTENT_WIDTH);
+  }, [active, fullscreen]);
+
   // 활성 탭의 쪽 보기 방식을 메뉴(보기 > 두 쪽씩 보기)에 알린다.
   useEffect(() => {
     if (!active) return;
@@ -1630,12 +1749,34 @@ export default function EditorPage({
   }, [facing, active]);
 
   // 한쪽씩/두쪽씩 보기 전환. 하단 토글·메뉴·Ctrl+2 가 모두 이 함수를 쓴다.
+  // 이미 그린 쪽 그림은 그대로 쓰고(다시 그리지 않음), 보던 쪽이 화면에서 같은 자리에 오도록 스크롤만 맞춘다.
+  // 모자란 쪽은 위의 근처 쪽 채우기 effect 가 조용히 채운다.
+  const facingAnchorRef = useRef(null);
   function applyFacing(next) {
     if (next === facing) return;
+    const view = viewRef.current;
+    const target = next ? pageIndex - (pageIndex % 2) : pageIndex;
+    const el = view?.querySelector(`[data-page="${target}"]`);
+    facingAnchorRef.current = view && el
+      ? { index: target, offset: el.getBoundingClientRect().top - view.getBoundingClientRect().top }
+      : { index: target, offset: null };
     setFacing(next);
-    const token = ++requestId.current;
-    void loadPage(pageIndex, zoomRef.current, token, next);
+    if (target !== pageIndex) setPageIndex(target);
   }
+  useLayoutEffect(() => {
+    const anchor = facingAnchorRef.current;
+    if (!anchor) return;
+    facingAnchorRef.current = null;
+    const view = viewRef.current;
+    const el = view?.querySelector(`[data-page="${anchor.index}"]`);
+    if (!view || !el) return;
+    if (anchor.offset == null) {
+      scrollToPage(anchor.index);
+      return;
+    }
+    const now = el.getBoundingClientRect().top - view.getBoundingClientRect().top;
+    view.scrollTop += now - anchor.offset;
+  }, [facing]);
 
   const zoomPercent = Math.round(zoom * 100);
   const canNav = doc.open && doc.pageCount > 0;
@@ -1649,6 +1790,11 @@ export default function EditorPage({
       pageRows.push(Array.from({ length: Math.min(step, doc.pageCount - start) }, (_, k) => start + k));
     }
   }
+  // 파일 추가 중에는 들어올 자리에 아직 안 온 파일 수만큼 빈 카드를 보여 준다.
+  const pendingInsert =
+    progress?.op === 'insert' && progress.total > 0
+      ? { at: progress.at, count: Math.max(0, progress.total - progress.current) }
+      : null;
   const statusHint = busy
     ? busy
     : doc.open
@@ -1667,7 +1813,7 @@ export default function EditorPage({
         </>
       )}
 
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         {(!fullscreen || fullscreenPanelOpen) && <PageSide
           docOpen={doc.open}
           pageIndex={pageIndex}
@@ -1678,6 +1824,7 @@ export default function EditorPage({
           clipboardCount={clipboardCount}
           onSelectPage={(index) => void goTo(index)}
           onThumbAction={(action) => void handleThumbAction(action)}
+          pendingInsert={pendingInsert}
           collapsed={panelCollapsed}
           onCollapsedChange={setPanelCollapsed}
         />
@@ -1817,7 +1964,9 @@ export default function EditorPage({
                 <div className="max-w-md text-center">
                   <h1 className="m-0 text-lg font-semibold text-slate-800">빈 문서</h1>
                   <p className="mt-2 text-sm leading-relaxed text-slate-500">
-                    병합할 이미지나 PDF 를 좌측 썸네일 창으로 드래그 앤 드롭 해주세요
+                    병합할 PDF, 이미지나 한글(HWP, HWPX) 파일을
+                    <br />
+                    좌측 썸네일 창으로 드래그 앤 드롭 해주세요
                   </p>
                   {busy ? <p className="mt-3 text-sm text-slate-500">{busy}</p> : null}
                 </div>
@@ -1825,175 +1974,236 @@ export default function EditorPage({
             )}
           </main>
 
-          <TerminalPanel
-            open={terminal.open}
-            expanded={terminal.expanded}
-            lines={terminal.lines}
-            onToggleExpanded={() => setTerminal((prev) => ({ ...prev, expanded: !prev.expanded }))}
-            onClose={() => setTerminal((prev) => ({ ...prev, open: false }))}
-          />
+          {/* 진행 안내(z-40) 위로 올려서, 작업 중에도 [세부진행상황 보기] 로 연 터미널을 읽고 접을 수 있게 한다. */}
+          <div className="relative z-50">
+            <TerminalPanel
+              open={terminal.open}
+              expanded={terminal.expanded}
+              lines={terminal.lines}
+              onToggleExpanded={() => setTerminal((prev) => ({ ...prev, expanded: !prev.expanded }))}
+              onClose={() => setTerminal((prev) => ({ ...prev, open: false }))}
+            />
+          </div>
 
-          <footer className="flex h-9 shrink-0 items-center gap-1.5 border-t border-app-border bg-[#f7f7f7] px-2">
-            <span className="mr-1 min-w-0 max-w-[28%] truncate text-[11px] text-slate-500" title={statusHint}>
-              {statusHint}
-            </span>
-            <div className="mx-auto flex items-center gap-1">
-              <button
-                type="button"
-                className={barBtnClass}
-                title="맨 앞 페이지"
-                disabled={!canNav || pageIndex <= 0}
-                onClick={() => void goTo(0)}
-              >
-                <NavIcon kind="first" />
-              </button>
-              <button
-                type="button"
-                className={barBtnClass}
-                title="이전 페이지"
-                disabled={!canNav || pageIndex <= 0}
-                onClick={() => void goTo(pageIndex - pageStep)}
-              >
-                <NavIcon kind="prev" />
-              </button>
-              <input
-                type="text"
-                inputMode="numeric"
-                aria-label="페이지"
-                disabled={!canNav}
-                defaultValue={doc.open ? String(pageIndex + 1) : '1'}
-                key={`page-${doc.open ? pageIndex : 'x'}-${doc.pageCount}`}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.currentTarget.blur();
-                    commitPageInput(event.currentTarget.value);
-                  }
-                }}
-                onBlur={(event) => commitPageInput(event.currentTarget.value)}
-                className="h-[22px] w-16 rounded border border-slate-300 bg-white px-1 text-center text-[12px] text-slate-700 outline-none focus:border-app-accent disabled:opacity-50"
-              />
-              <span className="px-0.5 text-[12px] text-slate-600">/ {doc.open ? doc.pageCount : 0}</span>
-              <button
-                type="button"
-                className={barBtnClass}
-                title="다음 페이지"
-                disabled={!canNav || pageIndex + pageStep >= doc.pageCount}
-                onClick={() => void goTo(pageIndex + pageStep)}
-              >
-                <NavIcon kind="next" />
-              </button>
-              <button
-                type="button"
-                className={barBtnClass}
-                title="마지막 페이지"
-                disabled={!canNav || pageIndex + pageStep >= doc.pageCount}
-                onClick={() => void goTo(doc.pageCount - 1)}
-              >
-                <NavIcon kind="last" />
-              </button>
-
-              <span className="mx-1 h-4 w-px bg-slate-300" />
-
-              <button type="button" className={fitBtnClass} title="너비 맞추기" disabled={!doc.open} onClick={() => fit('width')}>
-                너비
-              </button>
-              <button type="button" className={fitBtnClass} title="높이 맞추기" disabled={!doc.open} onClick={() => fit('height')}>
-                높이
-              </button>
-              <button type="button" className={fitBtnClass} title="화면 맞추기" disabled={!doc.open} onClick={() => fit('page')}>
-                화면
-              </button>
-
-              <div role="group" aria-label="쪽 보기 방식" className="ml-1 inline-flex shrink-0 overflow-hidden rounded border border-slate-300">
-                {[
-                  { value: false, label: '1쪽', title: '한 쪽씩 보기' },
-                  { value: true, label: '2쪽', title: '두 쪽씩 보기 (Ctrl+2)' },
-                ].map((mode) => (
+          {progress?.blocking ? (
+            <div
+              data-progress-card="1"
+              className="absolute inset-0 z-40 flex cursor-progress items-center justify-center bg-white/70"
+            >
+              <div className="w-[320px] max-w-[90%] rounded-lg border border-app-border bg-white px-5 py-4 text-center shadow-lg">
+                <div className="text-sm font-medium text-slate-800">
+                  {progress.cancelling ? `${progress.title} - 취소하는 중...` : progress.title}
+                </div>
+                <div className="mt-1 flex h-4 items-center justify-center gap-2 text-xs text-slate-500">
+                  <span className="shrink-0">{progressDetail(progress).count}</span>
+                  <span className="min-w-0 truncate" title={progressDetail(progress).name}>
+                    {progressDetail(progress).name}
+                  </span>
+                </div>
+                <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                  <div
+                    data-progress-bar="1"
+                    className={`h-full bg-app-accent transition-[width] duration-200 ${progress.total ? '' : 'animate-pulse'}`}
+                    style={{ width: progress.total ? `${Math.min(100, Math.round((progress.current / progress.total) * 100))}%` : '30%' }}
+                  />
+                </div>
+                <div className="mt-3 flex items-center justify-center gap-2">
                   <button
-                    key={mode.label}
                     type="button"
-                    title={mode.title}
-                    aria-pressed={facing === mode.value}
-                    data-facing-toggle={mode.value ? 'two' : 'one'}
-                    disabled={!doc.open}
-                    onClick={() => applyFacing(mode.value)}
-                    className={`inline-flex h-[20px] w-9 items-center justify-center text-[11px] font-medium disabled:opacity-40 ${
-                      facing === mode.value ? 'bg-app-accent text-white' : 'bg-white text-slate-700 hover:bg-slate-50'
-                    }`}
+                    data-progress-cancel="1"
+                    className="h-7 rounded border border-slate-300 bg-white px-3 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                    disabled={progress.cancelling}
+                    onClick={cancelProgress}
                   >
-                    {mode.label}
+                    취소
                   </button>
-                ))}
+                  <button
+                    type="button"
+                    className="h-7 rounded px-2 text-xs text-slate-500 hover:bg-slate-100"
+                    onClick={() => setTerminal((prev) => ({ ...prev, open: true }))}
+                  >
+                    세부진행상황 보기
+                  </button>
+                </div>
               </div>
-
-              <button
-                type="button"
-                className={barBtnClass}
-                title="축소"
-                disabled={!doc.open || zoom <= MIN_ZOOM}
-                onClick={() => void changeZoom(zoom / ZOOM_STEP)}
-              >
-                −
-              </button>
-              <input
-                type="range"
-                min={MIN_ZOOM * 100}
-                max={MAX_ZOOM * 100}
-                step={1}
-                value={zoomPercent}
-                disabled={!doc.open}
-                aria-label="확대/축소"
-                onChange={(event) => void changeZoom(Number(event.target.value) / 100)}
-                className="h-[22px] w-[88px] disabled:opacity-40"
-              />
-              <button
-                type="button"
-                className={barBtnClass}
-                title="확대"
-                disabled={!doc.open || zoom >= MAX_ZOOM}
-                onClick={() => void changeZoom(zoom * ZOOM_STEP)}
-              >
-                +
-              </button>
-              <input
-                list="editor-zoom-presets"
-                aria-label="확대 비율"
-                disabled={!doc.open}
-                key={`zoom-${zoomPercent}`}
-                defaultValue={`${zoomPercent}%`}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.currentTarget.blur();
-                    applyZoomPercent(event.currentTarget.value);
-                  }
-                }}
-                onBlur={(event) => applyZoomPercent(event.currentTarget.value)}
-                className="h-[22px] w-[76px] rounded border border-slate-300 bg-white px-1 text-center text-[12px] text-slate-700 outline-none focus:border-app-accent disabled:opacity-50"
-              />
-              <datalist id="editor-zoom-presets">
-                {ZOOM_PRESETS.map((value) => (
-                  <option key={value} value={`${value}%`} />
-                ))}
-              </datalist>
-              <button
-                type="button"
-                className={barBtnClass}
-                title="전체 화면 (F11)"
-                aria-label="전체 화면"
-                data-fullscreen-enter="1"
-                onClick={enterFullscreen}
-              >
-                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M2.5 6V2.5H6" />
-                  <path d="M10 2.5h3.5V6" />
-                  <path d="M13.5 10v3.5H10" />
-                  <path d="M6 13.5H2.5V10" />
-                </svg>
-              </button>
             </div>
-          </footer>
+          ) : null}
         </div>
+        {/* 작업이 도는 동안 좌측 썸네일·본문 어디도 클릭되지 않게 막는다 (흐림과 안내는 본문 영역에서 보여 준다). */}
+        {progress?.blocking ? (
+          <div data-progress-block="1" className="absolute inset-0 z-30 cursor-progress" aria-hidden="true" />
+        ) : null}
       </div>
+
+      {/* 하단 막대는 창 전체 너비를 쓴다. 왼쪽 칸은 (왼쪽 탭 + 썸네일 패널) 너비로 고정해 두고 문서 이름·진행 상태를 한 줄로 보여 주며,
+          넘치면 … 로 줄인다. 패널을 접고 펴도 칸 너비가 같아서, 오른쪽 단추들은 움직이지 않고 항상 남은 너비의 가운데에 있다. */}
+      <footer className="flex h-9 shrink-0 items-center border-t border-app-border bg-[#f7f7f7]">
+        <div className="flex h-full shrink-0 items-center px-2" style={{ width: SIDE_FOOTER_WIDTH }}>
+          <span
+            className="block min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-slate-500"
+            title={statusHint}
+            data-status-hint="1"
+          >
+            {statusHint}
+          </span>
+        </div>
+        <div className="flex h-full min-w-0 flex-1 items-center justify-center px-2">
+          <div className="flex shrink-0 items-center gap-1 whitespace-nowrap" data-footer-controls="1">
+            <button
+              type="button"
+              className={barBtnClass}
+              title="맨 앞 페이지"
+              disabled={!canNav || pageIndex <= 0}
+              onClick={() => void goTo(0)}
+            >
+              <NavIcon kind="first" />
+            </button>
+            <button
+              type="button"
+              className={barBtnClass}
+              title="이전 페이지"
+              disabled={!canNav || pageIndex <= 0}
+              onClick={() => void goTo(pageIndex - pageStep)}
+            >
+              <NavIcon kind="prev" />
+            </button>
+            <input
+              type="text"
+              inputMode="numeric"
+              aria-label="페이지"
+              disabled={!canNav}
+              defaultValue={doc.open ? String(pageIndex + 1) : '1'}
+              key={`page-${doc.open ? pageIndex : 'x'}-${doc.pageCount}`}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.currentTarget.blur();
+                  commitPageInput(event.currentTarget.value);
+                }
+              }}
+              onBlur={(event) => commitPageInput(event.currentTarget.value)}
+              className="h-[22px] w-16 shrink-0 rounded border border-slate-300 bg-white px-1 text-center text-[12px] text-slate-700 outline-none focus:border-app-accent disabled:opacity-50"
+            />
+            <span className="px-0.5 text-[12px] text-slate-600">/ {doc.open ? doc.pageCount : 0}</span>
+            <button
+              type="button"
+              className={barBtnClass}
+              title="다음 페이지"
+              disabled={!canNav || pageIndex + pageStep >= doc.pageCount}
+              onClick={() => void goTo(pageIndex + pageStep)}
+            >
+              <NavIcon kind="next" />
+            </button>
+            <button
+              type="button"
+              className={barBtnClass}
+              title="마지막 페이지"
+              disabled={!canNav || pageIndex + pageStep >= doc.pageCount}
+              onClick={() => void goTo(doc.pageCount - 1)}
+            >
+              <NavIcon kind="last" />
+            </button>
+
+            <span className="mx-1 h-4 w-px bg-slate-300" />
+
+            <button type="button" className={fitBtnClass} title="너비 맞추기" disabled={!doc.open} onClick={() => fit('width')}>
+              너비
+            </button>
+            <button type="button" className={fitBtnClass} title="높이 맞추기" disabled={!doc.open} onClick={() => fit('height')}>
+              높이
+            </button>
+            <button type="button" className={fitBtnClass} title="화면 맞추기" disabled={!doc.open} onClick={() => fit('page')}>
+              화면
+            </button>
+
+            <div role="group" aria-label="쪽 보기 방식" className="ml-1 inline-flex shrink-0 overflow-hidden rounded border border-slate-300">
+              {[
+                { value: false, label: '1쪽', title: '한 쪽씩 보기' },
+                { value: true, label: '2쪽', title: '두 쪽씩 보기 (Ctrl+2)' },
+              ].map((mode) => (
+                <button
+                  key={mode.label}
+                  type="button"
+                  title={mode.title}
+                  aria-pressed={facing === mode.value}
+                  data-facing-toggle={mode.value ? 'two' : 'one'}
+                  disabled={!doc.open}
+                  onClick={() => applyFacing(mode.value)}
+                  className={`inline-flex h-[20px] w-9 items-center justify-center text-[11px] font-medium disabled:opacity-40 ${
+                    facing === mode.value ? 'bg-app-accent text-white' : 'bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  {mode.label}
+                </button>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              className={barBtnClass}
+              title="축소"
+              disabled={!doc.open || zoom <= MIN_ZOOM}
+              onClick={() => void changeZoom(zoom / ZOOM_STEP)}
+            >
+              −
+            </button>
+            <input
+              type="range"
+              min={MIN_ZOOM * 100}
+              max={MAX_ZOOM * 100}
+              step={1}
+              value={zoomPercent}
+              disabled={!doc.open}
+              aria-label="확대/축소"
+              onChange={(event) => void changeZoom(Number(event.target.value) / 100)}
+              className="h-[22px] w-[88px] shrink-0 disabled:opacity-40"
+            />
+            <button
+              type="button"
+              className={barBtnClass}
+              title="확대"
+              disabled={!doc.open || zoom >= MAX_ZOOM}
+              onClick={() => void changeZoom(zoom * ZOOM_STEP)}
+            >
+              +
+            </button>
+            <input
+              list="editor-zoom-presets"
+              aria-label="확대 비율"
+              disabled={!doc.open}
+              key={`zoom-${zoomPercent}`}
+              defaultValue={`${zoomPercent}%`}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.currentTarget.blur();
+                  applyZoomPercent(event.currentTarget.value);
+                }
+              }}
+              onBlur={(event) => applyZoomPercent(event.currentTarget.value)}
+              className="h-[22px] w-[76px] shrink-0 rounded border border-slate-300 bg-white px-1 text-center text-[12px] text-slate-700 outline-none focus:border-app-accent disabled:opacity-50"
+            />
+            <datalist id="editor-zoom-presets">
+              {ZOOM_PRESETS.map((value) => (
+                <option key={value} value={`${value}%`} />
+              ))}
+            </datalist>
+            <button
+              type="button"
+              className={barBtnClass}
+              title="전체 화면 (F11)"
+              aria-label="전체 화면"
+              data-fullscreen-enter="1"
+              onClick={enterFullscreen}
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M2.5 6V2.5H6" />
+                <path d="M10 2.5h3.5V6" />
+                <path d="M13.5 10v3.5H10" />
+                <path d="M6 13.5H2.5V10" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </footer>
 
       <PdfConvertDialog
         open={convertOpen}
