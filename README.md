@@ -88,7 +88,7 @@ npm run neo:stop      # 정리 후 종료
 - **개인정보 제거**: 한국어 PII(주민번호, 전화, 계좌 등) 감지 및 레닥션
 - **비밀번호 설정** / **비밀번호 제거**: PDF 암호 설정/해제
 - **PDF 변환** (기능 메뉴): PDF · 이미지 · 한글 파일을 모아 두 가지 방식으로 처리 (미리보기 지원)
-  - **하나의 PDF로 병합**: 목록 순서대로 PDF 하나로 합침 (암호 PDF 지원)
+  - **하나의 PDF로 병합**: 목록 순서대로 PDF 하나로 합침. PDF 와 이미지를 섞어도 됩니다 (암호 PDF 지원)
   - **개별 변환**: 이미지·한글 파일을 각각 PDF로 저장 (원본과 같은 폴더 또는 지정 폴더)
   - 한글(HWP/HWPX) 변환은 Windows + 한컴 한글 필요
 
@@ -143,7 +143,7 @@ npm run neo:stop      # 정리 후 종료
 | 형식 | 열기 | 추가 | 병합 | 드롭 |
 |------|------|------|------|------|
 | PDF (`.pdf`) | ✓ | ✓ | ✓ | ✓ |
-| PNG, JPEG, BMP, GIF, TIFF, WebP | ✓ | ✓ | - | ✓ |
+| PNG, JPEG, BMP, GIF, TIFF, WebP | ✓ | ✓ | ✓ (이미지 1장 = 1쪽) | ✓ |
 | HWP/HWPX (`.hwp`, `.hwpx`) | ✓ (Windows only) | ✓ (Windows only) | ✓ (Windows only) | ✓ (Windows only) |
 
 > **Windows HWP 변환**: 한컴 한글 2020/2022/2024 설치 필요
