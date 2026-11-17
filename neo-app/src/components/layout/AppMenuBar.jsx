@@ -226,6 +226,8 @@ export default function AppMenuBar() {
     // 용량 줄이기·쪽 번호·서명은 기능 메뉴 맨 위에 둔다 (원래 편집 메뉴에 있던 항목).
     item('reduce', '용량 줄이기...', { disabled: needsDoc, run: () => go('reduce') }),
     item('pageNumber', '쪽 번호 매기기...', { disabled: needsDoc, run: () => go('pageNumber') }),
+    // 쪽 위에 직접 그린다 (펜·연필·형광펜·지우개). 켜진 동안 체크 표시.
+    item('draw', '그리기', { disabled: needsDoc, checked: Boolean(run('getDraw')), run: () => go('draw') }),
     item('signature', '서명 넣기', {
       disabled: needsDoc,
       children: [

@@ -16,6 +16,9 @@ import PiiRemoveDialog from './PiiRemoveDialog.jsx';
 import OcrDialog from './OcrDialog.jsx';
 import TextMarkupLayer from './TextMarkupLayer.jsx';
 import SignatureStampOverlay from './SignatureStampOverlay.jsx';
+import DrawLayer from './draw/DrawLayer.jsx';
+import DrawToolbar from './draw/DrawToolbar.jsx';
+import { hexToRgb01, loadDrawState, saveDrawState } from './draw/drawSettings.js';
 import TerminalPanel from './TerminalPanel.jsx';
 
 const EMPTY_DOC = { open: false, name: '', path: null, pageCount: 0, modified: false };
@@ -244,6 +247,37 @@ export default function EditorPage({
       window.removeEventListener('keydown', onKeyDown, true);
     };
   }, [sigEdit]);
+
+  // 그리기 모드: 켜져 있는 동안 쪽 위에 DrawLayer 가 올라가고, 손을 뗀 획은 PDF 잉크 주석으로 들어간다.
+  const [drawOn, setDrawOn] = useState(false);
+  const [drawState, setDrawState] = useState(loadDrawState);
+  const drawOnRef = useRef(false);
+  drawOnRef.current = drawOn;
+  // 엔진 반영은 순서대로 한 줄로 처리한다 (획이 겹쳐 들어와도 순서가 뒤바뀌지 않게).
+  const inkQueueRef = useRef(/** @type {Promise<void>} */ (Promise.resolve()));
+  const lastInkAtRef = useRef(0);
+  const thumbTimersRef = useRef(/** @type {Record<number, number>} */ ({}));
+  // 앞 획을 뗀 뒤 이 시간 안에 다음 획을 시작하면 되돌리기 한 단계로 묶는다 (글씨 한 자의 여러 획을 한 번에 취소).
+  const INK_GROUP_MS = 800;
+
+  useEffect(() => {
+    saveDrawState(drawState);
+  }, [drawState]);
+
+  // Esc 로 그리기 끝내기. 서명 편집 중에는 서명 쪽 Esc 가 먼저다.
+  useEffect(() => {
+    if (!drawOn || !active) return undefined;
+    function onKeyDown(event) {
+      if (event.key !== 'Escape') return;
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      event.preventDefault();
+      void endDrawing();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawOn, active]);
+
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   // undefined: 대화상자 닫힘 / null: 전체 페이지 / number[]: 선택한 페이지만
   const [piiScope, setPiiScope] = useState(/** @type {undefined | null | number[]} */ (undefined));
@@ -521,6 +555,7 @@ export default function EditorPage({
   async function save() {
     setError('');
     try {
+      await flushInk();
       const saved = doc.path ? await api('pdf.save') : await api('pdf.pickSave');
       if (saved.canceled) return false;
       setDoc(saved.doc);
@@ -535,6 +570,7 @@ export default function EditorPage({
   async function saveAs() {
     setError('');
     try {
+      await flushInk();
       const saved = await api('pdf.pickSave');
       if (saved.canceled) return false;
       setDoc(saved.doc);
@@ -613,6 +649,8 @@ export default function EditorPage({
    * '취소'를 누르거나, 저장을 골랐는데 저장이 취소·실패하면 false.
    */
   async function confirmUnsavedChanges({ title, body, extraLabel }) {
+    // 방금 그린 획이 아직 엔진에 들어가는 중일 수 있다. 끝난 뒤의 수정 여부로 판단한다.
+    await flushInk();
     if (!docRef.current.modified) return true;
     const choice = await dialog.choose({
       title,
@@ -899,6 +937,7 @@ export default function EditorPage({
   async function undoRedo(kind) {
     setError('');
     try {
+      await flushInk();
       const result = await api(kind === 'undo' ? 'pdf.undo' : 'pdf.redo');
       if (!result.changed) {
         void dialog.alert({ title: kind === 'undo' ? '되돌리기' : '재실행', body: '더 이상 할 수 없습니다.' });
@@ -1169,6 +1208,88 @@ export default function EditorPage({
       setError(message);
     }
   }
+
+  // 진행 중인 그리기 반영이 모두 끝날 때까지 기다린다. 저장·되돌리기·닫기 전에 부른다.
+  function flushInk() {
+    return inkQueueRef.current;
+  }
+
+  function scheduleInkThumb(index) {
+    window.clearTimeout(thumbTimersRef.current[index]);
+    thumbTimersRef.current[index] = window.setTimeout(() => {
+      api('pdf.render', { index, thumb: true })
+        .then((thumb) => {
+          setThumbs((prev) => {
+            if (index >= prev.length) return prev;
+            const copy = prev.slice();
+            copy[index] = `data:image/png;base64,${thumb.png}`;
+            return copy;
+          });
+        })
+        .catch(() => {});
+    }, 700);
+  }
+
+  // 그린 쪽 하나만 다시 그린다. (형광펜·밑줄처럼 주변 쪽까지 새로 그리면 획마다 너무 느리다.)
+  async function refreshInkPage(nextDoc, index) {
+    setDoc(nextDoc);
+    docRef.current = nextDoc; // 렌더 전에 저장 여부 확인이 읽어도 최신이게
+    const z = zoomRef.current;
+    const image = await api('pdf.render', { index, zoom: z });
+    if (zoomRef.current === z) {
+      commitPages(z, (map) => ({ ...map, [index]: `data:image/png;base64,${image.png}` }));
+    }
+    scheduleInkThumb(index);
+  }
+
+  function commitInk(index, points, style, timing) {
+    const rounded = points.map(([x, y]) => [Math.round(x * 100) / 100, Math.round(y * 100) / 100]);
+    // 앞 획에서 손을 뗀 뒤 곧바로 다음 획을 시작했으면 되돌리기 한 단계로 묶는다.
+    // 판단은 순서가 섞이지 않게 줄에 서기 전에 한다. (엔진도 그 사이 다른 편집이 있었으면 묶지 않는다.)
+    const joined = timing.startedAt - lastInkAtRef.current < INK_GROUP_MS;
+    lastInkAtRef.current = timing.endedAt;
+    const job = inkQueueRef.current
+      .then(async () => {
+        const result = await api('pdf.inkAdd', {
+          pageIndex: index,
+          strokes: [rounded],
+          color: hexToRgb01(style.color),
+          width: style.width,
+          opacity: style.opacity,
+          continueGroup: joined,
+        });
+        await refreshInkPage(result.doc, index);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : '그리지 못했습니다.');
+      });
+    inkQueueRef.current = job;
+    return job;
+  }
+
+  async function startDrawing() {
+    if (!docRef.current.open) return;
+    setError('');
+    if (sigEditRef.current) await commitSignatureRef.current?.();
+    setDrawOn(true);
+  }
+
+  async function endDrawing() {
+    await flushInk();
+    setDrawOn(false);
+  }
+
+  function toggleDrawing() {
+    if (drawOnRef.current) void endDrawing();
+    else void startDrawing();
+  }
+
+  useEffect(
+    () => () => {
+      for (const timer of Object.values(thumbTimersRef.current)) window.clearTimeout(timer);
+    },
+    [],
+  );
 
   async function stampSignature(fromClipboard) {
     setError('');
@@ -1450,6 +1571,8 @@ export default function EditorPage({
       reduce: () => setReduceOpen(true),
       pageNumber: () => setPageNumberOpen(true),
       ocr: () => setOcrScope({ indices: null }),
+      draw: () => toggleDrawing(),
+      getDraw: () => drawOnRef.current,
       sigClip: () => void stampSignature(true),
       sigFile: () => void stampSignature(false),
       setPw: () => void setDocPassword(),
@@ -1554,6 +1677,9 @@ export default function EditorPage({
               onClose={closeSearch}
             />
           ) : null}
+          {drawOn && doc.open ? (
+            <DrawToolbar state={drawState} onChange={setDrawState} onDone={() => void endDrawing()} />
+          ) : null}
           <main ref={viewRef} className="min-h-0 flex-1 overflow-auto" onScroll={onViewerScroll}>
             {doc.open && doc.pageCount > 0 ? (
               // 연속 스크롤: 모든 쪽을 세로로 이어 놓는다. 쪽 크기를 알면 그리지 않은 쪽도 제 자리에 있다.
@@ -1582,7 +1708,7 @@ export default function EditorPage({
                           {current && src ? (
                             <TextMarkupLayer
                               pageIndex={pageIndex}
-                              enabled={doc.open && !busy && !sigEdit}
+                              enabled={doc.open && !busy && !sigEdit && !drawOn}
                               onMarkupChanged={(nextDoc) => void refreshAfterMarkup(nextDoc)}
                               onNotice={notifyMarkup}
                               onEmptyClick={(point) => void beginEditExistingSignature(point)}
@@ -1609,6 +1735,16 @@ export default function EditorPage({
                               onDraggingChange={(dragging) => {
                                 sigDraggingRef.current = dragging;
                               }}
+                            />
+                          ) : null}
+                          {drawOn && src && !sigEdit ? (
+                            <DrawLayer
+                              pageIndex={index}
+                              ptW={ptW}
+                              ptH={ptH}
+                              tool={drawState.tool}
+                              settings={drawState.tools[drawState.tool] ?? drawState.tools.pen}
+                              onStroke={commitInk}
                             />
                           ) : null}
                           {current && src && reviewRects && reviewRects.pageIndex === index ? (
