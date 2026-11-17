@@ -223,18 +223,11 @@ export default function AppMenuBar() {
 
   // 기능: 원본 파일/OCR/보안 메뉴에 흩어져 있던 별도 기능을 한곳에 모았다. 기능끼리는 구분선으로 나눈다.
   const featureItems = [
-    // 용량 줄이기·쪽 번호·서명은 기능 메뉴 맨 위에 둔다 (원래 편집 메뉴에 있던 항목).
+    // 용량 줄이기·쪽 번호·그리기는 기능 메뉴 맨 위에 둔다.
     item('reduce', '용량 줄이기...', { disabled: needsDoc, run: () => go('reduce') }),
     item('pageNumber', '쪽 번호 매기기...', { disabled: needsDoc, run: () => go('pageNumber') }),
     // 쪽 위에 직접 그린다 (펜·연필·형광펜·지우개). 켜진 동안 체크 표시.
     item('draw', '그리기', { disabled: needsDoc, checked: Boolean(run('getDraw')), run: () => go('draw') }),
-    item('signature', '서명 넣기', {
-      disabled: needsDoc,
-      children: [
-        item('sigClip', '클립보드', { run: () => go('sigClip') }),
-        item('sigFile', '파일 선택...', { run: () => go('sigFile') }),
-      ],
-    }),
     sep('fn-1'),
     item('ocr', 'OCR 변환하기...', { disabled: needsDoc, run: () => go('ocr') }),
     sep('fn-2'),

@@ -15,7 +15,6 @@ import PasswordSetDialog from './PasswordSetDialog.jsx';
 import PiiRemoveDialog from './PiiRemoveDialog.jsx';
 import OcrDialog from './OcrDialog.jsx';
 import TextMarkupLayer from './TextMarkupLayer.jsx';
-import SignatureStampOverlay from './SignatureStampOverlay.jsx';
 import DrawLayer from './draw/DrawLayer.jsx';
 import DrawToolbar from './draw/DrawToolbar.jsx';
 import { hexToRgb01, loadDrawState, saveDrawState } from './draw/drawSettings.js';
@@ -198,56 +197,6 @@ export default function EditorPage({
   // 마지막으로 Enter 로 실행한 검색어. 입력만 바뀌고 아직 Enter 를 안 누른 상태와 구분한다.
   const [searchRanQuery, setSearchRanQuery] = useState('');
   const [searchIndex, setSearchIndex] = useState(0);
-  // 서명 편집 세션: PDF 에 확정하기 전(또는 기존 서명을 걷어낸 뒤) 오버레이 상태.
-  const [sigEdit, setSigEdit] = useState(
-    /** @type {{ pageIndex: number, png: string, width: number, height: number, rect: number[], page: number[], lifted: boolean } | null} */ (
-      null
-    ),
-  );
-  const sigEditRef = useRef(sigEdit);
-  const sigIgnoreOutsideRef = useRef(false);
-  const sigDraggingRef = useRef(false);
-  const commitSignatureRef = useRef(/** @type {null | (() => Promise<void>)} */ (null));
-  const cancelSignatureRef = useRef(/** @type {null | (() => Promise<void>)} */ (null));
-  const deleteSignatureRef = useRef(/** @type {null | (() => Promise<void>)} */ (null));
-  sigEditRef.current = sigEdit;
-
-  // 바깥 클릭으로 서명 확정(기본) + 편집 중 단축키. 서명을 막 연 직후·드래그 중 클릭은 무시한다.
-  useEffect(() => {
-    if (!sigEdit) return undefined;
-    sigIgnoreOutsideRef.current = true;
-    sigDraggingRef.current = false;
-    const arm = window.setTimeout(() => {
-      sigIgnoreOutsideRef.current = false;
-    }, 400);
-    function onPointerDown(event) {
-      if (sigIgnoreOutsideRef.current || sigDraggingRef.current) return;
-      const target = event.target;
-      if (target instanceof Element && target.closest('[data-sig-overlay="1"]')) return;
-      void commitSignatureRef.current?.();
-    }
-    function onKeyDown(event) {
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        void commitSignatureRef.current?.();
-      } else if (event.key === 'Escape') {
-        event.preventDefault();
-        void cancelSignatureRef.current?.();
-      } else if (event.key === 'Delete' || event.key === 'Backspace') {
-        event.preventDefault();
-        void deleteSignatureRef.current?.();
-      }
-    }
-    window.addEventListener('pointerdown', onPointerDown, true);
-    window.addEventListener('keydown', onKeyDown, true);
-    return () => {
-      window.clearTimeout(arm);
-      window.removeEventListener('pointerdown', onPointerDown, true);
-      window.removeEventListener('keydown', onKeyDown, true);
-    };
-  }, [sigEdit]);
-
   // 그리기 모드: 켜져 있는 동안 쪽 위에 DrawLayer 가 올라가고, 손을 뗀 획은 PDF 잉크 주석으로 들어간다.
   const [drawOn, setDrawOn] = useState(false);
   const [drawState, setDrawState] = useState(loadDrawState);
@@ -264,7 +213,7 @@ export default function EditorPage({
     saveDrawState(drawState);
   }, [drawState]);
 
-  // Esc 로 그리기 끝내기. 서명 편집 중에는 서명 쪽 Esc 가 먼저다.
+  // Esc 로 그리기 끝내기.
   useEffect(() => {
     if (!drawOn || !active) return undefined;
     function onKeyDown(event) {
@@ -438,7 +387,6 @@ export default function EditorPage({
       setPageSizes([]);
       setThumbs(Array.from({ length: nextDoc.pageCount || 0 }, () => ''));
       setMarkups(nextDoc.open ? null : []);
-      setSigEdit(null);
       setError('');
       if (!nextDoc.open || nextDoc.pageCount < 1) {
         setBusy('');
@@ -1302,7 +1250,6 @@ export default function EditorPage({
   async function startDrawing() {
     if (!docRef.current.open) return;
     setError('');
-    if (sigEditRef.current) await commitSignatureRef.current?.();
     setDrawOn(true);
   }
 
@@ -1322,116 +1269,6 @@ export default function EditorPage({
     },
     [],
   );
-
-  async function stampSignature(fromClipboard) {
-    setError('');
-    try {
-      if (sigEditRef.current?.lifted) {
-        await api('pdf.signatureCancel').catch(() => {});
-      }
-      const result = await api('pdf.signaturePrepare', {
-        pageIndex,
-        fromClipboard: Boolean(fromClipboard),
-        pickFile: !fromClipboard,
-      });
-      if (result.canceled) return;
-      setSigEdit({
-        pageIndex,
-        png: result.png,
-        width: result.width,
-        height: result.height,
-        rect: result.rect,
-        page: result.page,
-        lifted: false,
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '서명을 넣지 못했습니다.');
-    }
-  }
-
-  async function commitSignature() {
-    const session = sigEditRef.current;
-    if (!session) return;
-    setError('');
-    try {
-      const result = await api('pdf.signatureCommit', {
-        pageIndex: session.pageIndex,
-        png: session.png,
-        rect: session.rect,
-        lifted: session.lifted,
-      });
-      // 원본과 같이: 쪽 그림을 먼저 갱신해 오버레이 아래에 같은 크기·위치로 그린 뒤 오버레이를 걷는다.
-      await refreshAfterMarkup(result.doc);
-      setSigEdit(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '서명을 확정하지 못했습니다.');
-    }
-  }
-  commitSignatureRef.current = commitSignature;
-
-  async function cancelSignature() {
-    const session = sigEditRef.current;
-    if (!session) return;
-    setError('');
-    try {
-      if (session.lifted) {
-        const result = await api('pdf.signatureCancel');
-        setSigEdit(null);
-        await refreshAfterMarkup(result.doc);
-      } else {
-        setSigEdit(null);
-      }
-    } catch (err) {
-      setSigEdit(null);
-      setError(err instanceof Error ? err.message : '서명 편집을 취소하지 못했습니다.');
-    }
-  }
-  cancelSignatureRef.current = cancelSignature;
-
-  async function deleteSignatureEdit() {
-    const session = sigEditRef.current;
-    if (!session) return;
-    setError('');
-    try {
-      if (session.lifted) {
-        const result = await api('pdf.signatureDiscard');
-        setSigEdit(null);
-        await refreshAfterMarkup(result.doc);
-      } else {
-        setSigEdit(null);
-      }
-    } catch (err) {
-      setSigEdit(null);
-      setError(err instanceof Error ? err.message : '서명을 삭제하지 못했습니다.');
-    }
-  }
-  deleteSignatureRef.current = deleteSignatureEdit;
-
-  async function beginEditExistingSignature(point) {
-    if (sigEditRef.current) {
-      await commitSignature();
-      return;
-    }
-    setError('');
-    try {
-      const found = await api('pdf.signatureFind', { pageIndex, point });
-      const hit = found.hit;
-      if (!hit) return;
-      const lifted = await api('pdf.signatureLift', { hit });
-      await refreshAfterMarkup(lifted.doc);
-      setSigEdit({
-        pageIndex: hit.pageIndex,
-        png: hit.png,
-        width: hit.width,
-        height: hit.height,
-        rect: hit.rect,
-        page: hit.page,
-        lifted: true,
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '서명을 선택하지 못했습니다.');
-    }
-  }
 
   async function printDoc() {
     setError('');
@@ -1605,8 +1442,6 @@ export default function EditorPage({
       ocr: () => setOcrScope({ indices: null }),
       draw: () => toggleDrawing(),
       getDraw: () => drawOnRef.current,
-      sigClip: () => void stampSignature(true),
-      sigFile: () => void stampSignature(false),
       setPw: () => void setDocPassword(),
       clearPw: () => void clearPassword(),
       pii: () => void removePii(),
@@ -1740,36 +1575,12 @@ export default function EditorPage({
                           {current && src ? (
                             <TextMarkupLayer
                               pageIndex={pageIndex}
-                              enabled={doc.open && !busy && !sigEdit && !drawOn}
+                              enabled={doc.open && !busy && !drawOn}
                               onMarkupChanged={(nextDoc) => void refreshAfterMarkup(nextDoc)}
                               onNotice={notifyMarkup}
-                              onEmptyClick={(point) => void beginEditExistingSignature(point)}
                             />
                           ) : null}
-                          {sigEdit && sigEdit.pageIndex === index ? (
-                            <SignatureStampOverlay
-                              png={sigEdit.png}
-                              rect={sigEdit.rect}
-                              page={sigEdit.page}
-                              imageWidth={sigEdit.width}
-                              imageHeight={sigEdit.height}
-                              onChangeRect={(next) => {
-                                setSigEdit((prev) => {
-                                  if (!prev) return prev;
-                                  const updated = { ...prev, rect: next };
-                                  sigEditRef.current = updated;
-                                  return updated;
-                                });
-                              }}
-                              onCommit={() => void commitSignature()}
-                              onCancel={() => void cancelSignature()}
-                              onDelete={() => void deleteSignatureEdit()}
-                              onDraggingChange={(dragging) => {
-                                sigDraggingRef.current = dragging;
-                              }}
-                            />
-                          ) : null}
-                          {drawOn && src && !sigEdit ? (
+                          {drawOn && src ? (
                             <DrawLayer
                               pageIndex={index}
                               ptW={ptW}
