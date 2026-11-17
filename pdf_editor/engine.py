@@ -37,6 +37,65 @@ _MAX_ZOOM = 5.0
 _MIN_ZOOM = 0.2
 _THUMB_WIDTH = 200
 
+# MuPDF 이미지/렌더 캐시는 기본 상한이 256MB 라서, 이미지가 많은 문서를 넘기면 엔진이 그만큼 커진다.
+# PyMuPDF 는 상한 설정도 캐시 크기 조회도 지원하지 않아서(store_size() 는 항상 None),
+# 렌더링이 끝났을 때 엔진 프로세스 메모리가 한도를 넘었으면 캐시를 비운다.
+_MEMORY_SOFT_LIMIT = 160 * 1024 * 1024
+# 프로세스 메모리를 읽을 수 없는 환경(Windows 가 아님)에서는 렌더링 N 회마다 비운다.
+_FLUSH_EVERY_RENDERS = 24
+_renders_since_flush = 0
+
+
+def _process_memory() -> int | None:
+    """현재 프로세스 작업 집합(바이트). 읽을 수 없으면 None."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _Counters(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        counters = _Counters()
+        counters.cb = ctypes.sizeof(_Counters)
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        psapi = ctypes.windll.psapi
+        psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(_Counters), wintypes.DWORD]
+        if not psapi.GetProcessMemoryInfo(kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
+            return None
+        return int(counters.WorkingSetSize)
+    except Exception:
+        return None
+
+
+def _trim_store() -> None:
+    global _renders_since_flush
+    try:
+        _renders_since_flush += 1
+        used = _process_memory()
+        if used is not None:
+            flush = used > _MEMORY_SOFT_LIMIT
+        else:
+            flush = _renders_since_flush >= _FLUSH_EVERY_RENDERS
+        if flush:
+            fitz.TOOLS.store_shrink(100)
+            _renders_since_flush = 0
+    except Exception:  # 캐시 정리는 부가 기능 — 렌더링 결과를 막지 않는다
+        pass
+
 
 def _write(payload: dict) -> None:
     sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
@@ -430,7 +489,9 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
             zoom = float(req.get("zoom") or 1)
             zoom = min(_MAX_ZOOM, max(_MIN_ZOOM, zoom))
             pix = doc.render_page_pixmap(index, zoom)
-        return opened, _png(pix)
+        result = _png(pix)
+        _trim_store()
+        return opened, result
     if op == "markups":
         if not opened:
             return opened, {"entries": []}
