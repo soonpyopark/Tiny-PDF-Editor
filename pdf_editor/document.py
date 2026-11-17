@@ -3544,11 +3544,13 @@ class PdfDocument:
         rect: fitz.Rect,
     ) -> None:
         """이미지 넣기: 쪽 위(화면 좌표 rect)에 이미지를 그대로 얹는다. 서명 표식은 남기지 않는다."""
-        dest = self._signature_dest_rect(page_index, rect)
-        if dest is None:
+        if self._signature_dest_rect(page_index, rect) is None:
             raise ValueError("이미지 위치가 페이지 밖입니다.")
         if not image_bytes:
             raise ValueError("넣을 이미지가 없습니다.")
+        # 화면에서 본 상자(rect) 그대로 넣는다. 쪽 경계로 잘라 낸 크기에 맞추면 그림이 찌그러지므로,
+        # 쪽 밖으로 걸친 부분은 그대로 두고 쪽 영역만 보이게 한다(WYSIWYG).
+        dest = self._normalize_rect(fitz.Rect(rect))
         self._record_undo_checkpoint()
         page = self._doc[page_index]
         self._page_insert_image_stream(page, dest, image_bytes)

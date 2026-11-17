@@ -139,6 +139,20 @@ class PlaceImageTests(unittest.TestCase):
                 self.assertEqual(_pixel(document, cx, cy), (255, 0, 0))
                 self.assertEqual(_pixel(document, int(view.width * 0.9), int(view.height * 0.9)), (255, 255, 255))
 
+    def test_box_partly_outside_page_is_not_squashed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            document = _open(_make_pdf(tmp))
+            # 왼쪽 반 빨강 / 오른쪽 반 파랑. 가로 200pt 상자를 쪽 오른쪽 끝(300)에 걸치게 놓는다: x 200..400.
+            img = Image.new("RGB", (40, 20), (0, 0, 255))
+            img.paste((255, 0, 0), (0, 0, 20, 20))
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            document.place_image(0, buf.getvalue(), fitz.Rect(200, 50, 400, 150))
+            # 빨강은 x 200..300 (원래 크기 그대로, 잘린 상자에 맞춰 늘어나지 않음). 파랑은 쪽 밖이라 안 보인다.
+            self.assertEqual(_pixel(document, 250, 100), (255, 0, 0))
+            self.assertEqual(_pixel(document, 295, 100), (255, 0, 0))
+            self.assertEqual(_pixel(document, 150, 100), (255, 255, 255))
+
     def test_outside_page_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             document = _open(_make_pdf(tmp))
