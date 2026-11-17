@@ -12,12 +12,26 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pymupdf as fitz
+from PIL import Image
 
 from pdf_editor.cross_page_selection import PageSelectionSegment
 from pdf_editor.hwp_convert import (
     HWP_EXTENSIONS,
     convert_hwp_to_temp_pdf,
+)
+from pdf_editor.image_stamp import (
+    IMAGE_ANNOT_TITLE,
+    KEY_ORIG,
+    KEY_PARAMS,
+    apply_patch,
+    dump_params,
+    final_image,
+    is_image_annot_title,
+    load_params,
+    natural_aspect,
+    normalize_params,
 )
 from pdf_editor.ink_draw import (
     INK_ANNOT_TITLE,
@@ -175,6 +189,8 @@ class PdfDocument:
         # 문서를 바꿀 때마다 올라간다. 그리기에서 "바로 이어진 획인지" 알아보는 데 쓴다.
         self._revision = 0
         self._ink_group_token: tuple[int, int] | None = None
+        # 편집하려고 잠시 숨겨 둔 이미지 스탬프 주석의 xref. 저장·되돌리기 기록 전에는 다시 보이게 한다.
+        self._lifted_images: set[int] = set()
         self._render_pause_depth = 0
         self._undo_stack: list[bytes] = []
         self._redo_stack: list[bytes] = []
@@ -415,6 +431,7 @@ class PdfDocument:
     def _record_undo_checkpoint(self) -> None:
         if self._restoring_history:
             return
+        self._unlift_all_image_stamps()
         self._undo_stack.append(self._snapshot_bytes())
         if len(self._undo_stack) > _MAX_UNDO_LEVELS:
             self._undo_stack.pop(0)
@@ -422,6 +439,7 @@ class PdfDocument:
 
     def _restore_from_snapshot(self, payload: bytes) -> None:
         self._restoring_history = True
+        self._lifted_images.clear()
         try:
             self._doc.close()
             if not payload:
@@ -483,6 +501,7 @@ class PdfDocument:
         if not target:
             raise ValueError("저장 경로가 지정되지 않았습니다.")
         target = str(Path(target))
+        self._unlift_all_image_stamps()
 
         if self._saving_in_place(target):
             target_path = Path(target)
@@ -501,6 +520,7 @@ class PdfDocument:
         return target
 
     def save_to_bytes(self) -> bytes:
+        self._unlift_all_image_stamps()
         if len(self._doc) == 0:
             return _EMPTY_SNAPSHOT
         buffer = io.BytesIO()
@@ -509,6 +529,7 @@ class PdfDocument:
 
     def _snapshot_bytes(self) -> bytes:
         """Serialize document for undo/redo without garbage-collecting live xrefs."""
+        self._unlift_all_image_stamps()
         if len(self._doc) == 0:
             return _EMPTY_SNAPSHOT
         buffer = io.BytesIO()
@@ -3104,39 +3125,23 @@ class PdfDocument:
         ox, oy = int(overlay.x), int(overlay.y)
         ow, oh = overlay.width, overlay.height
         bw, bh = base.width, base.height
-        base_n = base.n
-        over_n = overlay.n
-        base_stride = base.stride
-        over_stride = overlay.stride
-        base_buf = base.samples_mv
-        over_buf = overlay.samples
-        for row in range(oh):
-            by = oy + row
-            if by < 0 or by >= bh:
-                continue
-            base_row = by * base_stride
-            over_row = row * over_stride
-            for col in range(ow):
-                bx = ox + col
-                if bx < 0 or bx >= bw:
-                    continue
-                oi = over_row + col * over_n
-                alpha = over_buf[oi + 3]
-                if alpha == 0:
-                    continue
-                bi = base_row + bx * base_n
-                if alpha == 255:
-                    base_buf[bi] = over_buf[oi]
-                    base_buf[bi + 1] = over_buf[oi + 1]
-                    base_buf[bi + 2] = over_buf[oi + 2]
-                    continue
-                # MuPDF 의 알파 픽스맵은 색이 알파에 이미 곱해져 있다(premultiplied).
-                # 그래서 over + base*(1-alpha) 로 합성한다. 곱을 한 번 더 하면 반투명
-                # 픽셀(형광펜·획 가장자리)이 의도보다 훨씬 연하게 나온다.
-                inv = 255 - alpha
-                for ch in range(3):
-                    value = over_buf[oi + ch] + (base_buf[bi + ch] * inv) // 255
-                    base_buf[bi + ch] = 255 if value > 255 else value
+        # 겹치는 영역만 numpy 로 한 번에 합성한다 (큰 이미지 주석도 파이썬 픽셀 반복 없이 빠르게).
+        x0, y0 = max(0, ox), max(0, oy)
+        x1, y1 = min(bw, ox + ow), min(bh, oy + oh)
+        if x1 <= x0 or y1 <= y0:
+            return
+        over = np.frombuffer(overlay.samples, dtype=np.uint8)
+        over = over.reshape(oh, overlay.stride)[:, : ow * overlay.n].reshape(oh, ow, overlay.n)
+        over = over[y0 - oy : y1 - oy, x0 - ox : x1 - ox]
+        base_arr = np.frombuffer(base.samples_mv, dtype=np.uint8)
+        base_arr = base_arr.reshape(bh, base.stride)[:, : bw * base.n].reshape(bh, bw, base.n)
+        region = base_arr[y0:y1, x0:x1, :3]
+        # MuPDF 의 알파 픽스맵은 색이 알파에 이미 곱해져 있다(premultiplied).
+        # 그래서 over + base*(1-alpha) 로 합성한다. 곱을 한 번 더 하면 반투명
+        # 픽셀(형광펜·획 가장자리)이 의도보다 훨씬 연하게 나온다.
+        inv = 255 - over[:, :, 3:4].astype(np.uint16)
+        blended = over[:, :, :3].astype(np.uint16) + (region.astype(np.uint16) * inv) // 255
+        region[...] = np.minimum(blended, 255).astype(np.uint8)
 
     @staticmethod
     def _fill_rect_blend(
@@ -3556,6 +3561,326 @@ class PdfDocument:
         self._page_insert_image_stream(page, dest, image_bytes)
         self._touch()
 
+    # ------------------------------------------------------------------ 이미지 넣기 (스탬프 주석)
+    #
+    # 이미지는 표준 PDF 스탬프 주석(/Subtype /Stamp)으로 넣는다. 제목(/T)이 IMAGE_ANNOT_TITLE 인 것만
+    # 이 앱이 다시 편집한다. 원본 이미지와 보이는 모양(파라미터)은 주석 사전의 전용 키에 보관한다.
+    # 주석은 쪽 회전과 무관한 '회전 전 쪽 좌표' 에 있고, 화면 좌표(view)와는 page.rotation_matrix 로 오간다.
+
+    _IMAGE_FLAG_PRINT = 4
+    _IMAGE_FLAG_HIDDEN = 2
+
+    @staticmethod
+    def _view_to_annot_rect(page, view_rect) -> fitz.Rect:
+        rect = fitz.Rect(view_rect) * page.derotation_matrix
+        rect.normalize()
+        return rect
+
+    @staticmethod
+    def _annot_to_view_rect(page, annot_rect) -> fitz.Rect:
+        rect = fitz.Rect(annot_rect) * page.rotation_matrix
+        rect.normalize()
+        return rect
+
+    @staticmethod
+    def _is_image_annot(annot) -> bool:
+        try:
+            if annot.type[0] != fitz.PDF_ANNOT_STAMP:
+                return False
+            return is_image_annot_title((annot.info or {}).get("title"))
+        except (RuntimeError, ValueError, TypeError, AttributeError):
+            return False
+
+    def _image_params_of(self, xref: int) -> dict | None:
+        kind, value = self._doc.xref_get_key(xref, KEY_PARAMS)
+        if kind == "null":
+            return None
+        return load_params(value)
+
+    def _image_orig_xref_of(self, xref: int) -> int | None:
+        kind, value = self._doc.xref_get_key(xref, KEY_ORIG)
+        if kind != "xref":
+            return None
+        try:
+            return int(str(value).split()[0])
+        except (ValueError, IndexError):
+            return None
+
+    def _image_source_of(self, xref: int) -> bytes:
+        orig = self._image_orig_xref_of(xref)
+        if orig is None:
+            raise ValueError("원본 이미지를 찾지 못했습니다.")
+        data = self._doc.xref_stream(orig)
+        if not data:
+            raise ValueError("원본 이미지를 찾지 못했습니다.")
+        return bytes(data)
+
+    def _store_image_source(self, data: bytes) -> int:
+        xref = self._doc.get_new_xref()
+        self._doc.update_object(xref, "<< /Type /TinyImageSource >>")
+        self._doc.update_stream(xref, data, new=True, compress=False)
+        return xref
+
+    def _load_image_annot(self, page_index: int, xref: int):
+        if not (0 <= page_index < len(self._doc)):
+            raise ValueError("쪽 번호가 올바르지 않습니다.")
+        page = self._doc[page_index]
+        try:
+            annot = page.load_annot(int(xref))
+        except Exception:  # noqa: BLE001
+            annot = None
+        if annot is None or not self._is_image_annot(annot):
+            raise ValueError("이미지를 찾지 못했습니다.")
+        return page, annot
+
+    def _image_item(self, page_index: int, page, annot) -> dict | None:
+        params = self._image_params_of(annot.xref)
+        if params is None:
+            return None
+        view = self._annot_to_view_rect(page, annot.rect)
+        return {
+            "id": int(annot.xref),
+            "pageIndex": int(page_index),
+            "rect": [float(view.x0), float(view.y0), float(view.x1), float(view.y1)],
+            "params": params,
+            "aspect": natural_aspect(params),
+            "lifted": int(annot.xref) in self._lifted_images,
+        }
+
+    def image_stamp_items(self, page_index: int | None = None) -> list[dict]:
+        """이 앱이 넣은 이미지 목록. page_index 가 None 이면 모든 쪽."""
+        indices = range(len(self._doc)) if page_index is None else [page_index]
+        items: list[dict] = []
+        for index in indices:
+            if not (0 <= index < len(self._doc)):
+                continue
+            page = self._doc[index]
+            for annot in PdfDocument._iter_page_annots(page):
+                if not self._is_image_annot(annot):
+                    continue
+                item = self._image_item(index, page, annot)
+                if item is not None:
+                    items.append(item)
+        return items
+
+    def image_stamp_source(self, page_index: int, xref: int) -> tuple[bytes, dict]:
+        """복사·미리보기용: (원본 이미지 바이트, 파라미터)."""
+        _page, annot = self._load_image_annot(page_index, xref)
+        params = self._image_params_of(annot.xref)
+        if params is None:
+            raise ValueError("이미지 정보를 읽지 못했습니다.")
+        return self._image_source_of(annot.xref), params
+
+    def _build_image_annot(
+        self,
+        page,
+        view_rect,
+        source: bytes,
+        params: dict,
+        *,
+        orig_xref: int | None = None,
+        share_ap_xref: int | None = None,
+    ) -> int:
+        """스탬프 주석 하나를 만든다. share_ap_xref 가 있으면 그 모양(AP)을 같이 쓴다(여러 쪽에 넣을 때 용량 절약)."""
+        rect = self._view_to_annot_rect(page, view_rect)
+        if rect.is_empty or rect.width < 1 or rect.height < 1:
+            raise ValueError("이미지 위치가 올바르지 않습니다.")
+        if share_ap_xref is not None:
+            annot = page.add_stamp_annot(rect, stamp=0)
+            self._doc.xref_set_key(annot.xref, "AP", f"<</N {int(share_ap_xref)} 0 R>>")
+        else:
+            image, _mime = final_image(source, params, int(page.rotation or 0))
+            annot = page.add_stamp_annot(rect, stamp=image)
+        # 스탬프는 그림 비율을 지키려고 rect 를 줄여 만들므로, 화면에서 본 상자 그대로 맞춘다(WYSIWYG).
+        annot.set_rect(rect)
+        annot.set_info(title=IMAGE_ANNOT_TITLE, content="이미지")
+        xref = int(annot.xref)
+        self._doc.xref_set_key(xref, "F", str(self._IMAGE_FLAG_PRINT))
+        if orig_xref is None:
+            orig_xref = self._store_image_source(source)
+        self._doc.xref_set_key(xref, KEY_ORIG, f"{int(orig_xref)} 0 R")
+        self._doc.xref_set_key(xref, KEY_PARAMS, "<" + dump_params(params).encode("ascii").hex() + ">")
+        return xref
+
+    def add_image_stamp(
+        self,
+        page_index: int,
+        source: bytes,
+        view_rect,
+        params: dict | None = None,
+        *,
+        record_undo: bool = True,
+    ) -> int:
+        """이미지 넣기 확정. source 는 normalize_source 를 거친 원본. 반환: 주석 id(xref)."""
+        if self._signature_dest_rect(page_index, fitz.Rect(view_rect)) is None:
+            raise ValueError("이미지 위치가 페이지 밖입니다.")
+        if not source:
+            raise ValueError("넣을 이미지가 없습니다.")
+        with Image.open(io.BytesIO(source)) as probe:
+            size = probe.size
+        full = normalize_params(params, size)
+        full["ow"], full["oh"] = int(size[0]), int(size[1])
+        self._unlift_all_image_stamps()
+        if record_undo:
+            self._record_undo_checkpoint()
+        page = self._doc[page_index]
+        xref = self._build_image_annot(page, fitz.Rect(view_rect), source, full)
+        self._touch()
+        return xref
+
+    def update_image_stamps(self, updates: list[dict], *, record_undo: bool = True) -> list[dict]:
+        """여러 이미지를 한 번에 고친다(되돌리기 한 단계).
+
+        updates 항목: {pageIndex, id, rect?(화면 좌표), params?}. 모양이 바뀌면 주석을 새로 만들어
+        id 가 바뀔 수 있으므로 [{id, newId}] 를 돌려준다.
+        """
+        self._unlift_all_image_stamps()
+        planned = []
+        for update in updates:
+            page_index = int(update["pageIndex"])
+            page, annot = self._load_image_annot(page_index, int(update["id"]))
+            old_params = self._image_params_of(annot.xref)
+            if old_params is None:
+                raise ValueError("이미지 정보를 읽지 못했습니다.")
+            new_params = normalize_params(update["params"], (old_params["ow"], old_params["oh"])) if update.get("params") else old_params
+            new_params["ow"], new_params["oh"] = old_params["ow"], old_params["oh"]
+            old_view = self._annot_to_view_rect(page, annot.rect)
+            new_view = fitz.Rect(update["rect"]) if update.get("rect") else old_view
+            if self._signature_dest_rect(page_index, new_view) is None:
+                raise ValueError("이미지 위치가 페이지 밖입니다.")
+            moved = any(abs(a - b) > 1e-3 for a, b in zip(tuple(new_view), tuple(old_view)))
+            look_changed = self._look_key(new_params) != self._look_key(old_params)
+            params_changed = dump_params(new_params) != dump_params(old_params)
+            if moved or look_changed or params_changed:
+                planned.append((page_index, page, annot, new_params, new_view, look_changed, params_changed))
+        results: list[dict] = []
+        if not planned:
+            return results
+        if record_undo:
+            self._record_undo_checkpoint()
+        for page_index, page, annot, new_params, new_view, look_changed, params_changed in planned:
+            old_xref = int(annot.xref)
+            if look_changed:
+                source = self._image_source_of(old_xref)
+                orig = self._image_orig_xref_of(old_xref)
+                new_xref = self._build_image_annot(page, new_view, source, new_params, orig_xref=orig)
+                page.delete_annot(annot)
+                results.append({"id": old_xref, "newId": new_xref})
+                continue
+            annot.set_rect(self._view_to_annot_rect(page, new_view))
+            if params_changed:
+                self._doc.xref_set_key(old_xref, KEY_PARAMS, "<" + dump_params(new_params).encode("ascii").hex() + ">")
+            results.append({"id": old_xref, "newId": old_xref})
+        self._touch()
+        return results
+
+    @staticmethod
+    def _look_key(params: dict) -> str:
+        """모양(AP)에 영향을 주는 값만 비교한다. 잠금 같은 것은 다시 만들 필요가 없다."""
+        subset = {key: value for key, value in params.items() if key != "lock"}
+        return dump_params(subset)
+
+    def delete_image_stamps(self, targets: list[dict], *, record_undo: bool = True) -> int:
+        """targets: [{pageIndex, id}]. 반환: 지운 개수."""
+        self._unlift_all_image_stamps()
+        found = [self._load_image_annot(int(t["pageIndex"]), int(t["id"])) for t in targets]
+        if not found:
+            return 0
+        if record_undo:
+            self._record_undo_checkpoint()
+        for page, annot in found:
+            page.delete_annot(annot)
+        self._touch()
+        return len(found)
+
+    def lift_image_stamps(self, targets: list[dict], lifted: bool) -> None:
+        """편집하는 동안 쪽 그림에서 잠시 빼거나(True) 되돌린다(False). 되돌리기 기록은 만들지 않는다."""
+        for target in targets:
+            page_index = int(target["pageIndex"])
+            _page, annot = self._load_image_annot(page_index, int(target["id"]))
+            xref = int(annot.xref)
+            flags = self._IMAGE_FLAG_PRINT | (self._IMAGE_FLAG_HIDDEN if lifted else 0)
+            self._doc.xref_set_key(xref, "F", str(flags))
+            if lifted:
+                self._lifted_images.add(xref)
+            else:
+                self._lifted_images.discard(xref)
+        self._revision += 1
+
+    def _unlift_all_image_stamps(self) -> None:
+        """숨겨 둔 이미지를 모두 다시 보이게 한다. 저장·되돌리기 기록 전에 불러서 숨김 상태가 파일에 남지 않게 한다."""
+        if not self._lifted_images:
+            return
+        for xref in list(self._lifted_images):
+            try:
+                # 문서가 바뀌어 xref 가 다른 객체를 가리킬 수 있으니, 우리 이미지 주석일 때만 만진다.
+                if self._doc.xref_get_key(xref, KEY_PARAMS)[0] != "null":
+                    self._doc.xref_set_key(xref, "F", str(self._IMAGE_FLAG_PRINT))
+            except Exception:  # noqa: BLE001
+                pass
+        self._lifted_images.clear()
+
+    def apply_image_to_pages(self, page_index: int, xref: int, pages: list[int]) -> list[int]:
+        """이미지를 다른 쪽에도 같은 (쪽 대비) 위치·크기로 넣는다. 반환: 넣은 쪽 번호."""
+        self._unlift_all_image_stamps()
+        src_page, src_annot = self._load_image_annot(page_index, xref)
+        params = self._image_params_of(src_annot.xref)
+        if params is None:
+            raise ValueError("이미지 정보를 읽지 못했습니다.")
+        source = self._image_source_of(src_annot.xref)
+        orig = self._image_orig_xref_of(src_annot.xref)
+        kind, ap_value = self._doc.xref_get_key(src_annot.xref, "AP/N")
+        src_ap = int(str(ap_value).split()[0]) if kind == "xref" else None
+        src_view = self._annot_to_view_rect(src_page, src_annot.rect)
+        src_box = src_page.rect
+        ratios = (
+            (src_view.x0 - src_box.x0) / src_box.width,
+            (src_view.y0 - src_box.y0) / src_box.height,
+            (src_view.x1 - src_box.x0) / src_box.width,
+            (src_view.y1 - src_box.y0) / src_box.height,
+        )
+        targets = [index for index in sorted(set(pages)) if 0 <= index < len(self._doc) and index != page_index]
+        if not targets:
+            return []
+        self._record_undo_checkpoint()
+        done: list[int] = []
+        for index in targets:
+            page = self._doc[index]
+            box = page.rect
+            view = fitz.Rect(
+                box.x0 + ratios[0] * box.width,
+                box.y0 + ratios[1] * box.height,
+                box.x0 + ratios[2] * box.width,
+                box.y0 + ratios[3] * box.height,
+            )
+            same_rotation = int(page.rotation or 0) == int(src_page.rotation or 0)
+            self._build_image_annot(
+                page,
+                view,
+                source,
+                params,
+                orig_xref=orig,
+                share_ap_xref=src_ap if same_rotation and src_ap else None,
+            )
+            done.append(index)
+        self._touch()
+        return done
+
+    def flatten_image_stamp(self, page_index: int, xref: int, *, below: bool) -> None:
+        """이미지를 쪽 내용으로 굳힌다(더는 이미지로 고칠 수 없음). below 이면 본문 글 아래에 깐다."""
+        self._unlift_all_image_stamps()
+        page, annot = self._load_image_annot(page_index, xref)
+        params = self._image_params_of(annot.xref)
+        if params is None:
+            raise ValueError("이미지 정보를 읽지 못했습니다.")
+        source = self._image_source_of(annot.xref)
+        view = self._annot_to_view_rect(page, annot.rect)
+        image, _mime = final_image(source, params, 0)
+        self._record_undo_checkpoint()
+        self._page_insert_image_stream(page, view, image, overlay=not below)
+        page.delete_annot(annot)
+        self._touch()
+
     def find_signature_stamp_at(
         self,
         page_index: int,
@@ -3802,7 +4127,9 @@ class PdfDocument:
             max(rect.y0, rect.y1),
         )
 
-    def _page_insert_image_stream(self, page, dest: fitz.Rect, image_bytes: bytes) -> int:
+    def _page_insert_image_stream(
+        self, page, dest: fitz.Rect, image_bytes: bytes, *, overlay: bool = True
+    ) -> int:
         """insert_image in page.rect space, including rotated pages.
 
         On rotated pages MuPDF's insert_image treats the rect like mediabox
@@ -3819,6 +4146,7 @@ class PdfDocument:
                     dest,
                     stream=image_bytes,
                     keep_proportion=False,
+                    overlay=overlay,
                 )
             )
         mediabox_dest = self._normalize_rect(fitz.Rect(dest) * page.derotation_matrix)
@@ -3830,6 +4158,7 @@ class PdfDocument:
                     stream=image_bytes,
                     keep_proportion=False,
                     rotate=rotation,
+                    overlay=overlay,
                 )
             )
         finally:

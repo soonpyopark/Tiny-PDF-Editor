@@ -1026,6 +1026,7 @@ export function register() {
   }
 
   // 이미지 넣기: PDF 에 바로 넣지 않고, 미리보기(이동·크기 조절)용으로 이미지를 정리해 돌려준다.
+  // 복사한 이미지를 붙여 넣을 때는 image(base64 원본)와 params/sizePt 를 직접 준다.
   defineApi('pdf.imagePrepare', 'user', async (body) => {
     const picked = await readImageToPlace(body);
     if (picked.canceled) return { canceled: true };
@@ -1033,24 +1034,117 @@ export function register() {
       op: 'imagePrepare',
       pageIndex: Number(body?.pageIndex) || 0,
       image: picked.image,
+      params: body?.params && typeof body.params === 'object' ? body.params : undefined,
+      sizePt: Array.isArray(body?.sizePt) ? body.sizePt : undefined,
+      rect: Array.isArray(body?.rect) ? body.rect : undefined,
     });
     return {
       canceled: false,
-      image: result.image,
-      mime: result.mime,
-      width: result.width,
-      height: result.height,
+      token: result.token,
+      preview: result.preview,
+      previewWidth: result.previewWidth,
+      previewHeight: result.previewHeight,
+      params: result.params,
+      aspect: result.aspect,
       rect: result.rect,
       page: result.page,
     };
+  });
+
+  // 보이는 모양(투명 배경·투명도·회전·자르기·색 보정)을 바꾼 미리보기
+  defineApi('pdf.imagePreview', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'imagePreview',
+      token: body?.token ? String(body.token) : undefined,
+      pageIndex: Number(body?.pageIndex) || 0,
+      stampId: body?.id === undefined || body?.id === null ? undefined : Number(body.id),
+      params: body?.params && typeof body.params === 'object' ? body.params : undefined,
+      patch: body?.patch && typeof body.patch === 'object' ? body.patch : undefined,
+    });
+    return {
+      preview: result.preview,
+      previewWidth: result.previewWidth,
+      previewHeight: result.previewHeight,
+      params: result.params,
+      aspect: result.aspect,
+    };
+  });
+
+  defineApi('pdf.imageList', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'imageList',
+      pageIndex: body?.pageIndex === undefined || body?.pageIndex === null ? undefined : Number(body.pageIndex),
+    });
+    return { items: result.items || [] };
+  });
+
+  // 다시 편집하는 동안 해당 이미지를 쪽 화면에서 걷어낸다(편집 오버레이가 대신 보여 준다).
+  defineApi('pdf.imageLift', 'user', async (body) => {
+    await engineOp({
+      op: 'imageLift',
+      targets: Array.isArray(body?.targets) ? body.targets : [],
+      lifted: Boolean(body?.lifted),
+    });
+    return {};
   });
 
   defineApi('pdf.imageCommit', 'user', async (body) => {
     const result = await engineOp({
       op: 'imageCommit',
       pageIndex: Number(body?.pageIndex) || 0,
-      image: body?.image,
+      token: body?.token,
       rect: body?.rect,
+      params: body?.params,
+    });
+    return { doc: result.doc, id: result.stampId };
+  });
+
+  // 이미 넣은 이미지의 위치·크기·모양 수정 (여러 개를 한 번에 → 실행 취소 한 단계)
+  defineApi('pdf.imageUpdate', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'imageUpdate',
+      updates: Array.isArray(body?.updates) ? body.updates : [],
+    });
+    return { doc: result.doc, results: result.results || [] };
+  });
+
+  defineApi('pdf.imageDelete', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'imageDelete',
+      targets: Array.isArray(body?.targets) ? body.targets : [],
+    });
+    return { doc: result.doc, removed: Number(result.removed) || 0 };
+  });
+
+  // 복사·잘라내기·복제용: 원본 이미지 + 모양 + 쪽에서의 크기
+  defineApi('pdf.imageSource', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'imageSource',
+      pageIndex: Number(body?.pageIndex) || 0,
+      stampId: body?.id === undefined || body?.id === null ? undefined : Number(body.id),
+      token: body?.token ? String(body.token) : undefined,
+      params: body?.params && typeof body.params === 'object' ? body.params : undefined,
+      rect: Array.isArray(body?.rect) ? body.rect : undefined,
+    });
+    return { image: result.image, params: result.params, sizePt: result.sizePt, rect: result.rect };
+  });
+
+  defineApi('pdf.imageApplyPages', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'imageApplyPages',
+      pageIndex: Number(body?.pageIndex) || 0,
+      stampId: Number(body?.id), // 엔진 요청의 id 는 요청 번호 자리라 다른 이름을 쓴다
+      pages: Array.isArray(body?.pages) ? body.pages : [],
+    });
+    return { doc: result.doc, pages: result.pages || [] };
+  });
+
+  defineApi('pdf.imageFlatten', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'imageFlatten',
+      pageIndex: Number(body?.pageIndex) || 0,
+      stampId: Number(body?.id), // 엔진 요청의 id 는 요청 번호 자리라 다른 이름을 쓴다
+      below: Boolean(body?.below),
     });
     return { doc: result.doc };
   });

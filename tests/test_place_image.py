@@ -170,23 +170,6 @@ class PlaceImageTests(unittest.TestCase):
 
 
 class EngineOpsTests(unittest.TestCase):
-    def test_prepare_then_commit_through_engine_protocol(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            document = _open(_make_pdf(tmp))
-            opened = True
-            image = base64.b64encode(_jpeg((120, 60), (200, 30, 30))).decode("ascii")
-            _opened, prepared = _handle(document, opened, {"op": "imagePrepare", "pageIndex": 0, "image": image})
-            self.assertEqual(prepared["mime"], "image/jpeg")
-            self.assertEqual(len(prepared["rect"]), 4)
-            self.assertEqual(len(prepared["page"]), 4)
-            _opened, committed = _handle(
-                document,
-                opened,
-                {"op": "imageCommit", "pageIndex": 0, "image": prepared["image"], "rect": prepared["rect"]},
-            )
-            self.assertTrue(committed["doc"]["modified"])
-            self.assertEqual(len(document._doc[0].get_images()), 1)
-
     def test_prepare_requires_image_and_valid_page(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             document = _open(_make_pdf(tmp))

@@ -11,10 +11,19 @@ import base64
 import json
 import re
 import sys
+import uuid
 from pathlib import Path
 
 import fitz
 
+from pdf_editor.image_stamp import (
+    apply_patch,
+    natural_aspect,
+    normalize_params,
+    normalize_source,
+    preview_png,
+    transformed_size,
+)
 from pdf_editor.document import (
     OptimizeSizeOptions,
     PdfDocument,
@@ -189,60 +198,29 @@ def _prepare_signature(data: bytes) -> tuple[bytes, int, int]:
     return buf.getvalue(), int(width), int(height)
 
 
-PLACED_IMAGE_MAX_SIDE = 2400
+# 이미지 넣기: 확정 전 원본을 잠깐 쥐고 있는 곳 (미리보기를 바꿀 때마다 원본을 다시 주고받지 않도록).
+_image_sessions: dict[str, bytes] = {}
+_IMAGE_SESSION_LIMIT = 8
+
+
+def _image_session_put(source: bytes) -> str:
+    token = uuid.uuid4().hex
+    _image_sessions[token] = source
+    while len(_image_sessions) > _IMAGE_SESSION_LIMIT:
+        _image_sessions.pop(next(iter(_image_sessions)))
+    return token
+
+
+def _image_session_get(token: str) -> bytes:
+    source = _image_sessions.get(token)
+    if source is None:
+        raise ValueError("이미지 편집 정보가 만료되었습니다. 다시 넣어 주세요.")
+    return source
 
 
 def _prepare_placed_image(data: bytes) -> tuple[bytes, str, int, int]:
-    """이미지 넣기용 정리: 방향(EXIF) 보정, 너무 큰 그림 축소, PDF 에 넣기 좋은 PNG/JPEG 로 통일.
-
-    서명과 달리 흰 배경을 투명하게 하거나 여백을 자르지 않는다. 사진도 그대로 들어간다.
-    반환: (바이트, mime, 가로 px, 세로 px)
-    """
-    import io
-
-    from PIL import Image, ImageOps
-
-    try:
-        src = Image.open(io.BytesIO(data))
-        src.load()
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError("이미지를 읽지 못했습니다.") from exc
-    with src:
-        was_jpeg = (src.format or "").upper() == "JPEG"
-        try:
-            rotated_by_exif = int(src.getexif().get(0x0112, 1) or 1) != 1
-        except Exception:  # noqa: BLE001
-            rotated_by_exif = False
-        image = ImageOps.exif_transpose(src) if rotated_by_exif else src
-        changed = rotated_by_exif
-        if max(image.size) > PLACED_IMAGE_MAX_SIDE:
-            image = image.copy()
-            image.thumbnail((PLACED_IMAGE_MAX_SIDE, PLACED_IMAGE_MAX_SIDE), Image.LANCZOS)
-            changed = True
-        if image.width < 2 or image.height < 2:
-            raise ValueError("이미지가 너무 작습니다.")
-        has_alpha = image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info)
-        if has_alpha:
-            rgba = image.convert("RGBA")
-            if rgba.getchannel("A").getextrema()[0] >= 255:
-                has_alpha = False
-                image = rgba.convert("RGB")
-            else:
-                image = rgba
-        elif image.mode != "RGB":
-            image = image.convert("RGB")
-        width, height = image.size
-        buf = io.BytesIO()
-        if has_alpha:
-            image.save(buf, format="PNG")
-            return buf.getvalue(), "image/png", int(width), int(height)
-        if was_jpeg:
-            if not changed:
-                return bytes(data), "image/jpeg", int(width), int(height)
-            image.save(buf, format="JPEG", quality=92)
-            return buf.getvalue(), "image/jpeg", int(width), int(height)
-        image.save(buf, format="PNG")
-        return buf.getvalue(), "image/png", int(width), int(height)
+    """이미지 넣기용 원본 정리 (image_stamp.normalize_source). 반환: (바이트, mime, 가로 px, 세로 px)"""
+    return normalize_source(data)
 
 
 def _placed_image_rect(page: fitz.Rect, width: int, height: int) -> fitz.Rect:
@@ -1023,7 +1001,9 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
         _signature_lift["active"] = False
         return True, {"doc": _summary(doc, True)}
     if op == "imagePrepare":
-        # 이미지 넣기: 이미지를 정리하고 처음 놓을 위치를 정한다. PDF 는 확정(imageCommit)할 때 바뀐다.
+        # 이미지 넣기 1단계: 원본을 정리해 임시로 쥐고(token), 미리보기와 처음 놓을 위치를 돌려준다.
+        # PDF 는 확정(imageCommit)할 때 바뀐다. 복사한 이미지를 붙여 넣을 때도 같은 길을 쓴다
+        # (params 로 보이는 모양을, sizePt/rect 로 크기·위치를 지정할 수 있다).
         _require_open(opened)
         page_index = int(req.get("pageIndex") or 0)
         if not (0 <= page_index < doc.page_count):
@@ -1033,24 +1013,103 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
             raise ValueError("넣을 이미지가 없습니다.")
         if raw.startswith("data:") and "," in raw:
             raw = raw.split(",", 1)[1]
-        data, mime, width, height = _prepare_placed_image(base64.b64decode(raw))
+        source, _mime, width, height = _prepare_placed_image(base64.b64decode(raw))
+        params = normalize_params(req.get("params"), (width, height))
+        params["ow"], params["oh"] = int(width), int(height)
+        aspect = natural_aspect(params)
         page = doc.get_page_rect(page_index)
-        rect = _placed_image_rect(page, width, height)
+        if isinstance(req.get("rect"), (list, tuple)) and len(req["rect"]) == 4:
+            rect = _rect_from_list(req["rect"])
+        elif isinstance(req.get("sizePt"), (list, tuple)) and len(req["sizePt"]) == 2:
+            size_w = max(8.0, min(float(req["sizePt"][0]), page.width))
+            size_h = max(8.0, min(float(req["sizePt"][1]), page.height))
+            cx, cy = (page.x0 + page.x1) / 2, (page.y0 + page.y1) / 2
+            rect = fitz.Rect(cx - size_w / 2, cy - size_h / 2, cx + size_w / 2, cy + size_h / 2)
+        else:
+            tw, th = transformed_size(params)
+            crop_l, crop_t, crop_r, crop_b = params["crop"]
+            rect = _placed_image_rect(page, int(tw * (1 - crop_l - crop_r)), int(th * (1 - crop_t - crop_b)))
+        token = _image_session_put(source)
+        preview, full_w, full_h = preview_png(source, params)
         return True, {
-            "image": base64.b64encode(data).decode("ascii"),
-            "mime": mime,
-            "width": width,
-            "height": height,
+            "token": token,
+            "preview": base64.b64encode(preview).decode("ascii"),
+            "previewWidth": full_w,
+            "previewHeight": full_h,
+            "params": params,
+            "aspect": aspect,
             "rect": _rect_list(rect),
             "page": _page_box(page),
         }
+    if op == "imagePreview":
+        # 보이는 모양을 바꾼(patch) 미리보기. 새 이미지는 token, 이미 넣은 이미지는 pageIndex+id 로 원본을 찾는다.
+        _require_open(opened)
+        if req.get("token"):
+            source = _image_session_get(str(req["token"]))
+            base_params = normalize_params(req.get("params"))
+        else:
+            source, stored = doc.image_stamp_source(int(req.get("pageIndex") or 0), int(req.get("stampId")))
+            base_params = normalize_params(req.get("params") or stored)
+        params = apply_patch(base_params, req.get("patch"))
+        preview, full_w, full_h = preview_png(source, params)
+        return True, {
+            "preview": base64.b64encode(preview).decode("ascii"),
+            "previewWidth": full_w,
+            "previewHeight": full_h,
+            "params": params,
+            "aspect": natural_aspect(params),
+        }
+    if op == "imageList":
+        _require_open(opened)
+        page_index = req.get("pageIndex")
+        items = doc.image_stamp_items(None if page_index is None else int(page_index))
+        return True, {"items": items}
+    if op == "imageLift":
+        _require_open(opened)
+        doc.lift_image_stamps(list(req.get("targets") or []), bool(req.get("lifted")))
+        return True, {}
     if op == "imageCommit":
         _require_open(opened)
         page_index = int(req.get("pageIndex") or 0)
-        raw = str(req.get("image") or "").strip()
-        if not raw:
-            raise ValueError("넣을 이미지가 없습니다.")
-        doc.place_image(page_index, base64.b64decode(raw), _rect_from_list(req.get("rect")))
+        source = _image_session_get(str(req.get("token") or ""))
+        xref = doc.add_image_stamp(page_index, source, _rect_from_list(req.get("rect")), req.get("params"))
+        return True, {"doc": _summary(doc, True), "stampId": xref}  # "id" 는 요청 번호가 쓰는 키라 피한다
+    if op == "imageUpdate":
+        _require_open(opened)
+        results = doc.update_image_stamps(list(req.get("updates") or []))
+        return True, {"doc": _summary(doc, True), "results": results}
+    if op == "imageDelete":
+        _require_open(opened)
+        removed = doc.delete_image_stamps(list(req.get("targets") or []))
+        return True, {"doc": _summary(doc, True), "removed": removed}
+    if op == "imageSource":
+        # 복사용: 원본 이미지와 모양, 쪽에서의 크기(pt)
+        _require_open(opened)
+        page_index = int(req.get("pageIndex") or 0)
+        if req.get("token"):
+            # 아직 확정하지 않은 새 이미지(복사·잘라내기)
+            source = _image_session_get(str(req["token"]))
+            params = normalize_params(req.get("params"))
+            rect = _rect_list(_rect_from_list(req.get("rect")))
+        else:
+            xref = int(req.get("stampId"))
+            source, params = doc.image_stamp_source(page_index, xref)
+            item = [it for it in doc.image_stamp_items(page_index) if it["id"] == xref]
+            rect = item[0]["rect"] if item else [0, 0, 100, 100]
+        return True, {
+            "image": base64.b64encode(source).decode("ascii"),
+            "params": params,
+            "sizePt": [rect[2] - rect[0], rect[3] - rect[1]],
+            "rect": rect,
+        }
+    if op == "imageApplyPages":
+        _require_open(opened)
+        pages = [int(v) for v in (req.get("pages") or [])]
+        done = doc.apply_image_to_pages(int(req.get("pageIndex") or 0), int(req.get("stampId")), pages)
+        return True, {"doc": _summary(doc, True), "pages": done}
+    if op == "imageFlatten":
+        _require_open(opened)
+        doc.flatten_image_stamp(int(req.get("pageIndex") or 0), int(req.get("stampId")), below=bool(req.get("below")))
         return True, {"doc": _summary(doc, True)}
     if op == "inkAdd":
         # 그리기: 획마다 잉크 주석 하나. 점은 쪽 화면 좌표(pt, 회전 반영)로 받는다.
@@ -1145,7 +1204,8 @@ def main() -> int:
         _active_request_id = request_id
         try:
             opened, result = _handle(doc, opened, req)
-            _write({"id": request_id, "ok": True, **result})
+            # 결과에 "id" 키가 있어도 요청 번호를 덮어쓰지 못하게 마지막에 둔다(덮이면 응답이 영영 안 맞는다).
+            _write({**result, "id": request_id, "ok": True})
         except PdfPasswordRequired:
             _write(
                 {

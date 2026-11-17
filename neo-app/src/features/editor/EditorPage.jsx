@@ -15,7 +15,9 @@ import PasswordSetDialog from './PasswordSetDialog.jsx';
 import PiiRemoveDialog from './PiiRemoveDialog.jsx';
 import OcrDialog from './OcrDialog.jsx';
 import TextMarkupLayer from './TextMarkupLayer.jsx';
-import ImagePlaceOverlay from './ImagePlaceOverlay.jsx';
+import ImageLayer from './ImageLayer.jsx';
+import ImageToolbar from './ImageToolbar.jsx';
+import { noteCopyKind, useImageEditing } from './useImageEditing.js';
 import DrawLayer from './draw/DrawLayer.jsx';
 import DrawToolbar from './draw/DrawToolbar.jsx';
 import { hexToRgb01, loadDrawState, saveDrawState } from './draw/drawSettings.js';
@@ -198,53 +200,6 @@ export default function EditorPage({
   // 마지막으로 Enter 로 실행한 검색어. 입력만 바뀌고 아직 Enter 를 안 누른 상태와 구분한다.
   const [searchRanQuery, setSearchRanQuery] = useState('');
   const [searchIndex, setSearchIndex] = useState(0);
-  // 이미지 넣기 세션: PDF 에 확정하기 전의 미리보기(이동·크기 조절) 상태.
-  const [imgEdit, setImgEdit] = useState(
-    /** @type {{ pageIndex: number, image: string, mime: string, width: number, height: number, rect: number[], page: number[] } | null} */ (
-      null
-    ),
-  );
-  const imgEditRef = useRef(imgEdit);
-  imgEditRef.current = imgEdit;
-  const imgIgnoreOutsideRef = useRef(false);
-  const imgDraggingRef = useRef(false);
-  const imgCommittingRef = useRef(/** @type {null | Promise<void>} */ (null));
-  const commitImageRef = useRef(/** @type {null | (() => Promise<void>)} */ (null));
-  const cancelImageRef = useRef(/** @type {null | (() => void)} */ (null));
-
-  // 바깥 클릭으로 이미지 확정(기본) + 편집 중 단축키. 막 연 직후·드래그 중 클릭은 무시한다.
-  useEffect(() => {
-    if (!imgEdit) return undefined;
-    imgIgnoreOutsideRef.current = true;
-    imgDraggingRef.current = false;
-    const arm = window.setTimeout(() => {
-      imgIgnoreOutsideRef.current = false;
-    }, 400);
-    function onPointerDown(event) {
-      if (imgIgnoreOutsideRef.current || imgDraggingRef.current) return;
-      const target = event.target;
-      if (target instanceof Element && target.closest('[data-img-overlay="1"]')) return;
-      void commitImageRef.current?.();
-    }
-    function onKeyDown(event) {
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        void commitImageRef.current?.();
-      } else if (event.key === 'Escape' || event.key === 'Delete' || event.key === 'Backspace') {
-        event.preventDefault();
-        cancelImageRef.current?.();
-      }
-    }
-    window.addEventListener('pointerdown', onPointerDown, true);
-    window.addEventListener('keydown', onKeyDown, true);
-    return () => {
-      window.clearTimeout(arm);
-      window.removeEventListener('pointerdown', onPointerDown, true);
-      window.removeEventListener('keydown', onKeyDown, true);
-    };
-  }, [imgEdit]);
-
   // 그리기 모드: 켜져 있는 동안 쪽 위에 DrawLayer 가 올라가고, 손을 뗀 획은 PDF 잉크 주석으로 들어간다.
   const [drawOn, setDrawOn] = useState(false);
   const [drawState, setDrawState] = useState(loadDrawState);
@@ -322,6 +277,28 @@ export default function EditorPage({
   const searchQueryRef = useRef('');
   zoomRef.current = zoom;
   searchQueryRef.current = searchQuery;
+
+  // 이미지 넣기·다시 고치기(선택/이동/크기/복사/투명 배경/자르기 …). 확정 전에는 PDF 가 바뀌지 않는다.
+  const imageEdit = useImageEditing({
+    api,
+    doc,
+    pageIndex,
+    docRef,
+    drawOnRef,
+    pageIndexRef,
+    zoomRef,
+    active,
+    setError,
+    endDrawing,
+    getPageBox: (index) => {
+      const [w, h] = pageSizes[index] ?? FALLBACK_PAGE_PT;
+      return [0, 0, w, h];
+    },
+    refreshPage: (nextDoc, index) => refreshInkPage(nextDoc, index),
+    applyDocResult: (result, index) => applyDocResult(result, index),
+  });
+  const imageEditRef = useRef(imageEdit);
+  imageEditRef.current = imageEdit;
 
   useEffect(() => {
     let cancelled = false;
@@ -435,7 +412,7 @@ export default function EditorPage({
       setPageSizes([]);
       setThumbs(Array.from({ length: nextDoc.pageCount || 0 }, () => ''));
       setMarkups(nextDoc.open ? null : []);
-      setImgEdit(null);
+      imageEditRef.current?.reset();
       setError('');
       if (!nextDoc.open || nextDoc.pageCount < 1) {
         setBusy('');
@@ -1022,6 +999,17 @@ export default function EditorPage({
   async function copyCutPaste(kind) {
     setError('');
     try {
+      // 이미지를 고르고 있으면 복사·잘라내기는 이미지에, 마지막에 복사한 게 이미지면 붙여넣기도 이미지에 한다.
+      if (kind !== 'paste' && imageEdit.hasSelection()) {
+        if (kind === 'copy') await imageEdit.copySelected();
+        else await imageEdit.cutSelected();
+        return;
+      }
+      if (kind === 'paste' && imageEdit.hasClipboard()) {
+        await imageEdit.pasteClip();
+        return;
+      }
+      noteCopyKind('page');
       if (kind === 'paste') {
         const result = await api('pdf.pastePages', { index: pageIndex + 1 });
         await applyDocResult(result, pageIndex);
@@ -1211,7 +1199,7 @@ export default function EditorPage({
 
   // 진행 중인 그리기 반영과 편집 중인 이미지 확정이 모두 끝날 때까지 기다린다. 저장·되돌리기·닫기 전에 부른다.
   async function flushInk() {
-    if (imgEditRef.current) await commitImageRef.current?.();
+    await imageEditRef.current?.commit();
     await inkQueueRef.current;
   }
 
@@ -1300,68 +1288,51 @@ export default function EditorPage({
   async function startDrawing() {
     if (!docRef.current.open) return;
     setError('');
-    if (imgEditRef.current) await commitImageRef.current?.();
+    await imageEditRef.current?.commit();
     setDrawOn(true);
   }
 
   // 이미지 넣기: 클립보드/파일의 이미지를 현재 쪽에 올려 놓고 위치·크기를 고르게 한다. Enter·바깥 클릭으로 확정.
-  async function placeImage(fromClipboard) {
-    if (!docRef.current.open) return;
-    setError('');
+  function placeImage(fromClipboard) {
+    return imageEdit.place({ fromClipboard: Boolean(fromClipboard) });
+  }
+
+  // 이미지 파일을 쪽 위로 끌어다 놓으면 놓은 자리에 올려 둔다(좌측 썸네일 창에 놓으면 기존처럼 병합).
+  function dragHasImage(event) {
+    return Array.from(event.dataTransfer?.items || []).some((entry) => entry.kind === 'file' && entry.type.startsWith('image/'));
+  }
+
+  function onViewerDragOver(event) {
+    if (!docRef.current.open || !dragHasImage(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }
+
+  async function onViewerDrop(event) {
+    const file = Array.from(event.dataTransfer?.files || []).find((entry) => entry.type.startsWith('image/'));
+    if (!file || !docRef.current.open) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const target = event.target instanceof Element ? event.target.closest('[data-page]') : null;
+    const index = target ? Number(target.getAttribute('data-page')) : pageIndexRef.current;
+    let centerAt;
+    if (target) {
+      const box = target.getBoundingClientRect();
+      const [ptW, ptH] = pageSizes[index] ?? FALLBACK_PAGE_PT;
+      centerAt = {
+        x: ((event.clientX - box.left) / Math.max(1, box.width)) * ptW,
+        y: ((event.clientY - box.top) / Math.max(1, box.height)) * ptH,
+      };
+    }
     try {
-      if (imgEditRef.current) await commitImageRef.current?.();
-      if (drawOnRef.current) await endDrawing();
-      const result = await api('pdf.imagePrepare', { pageIndex, fromClipboard: Boolean(fromClipboard) });
-      if (result.canceled) return;
-      setImgEdit({
-        pageIndex,
-        image: result.image,
-        mime: result.mime,
-        width: result.width,
-        height: result.height,
-        rect: result.rect,
-        page: result.page,
-      });
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      await imageEdit.place({ image: btoa(binary), pageIndex: index, centerAt });
     } catch (err) {
       setError(err instanceof Error ? err.message : '이미지를 넣지 못했습니다.');
     }
   }
-
-  async function commitImage() {
-    const session = imgEditRef.current;
-    if (!session) return;
-    // 확정 중에 바깥 클릭·Enter 가 겹쳐 들어와도 한 번만 넣는다.
-    if (imgCommittingRef.current) return imgCommittingRef.current;
-    const job = commitImageNow(session);
-    imgCommittingRef.current = job;
-    try {
-      await job;
-    } finally {
-      imgCommittingRef.current = null;
-    }
-  }
-
-  async function commitImageNow(session) {
-    setError('');
-    try {
-      const result = await api('pdf.imageCommit', {
-        pageIndex: session.pageIndex,
-        image: session.image,
-        rect: session.rect,
-      });
-      // 쪽 그림을 먼저 갱신해 오버레이 아래에 같은 크기·위치로 그린 뒤 오버레이를 걷는다.
-      await refreshAfterMarkup(result.doc);
-      setImgEdit(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '이미지를 확정하지 못했습니다.');
-    }
-  }
-  commitImageRef.current = commitImage;
-
-  function cancelImage() {
-    setImgEdit(null);
-  }
-  cancelImageRef.current = cancelImage;
 
   async function endDrawing() {
     await flushInk();
@@ -1659,7 +1630,16 @@ export default function EditorPage({
           {drawOn && doc.open ? (
             <DrawToolbar state={drawState} onChange={setDrawState} onDone={() => void endDrawing()} />
           ) : null}
-          <main ref={viewRef} className="min-h-0 flex-1 overflow-auto" onScroll={onViewerScroll}>
+          {imageEdit.active && doc.open && !drawOn ? (
+            <ImageToolbar controller={imageEdit} pageCount={doc.pageCount} confirm={dialog.confirm} />
+          ) : null}
+          <main
+            ref={viewRef}
+            className="min-h-0 flex-1 overflow-auto"
+            onScroll={onViewerScroll}
+            onDragOver={onViewerDragOver}
+            onDrop={(event) => void onViewerDrop(event)}
+          >
             {doc.open && doc.pageCount > 0 ? (
               // 연속 스크롤: 모든 쪽을 세로로 이어 놓는다. 쪽 크기를 알면 그리지 않은 쪽도 제 자리에 있다.
               <div className="flex min-h-full flex-col items-center justify-center gap-4 p-6">
@@ -1687,36 +1667,21 @@ export default function EditorPage({
                           {current && src ? (
                             <TextMarkupLayer
                               pageIndex={pageIndex}
-                              enabled={doc.open && !busy && !drawOn && !imgEdit}
+                              enabled={doc.open && !busy && !drawOn && !imageEdit.active}
                               onMarkupChanged={(nextDoc) => void refreshAfterMarkup(nextDoc)}
                               onNotice={notifyMarkup}
                             />
                           ) : null}
-                          {imgEdit && imgEdit.pageIndex === index ? (
-                            <ImagePlaceOverlay
-                              image={imgEdit.image}
-                              mime={imgEdit.mime}
-                              rect={imgEdit.rect}
-                              page={imgEdit.page}
-                              imageWidth={imgEdit.width}
-                              imageHeight={imgEdit.height}
-                              onChangeRect={(next) => {
-                                setImgEdit((prev) => {
-                                  if (!prev) return prev;
-                                  const updated = { ...prev, rect: next };
-                                  imgEditRef.current = updated;
-                                  return updated;
-                                });
-                              }}
-                              onCommit={() => void commitImage()}
-                              onCancel={cancelImage}
-                              onDelete={cancelImage}
-                              onDraggingChange={(dragging) => {
-                                imgDraggingRef.current = dragging;
-                              }}
+                          {src ? (
+                            <ImageLayer
+                              pageIndex={index}
+                              ptW={ptW}
+                              ptH={ptH}
+                              controller={imageEdit}
+                              showHits={doc.open && !busy && !drawOn}
                             />
                           ) : null}
-                          {drawOn && src && !imgEdit ? (
+                          {drawOn && src && !imageEdit.active ? (
                             <DrawLayer
                               pageIndex={index}
                               ptW={ptW}
