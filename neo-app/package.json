@@ -35,7 +35,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.5",
     "@vitejs/plugin-react": "^6.3.0",
-    "electron": "^44.10.0",
+    "electron": "^45.3.3",
     "electron-builder": "^26.18.0",
     "png-to-ico": "^3.0.2",
     "postcss": "^8.5.33",
@@ -105,5 +105,8 @@
         }
       ]
     }
+  },
+  "allowScripts": {
+    "electron@45.3.3": true
   }
 }
