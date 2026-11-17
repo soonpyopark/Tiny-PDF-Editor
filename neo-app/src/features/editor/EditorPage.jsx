@@ -269,7 +269,10 @@ export default function EditorPage({
     if (!drawOn || !active) return undefined;
     function onKeyDown(event) {
       if (event.key !== 'Escape') return;
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      // 글자를 입력하는 칸에서는 건드리지 않는다. 슬라이더 같은 조절 칸은 해당 없음.
+      const el = event.target;
+      if (el instanceof HTMLTextAreaElement) return;
+      if (el instanceof HTMLInputElement && !['range', 'checkbox', 'radio', 'button', 'color'].includes(el.type)) return;
       event.preventDefault();
       void endDrawing();
     }
