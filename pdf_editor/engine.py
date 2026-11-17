@@ -949,6 +949,27 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
         _require_open(opened)
         _signature_lift["active"] = False
         return True, {"doc": _summary(doc, True)}
+    if op == "inkAdd":
+        # 그리기: 획마다 잉크 주석 하나. 점은 쪽 화면 좌표(pt, 회전 반영)로 받는다.
+        _require_open(opened)
+        added = doc.add_ink_strokes(
+            int(req.get("pageIndex") or 0),
+            req.get("strokes"),
+            rgb=req.get("color"),
+            width=req.get("width", 2.0),
+            opacity=req.get("opacity", 1.0),
+            continue_group=bool(req.get("continueGroup")),
+        )
+        return True, {"doc": _summary(doc, True), "added": added}
+    if op == "inkErase":
+        _require_open(opened)
+        removed = doc.erase_ink_near(
+            int(req.get("pageIndex") or 0),
+            req.get("path"),
+            radius=float(req.get("radius") or 6.0),
+            continue_group=bool(req.get("continueGroup")),
+        )
+        return True, {"doc": _summary(doc, True), "removed": removed}
     if op == "hwpStatus":
         from pdf_editor.hwp_convert import hancom_installed
 

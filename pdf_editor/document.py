@@ -19,6 +19,15 @@ from pdf_editor.hwp_convert import (
     HWP_EXTENSIONS,
     convert_hwp_to_temp_pdf,
 )
+from pdf_editor.ink_draw import (
+    INK_ANNOT_TITLE,
+    clamp_opacity,
+    clamp_width,
+    clean_rgb,
+    clean_strokes,
+    is_ink_annot,
+    stroke_hit_by_path,
+)
 from pdf_editor.signature_stamp import (
     SIGNATURE_ANNOT_TITLE,
     SIGNATURE_EMBFILE_PREFIX,
@@ -163,6 +172,9 @@ class PdfDocument:
         self._doc = fitz.open()
         self._source_path: str | None = None
         self._modified = False
+        # 문서를 바꿀 때마다 올라간다. 그리기에서 "바로 이어진 획인지" 알아보는 데 쓴다.
+        self._revision = 0
+        self._ink_group_token: tuple[int, int] | None = None
         self._render_pause_depth = 0
         self._undo_stack: list[bytes] = []
         self._redo_stack: list[bytes] = []
@@ -1176,6 +1188,7 @@ class PdfDocument:
 
     def _touch(self) -> None:
         self._modified = True
+        self._revision += 1
 
     def get_page_rect(self, index: int) -> fitz.Rect:
         return self._doc[index].rect
@@ -3117,14 +3130,13 @@ class PdfDocument:
                     base_buf[bi + 1] = over_buf[oi + 1]
                     base_buf[bi + 2] = over_buf[oi + 2]
                     continue
+                # MuPDF 의 알파 픽스맵은 색이 알파에 이미 곱해져 있다(premultiplied).
+                # 그래서 over + base*(1-alpha) 로 합성한다. 곱을 한 번 더 하면 반투명
+                # 픽셀(형광펜·획 가장자리)이 의도보다 훨씬 연하게 나온다.
                 inv = 255 - alpha
-                base_buf[bi] = (over_buf[oi] * alpha + base_buf[bi] * inv) // 255
-                base_buf[bi + 1] = (
-                    over_buf[oi + 1] * alpha + base_buf[bi + 1] * inv
-                ) // 255
-                base_buf[bi + 2] = (
-                    over_buf[oi + 2] * alpha + base_buf[bi + 2] * inv
-                ) // 255
+                for ch in range(3):
+                    value = over_buf[oi + ch] + (base_buf[bi + ch] * inv) // 255
+                    base_buf[bi + ch] = 255 if value > 255 else value
 
     @staticmethod
     def _fill_rect_blend(
@@ -3225,10 +3237,24 @@ class PdfDocument:
                             thickness=thickness,
                         )
                 continue
+            # annot.get_pixmap 은 ICC 변환을 거쳐 색이 흐려진다 (예: 파랑 0,102,255 -> 66,105,178).
+            # 주석 하나를 그리는 동안만 ICC 를 끄면 PDF 에 적힌 색 그대로 나온다.
+            icc_toggled = False
             try:
+                try:
+                    fitz.TOOLS.set_icc(False)
+                    icc_toggled = True
+                except Exception:
+                    icc_toggled = False
                 appearance = annot.get_pixmap(matrix=matrix, alpha=True)
             except Exception:
                 continue
+            finally:
+                if icc_toggled:
+                    try:
+                        fitz.TOOLS.set_icc(True)
+                    except Exception:
+                        pass
             if appearance is None or appearance.width < 1 or appearance.height < 1:
                 continue
             try:
@@ -4078,6 +4104,118 @@ class PdfDocument:
         )
         annot.set_flags(2 | 32)
         annot.update()
+
+    # ------------------------------------------------------------------
+    # 그리기: 자유 곡선(잉크 주석)
+    # ------------------------------------------------------------------
+
+    def _begin_ink_edit(self, continue_group: bool) -> None:
+        """Open an undo step for a drawing burst, or join the one just made.
+
+        실행 취소는 문서 전체 스냅샷이라 획마다 만들면 큰 문서에서 무겁다. 호출하는 쪽이
+        `continue_group` 으로 "바로 앞 그리기와 한 묶음"이라고 알려 주면, 그 사이 다른 편집이
+        없었을 때(리비전이 그대로일 때)만 새 단계를 만들지 않는다.
+        """
+        token = (len(self._undo_stack), self._revision)
+        if continue_group and self._ink_group_token == token:
+            return
+        self._record_undo_checkpoint()
+
+    def _finish_ink_edit(self) -> None:
+        self._touch()
+        self._ink_group_token = (len(self._undo_stack), self._revision)
+
+    def add_ink_strokes(
+        self,
+        page_index: int,
+        strokes,
+        *,
+        rgb,
+        width: float,
+        opacity: float = 1.0,
+        continue_group: bool = False,
+    ) -> int:
+        """Add one ink annotation per stroke. Points are page-view coordinates (pt).
+
+        Returns how many strokes were added.
+        """
+        if not (0 <= page_index < len(self._doc)):
+            raise ValueError("페이지 번호가 올바르지 않습니다.")
+        page = self._doc[page_index]
+        cleaned = clean_strokes(strokes, page.rect)
+        if not cleaned:
+            return 0
+        color = clean_rgb(rgb)
+        line_width = clamp_width(width)
+        alpha = clamp_opacity(opacity)
+        self._begin_ink_edit(continue_group)
+        # PyMuPDF 는 점을 회전 전(원본) 좌표로 그대로 저장한다. 화면 좌표를 변환해서 넘긴다.
+        to_pdf = page.derotation_matrix
+        for stroke in cleaned:
+            annot = page.add_ink_annot(
+                [[tuple(fitz.Point(x, y) * to_pdf) for x, y in stroke]]
+            )
+            annot.set_border(width=line_width)
+            annot.set_colors(stroke=color)
+            if alpha < 1.0:
+                annot.set_opacity(alpha)
+            annot.set_info(title=INK_ANNOT_TITLE)
+            annot.update()
+        self._finish_ink_edit()
+        return len(cleaned)
+
+    def erase_ink_near(
+        self,
+        page_index: int,
+        path,
+        *,
+        radius: float,
+        continue_group: bool = False,
+    ) -> int:
+        """Delete this app's ink strokes touched by an eraser of *radius* moving along *path*.
+
+        Only whole strokes are removed. Returns how many were removed (0 = nothing changed,
+        no undo step is made).
+        """
+        if not (0 <= page_index < len(self._doc)):
+            raise ValueError("페이지 번호가 올바르지 않습니다.")
+        page = self._doc[page_index]
+        cleaned = clean_strokes([path], page.rect)
+        if not cleaned:
+            return 0
+        eraser_path = cleaned[0]
+        reach = max(0.5, float(radius))
+        doomed: list[int] = []
+        to_view = page.rotation_matrix  # 저장된 점(회전 전) -> 화면 좌표
+        for annot in self._iter_page_annots(page):
+            if not is_ink_annot(annot):
+                continue
+            try:
+                border = annot.border or {}
+                stroke_width = float(border.get("width", 1.0) or 1.0)
+                vertices = annot.vertices or []
+            except (RuntimeError, ValueError, TypeError):
+                continue
+            for raw in vertices:
+                points = []
+                for p in raw:
+                    q = fitz.Point(float(p[0]), float(p[1])) * to_view
+                    points.append((q.x, q.y))
+                if points and stroke_hit_by_path(points, stroke_width, eraser_path, reach):
+                    doomed.append(annot.xref)
+                    break
+        if not doomed:
+            return 0
+        self._begin_ink_edit(continue_group)
+        removed = 0
+        for xref in doomed:
+            for annot in self._iter_page_annots(page):
+                if annot.xref == xref:
+                    page.delete_annot(annot)
+                    removed += 1
+                    break
+        self._finish_ink_edit()
+        return removed
 
     def insert_blank_page_at(self, index: int) -> None:
         """Insert a blank page at *index* (same size as a nearby page, or A4 if empty)."""

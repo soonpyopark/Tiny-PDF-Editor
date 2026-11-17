@@ -1073,6 +1073,32 @@ export function register() {
     return { doc: result.doc };
   });
 
+  // 그리기: 쪽 화면 좌표(pt)의 획을 잉크 주석으로 넣는다. continueGroup 이면 바로 앞 그리기와 실행 취소 한 단계로 묶는다.
+  defineApi('pdf.inkAdd', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'inkAdd',
+      pageIndex: Number(body?.pageIndex) || 0,
+      strokes: Array.isArray(body?.strokes) ? body.strokes : [],
+      color: Array.isArray(body?.color) ? body.color : [0.29, 0.29, 0.29],
+      width: Number(body?.width) || 2,
+      opacity: Number(body?.opacity) || 1,
+      continueGroup: Boolean(body?.continueGroup),
+    });
+    return { doc: result.doc, added: Number(result.added) || 0 };
+  });
+
+  // 지우개: 이 앱이 그린 획 중 지우개 경로에 닿은 것만 지운다.
+  defineApi('pdf.inkErase', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'inkErase',
+      pageIndex: Number(body?.pageIndex) || 0,
+      path: Array.isArray(body?.path) ? body.path : [],
+      radius: Number(body?.radius) || 6,
+      continueGroup: Boolean(body?.continueGroup),
+    });
+    return { doc: result.doc, removed: Number(result.removed) || 0 };
+  });
+
   defineApi('pdf.signatureCancel', 'user', async () => {
     const result = await engineOp({ op: 'signatureCancel' });
     return { doc: result.doc };
