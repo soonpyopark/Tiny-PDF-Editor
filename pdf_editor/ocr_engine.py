@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -24,6 +25,7 @@ TEXT_SCORE = 0.5
 DET_MEAN = (0.485, 0.456, 0.406)
 DET_STD = (0.229, 0.224, 0.225)
 IOU_THRESH = 0.45
+OCR_THREADS = 4
 
 
 @dataclass(frozen=True)
@@ -196,6 +198,10 @@ class OcrEngine:
         options = ort.SessionOptions()
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         options.log_severity_level = 3
+        # 스레드는 4개면 충분하다. 기본값(코어 수만큼)은 24스레드 PC 에서 몇 쪽 지나면 스레드끼리 부딪혀
+        # 같은 쪽이 약 4배(1초 → 9초) 느려졌다 (4스레드는 2초대로 일정, 반복 측정). 스레드마다 쓰는 작업 메모리도 줄어든다.
+        options.intra_op_num_threads = max(1, min(OCR_THREADS, os.cpu_count() or OCR_THREADS))
+        options.inter_op_num_threads = 1
         self._det = ort.InferenceSession(
             str(models / OCR_DET_MODEL.filename),
             options,
@@ -299,3 +305,11 @@ def get_ocr_engine() -> OcrEngine:
 
 def reset_ocr_engine() -> None:
     _cached_engine.cache_clear()
+
+
+def release_ocr_engine() -> None:
+    """OCR 모델과 작업 메모리를 놓아 준다. 호출하는 쪽은 OcrEngine 참조를 이미 버렸어야 한다."""
+    import gc
+
+    reset_ocr_engine()
+    gc.collect()

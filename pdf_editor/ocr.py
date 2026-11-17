@@ -10,7 +10,7 @@ import pymupdf as fitz
 import numpy as np
 
 from pdf_editor.document import PdfDocument
-from pdf_editor.ocr_engine import OcrLine, get_ocr_engine
+from pdf_editor.ocr_engine import OcrLine, get_ocr_engine, release_ocr_engine
 from pdf_editor.ocr_models import models_ready
 
 OCR_ANNOT_TITLE = "tpe:ocr"
@@ -256,6 +256,24 @@ def run_ocr_on_document(
     skip_native_text: bool = True,
     status_callback: ProgressCallback | None = None,
 ) -> OcrRunResult:
+    """OCR 을 돌린다. 끝나면(실패해도) 모델을 해제해, 엔진 프로세스가 수백 MB 를 붙잡고 있지 않게 한다.
+
+    다음 OCR 때 모델을 다시 올리는 데 1~2초가 든다. 한 번에 여러 쪽을 돌리면 모델은 한 번만 올린다.
+    """
+    try:
+        return _run_ocr(document, indices, skip_native_text=skip_native_text, status_callback=status_callback)
+    finally:
+        release_ocr_engine()
+        fitz.TOOLS.store_shrink(100)
+
+
+def _run_ocr(
+    document: PdfDocument,
+    indices: list[int],
+    *,
+    skip_native_text: bool = True,
+    status_callback: ProgressCallback | None = None,
+) -> OcrRunResult:
     if not indices:
         return OcrRunResult(0, 0, 0, 0)
     if status_callback:
@@ -295,4 +313,6 @@ def run_ocr_on_document(
             lines += written
         else:
             failed += 1
+        # 스캔 쪽은 300dpi 이미지를 풀어 MuPDF 캐시에 쌓는다 (쪽당 약 30MB). 여러 쪽을 돌릴 때 계속 불지 않도록 비운다.
+        fitz.TOOLS.store_shrink(100)
     return OcrRunResult(applied, skipped, failed, lines)
