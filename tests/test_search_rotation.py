@@ -68,6 +68,26 @@ class SearchRotationTests(unittest.TestCase):
             self.assertAlmostEqual(hits[0].rect.y0, raw.y0, places=3)
             document.close()
 
+    def test_rotated_page_snippet_uses_derotated_clip(self) -> None:
+        """Snippets must not go blank on /Rotate pages (UI result row)."""
+        from pdf_editor.engine import _search_snippet
+
+        doc = fitz.open()
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 120), "rotated search hit line", fontsize=18)
+        page.set_rotation(90)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rot.pdf"
+            doc.save(path)
+            doc.close()
+            document = PdfDocument()
+            document.open_file(str(path))
+            hits = document.search_text("search")
+            self.assertGreaterEqual(len(hits), 1)
+            snippet = _search_snippet(document, hits[0])
+            self.assertIn("search", snippet.lower())
+            document.close()
+
     def test_fixture_연계_hits_cover_ink_on_rotated_page(self) -> None:
         if not _FIXTURE_PDF.is_file():
             self.skipTest(f"fixture missing: {_FIXTURE_PDF}")

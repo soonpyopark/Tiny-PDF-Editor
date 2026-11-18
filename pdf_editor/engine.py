@@ -414,13 +414,27 @@ def _markup_point(raw, page_rect: fitz.Rect) -> fitz.Point:
 
 
 def _search_snippet(doc: PdfDocument, hit) -> str:
-    """Text on the same line as a search hit (for the result row under the search box)."""
+    """Text near a search hit (for the result row under the search box).
+
+    Hit rects are kept in on-screen ``page.rect`` space (after rotation_matrix).
+    ``Page.get_text(..., clip=)`` expects unrotated space, so derotate the clip
+    when the page has ``/Rotate`` — otherwise snippets come back empty on
+    PPT→PDF and similar landscape pages.
+    """
     rect = hit.rect
     if rect.is_empty or rect.is_infinite:
         return ""
-    band = fitz.Rect(rect.x0 - 90, rect.y0, rect.x1 + 90, rect.y1)
+    page = doc._doc[hit.page_index]
+    pad = 120.0
+    band = fitz.Rect(rect.x0 - pad, rect.y0 - 2.0, rect.x1 + pad, rect.y1 + 2.0)
+    rotation = int(page.rotation or 0) % 360
+    clip = (
+        PdfDocument._normalize_rect(band * page.derotation_matrix)
+        if rotation
+        else band
+    )
     try:
-        text = doc.get_text_in_rect(hit.page_index, band)
+        text = page.get_text("text", clip=clip).strip()
     except Exception:
         return ""
     return " ".join(text.split())[:200]
@@ -852,17 +866,23 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
     if op == "search":
         _require_open(opened)
         query = str(req.get("query") or "")
-        hits = [
-            {
-                "pageIndex": hit.page_index,
-                "x0": float(hit.rect.x0),
-                "y0": float(hit.rect.y0),
-                "x1": float(hit.rect.x1),
-                "y1": float(hit.rect.y1),
-                "snippet": _search_snippet(doc, hit),
-            }
-            for hit in doc.search_text(query)
-        ]
+        hits = []
+        for hit in doc.search_text(query):
+            # UI overlays treat the page as origin (0,0); CropBox etc. can shift
+            # page.rect, so export page-relative coords (same as PII preview).
+            page = doc.get_page_rect(hit.page_index)
+            ox = float(page.x0)
+            oy = float(page.y0)
+            hits.append(
+                {
+                    "pageIndex": hit.page_index,
+                    "x0": float(hit.rect.x0) - ox,
+                    "y0": float(hit.rect.y0) - oy,
+                    "x1": float(hit.rect.x1) - ox,
+                    "y1": float(hit.rect.y1) - oy,
+                    "snippet": _search_snippet(doc, hit),
+                }
+            )
         return opened, {"hits": hits}
     if op == "extractPages":
         _require_open(opened)

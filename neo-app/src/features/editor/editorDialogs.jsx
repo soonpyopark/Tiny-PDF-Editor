@@ -184,6 +184,9 @@ export function SearchDropdown({
 }) {
   const total = hits.length;
   const hit = total ? hits[index] : null;
+  const live = query.trim();
+  // 입력 중인 검색어와 마지막 Enter 검색어가 같을 때만 결과·이전/다음을 활성화한다.
+  const resultsLive = Boolean(ranQuery && live === ranQuery);
 
   return (
     <div
@@ -201,7 +204,7 @@ export function SearchDropdown({
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
               event.preventDefault();
-              if (event.shiftKey && total) onPrev();
+              if (event.shiftKey && resultsLive && total) onPrev();
               else onSubmit();
             } else if (event.key === 'Escape') {
               event.preventDefault();
@@ -214,7 +217,7 @@ export function SearchDropdown({
           type="button"
           title="이전 결과 (Shift+Enter)"
           aria-label="이전 결과"
-          disabled={!total}
+          disabled={!resultsLive || !total}
           className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded border border-slate-300 bg-white text-[11px] text-slate-700 hover:bg-slate-50 disabled:opacity-40"
           onClick={onPrev}
         >
@@ -224,7 +227,7 @@ export function SearchDropdown({
           type="button"
           title="다음 결과 (Enter)"
           aria-label="다음 결과"
-          disabled={!total}
+          disabled={!resultsLive || !total}
           className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded border border-slate-300 bg-white text-[11px] text-slate-700 hover:bg-slate-50 disabled:opacity-40"
           onClick={onNext}
         >
@@ -242,8 +245,10 @@ export function SearchDropdown({
       </div>
 
       <div className="flex min-h-[32px] items-center gap-2 border-t border-app-border bg-slate-50 px-2.5 py-1.5 text-[12px] text-slate-600">
-        {!ranQuery ? (
+        {!live ? (
           <span className="text-slate-500">검색어를 입력하고 Enter를 누르세요.</span>
+        ) : !resultsLive ? (
+          <span className="text-slate-500">Enter를 눌러 ‘{live}’를 검색하세요.</span>
         ) : !hit ? (
           <span>‘{ranQuery}’ 검색 결과가 없습니다.</span>
         ) : (

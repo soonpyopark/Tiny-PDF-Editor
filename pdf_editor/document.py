@@ -3149,12 +3149,11 @@ class PdfDocument:
 
     @staticmethod
     def _search_hit_display_rect(page, hit: fitz.Quad | fitz.Rect) -> fitz.Rect:
-        """Map MuPDF search geometry into page.rect (on-screen) space.
+        """Map search geometry into page.rect (on-screen) space.
 
         PPT→PDF pages often keep content in unrotated mediabox space while
-        ``/Rotate`` makes ``page.rect`` landscape. ``search_for`` then returns
-        boxes that miss the rendered glyphs unless multiplied by
-        ``page.rotation_matrix``.
+        ``/Rotate`` makes ``page.rect`` landscape. Hits then need
+        ``page.rotation_matrix`` to match the rendered page.
         """
         rotation = int(page.rotation or 0) % 360
         if isinstance(hit, fitz.Quad):
@@ -3166,6 +3165,45 @@ class PdfDocument:
                 rect = rect * page.rotation_matrix
         return PdfDocument._normalize_rect(rect)
 
+    @staticmethod
+    def _search_needle_rects_from_chars(page, needle: str) -> list[fitz.Rect] | None:
+        """Locate *needle* by walking visible char bboxes.
+
+        Returns ``None`` when the page has no char boxes (caller should fall
+        back to ``search_for``). Prefer this over ``Page.search_for``: some
+        Korean CID fonts report wrong hit geometry (e.g. 샘플.pdf 「일반」 on
+        page 6 lands on the next table row), while char bboxes match glyphs.
+        """
+        rects: list[fitz.Rect] = []
+        saw_chars = False
+        pattern = re.compile(re.escape(needle), re.IGNORECASE)
+        raw = page.get_text("rawdict")
+        for block in raw.get("blocks") or []:
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines") or []:
+                chars: list = []
+                for span in line.get("spans") or []:
+                    span_chars = span.get("chars") or []
+                    if span_chars:
+                        saw_chars = True
+                        chars.extend(span_chars)
+                if not chars:
+                    continue
+                buf = "".join((c.get("c") or "") for c in chars)
+                for match in pattern.finditer(buf):
+                    matched = chars[match.start() : match.end()]
+                    if not matched:
+                        continue
+                    rect = fitz.Rect(matched[0]["bbox"])
+                    for char in matched[1:]:
+                        rect |= fitz.Rect(char["bbox"])
+                    if not rect.is_empty and not rect.is_infinite:
+                        rects.append(rect)
+        if not saw_chars:
+            return None
+        return rects
+
     def search_text(self, query: str) -> list[SearchHit]:
         needle = query.strip()
         if not needle:
@@ -3173,11 +3211,18 @@ class PdfDocument:
         hits: list[SearchHit] = []
         for page_index in range(len(self._doc)):
             page = self._doc[page_index]
-            for quad in page.search_for(needle, quads=True):
+            found = self._search_needle_rects_from_chars(page, needle)
+            if found is None:
+                # Image-only / no char boxes: last resort (may mis-place on bad fonts).
+                found = [
+                    fitz.Rect(quad.rect)
+                    for quad in page.search_for(needle, quads=True)
+                ]
+            for rect in found:
                 hits.append(
                     SearchHit(
                         page_index,
-                        self._search_hit_display_rect(page, quad),
+                        self._search_hit_display_rect(page, rect),
                     )
                 )
         return hits

@@ -362,8 +362,16 @@ export default function EditorPage({
   const zoomAnchorRef = useRef(/** @type {number | null} */ (null));
   const searchInputRef = useRef(null);
   const searchQueryRef = useRef('');
+  const searchHitsRef = useRef(/** @type {any[]} */ ([]));
+  const searchIndexRef = useRef(0);
+  const searchRanQueryRef = useRef('');
+  // goToHit 직후 쪽 그림·크기가 아직 없으면, 준비되는 대로 한 번 더 맞춰 스크롤한다.
+  const pendingSearchNavRef = useRef(/** @type {null | { pageIndex: number, x0: number, y0: number, x1: number, y1: number }} */ (null));
   zoomRef.current = zoom;
   searchQueryRef.current = searchQuery;
+  searchHitsRef.current = searchHits;
+  searchIndexRef.current = searchIndex;
+  searchRanQueryRef.current = searchRanQuery;
 
   // 이미지 넣기·다시 고치기(선택/이동/크기/복사/투명 배경/자르기 …). 확정 전에는 PDF 가 바뀌지 않는다.
   const imageEdit = useImageEditing({
@@ -721,18 +729,21 @@ export default function EditorPage({
     scrollToPage(target);
   }
 
-  // 검색 결과로 이동: 해당 쪽으로 간 뒤, 찾은 글자가 화면 가운데 오도록 본문을 움직인다.
-  // 이미 화면 안(가장자리 여유 포함)에 보이면 그대로 둔다.
-  function goToHit(hit) {
-    if (!hit) return;
-    goTo(hit.pageIndex);
+  // 검색 hit 을 화면 가운데로. pageSizes 가 비어 FALLBACK 이면 스케일이 틀릴 수 있어
+  // 쪽 크기·그림이 채워진 뒤 effect 가 pendingSearchNavRef 로 한 번 더 맞춘다.
+  function scrollSearchHitIntoView(hit) {
+    if (!hit) return false;
     const view = viewRef.current;
     const el = view?.querySelector(`[data-page="${hit.pageIndex}"]`);
-    if (!view || !el) return;
-    const [, ptH] = pageSizes[hit.pageIndex] ?? FALLBACK_PAGE_PT;
+    if (!view || !el) return false;
+    const [ptW, ptH] = pageSizes[hit.pageIndex] ?? FALLBACK_PAGE_PT;
     const pageRect = el.getBoundingClientRect();
     const viewRect = view.getBoundingClientRect();
-    const scale = pageRect.height / Math.max(1, ptH);
+    // 쪽 CSS 크기는 ptW*zoom × ptH*zoom 이므로 가로·세로 스케일이 같아야 한다.
+    // FALLBACK 으로 가로가 어긋난 경우를 줄이려고 둘 다 보고 세로를 우선한다.
+    const scaleY = pageRect.height / Math.max(1, ptH);
+    const scaleX = pageRect.width / Math.max(1, ptW);
+    const scale = Number.isFinite(scaleY) && scaleY > 0 ? scaleY : scaleX;
     const originX = pageRect.left - viewRect.left + view.scrollLeft;
     const originY = pageRect.top - viewRect.top + view.scrollTop;
     const left = originX + hit.x0 * scale;
@@ -745,11 +756,33 @@ export default function EditorPage({
       bottom <= view.scrollTop + view.clientHeight - margin &&
       left >= view.scrollLeft + margin &&
       right <= view.scrollLeft + view.clientWidth - margin;
-    if (visible) return;
+    if (visible) return true;
     view.scrollTo({
       top: Math.max(0, (top + bottom) / 2 - view.clientHeight / 2),
       left: Math.max(0, (left + right) / 2 - view.clientWidth / 2),
       behavior: 'auto',
+    });
+    return true;
+  }
+
+  // 검색 결과로 이동: 쪽 자리로 스크롤한 뒤 hit 이 가운데 오도록 맞춘다.
+  function goToHit(hit) {
+    if (!hit) return;
+    pendingSearchNavRef.current = {
+      pageIndex: hit.pageIndex,
+      x0: hit.x0,
+      y0: hit.y0,
+      x1: hit.x1,
+      y1: hit.y1,
+    };
+    goTo(hit.pageIndex);
+    // 쪽 전환·레이아웃 반영 뒤에 맞춘다 (한 프레임만으로는 자리 계산이 어긋날 수 있음).
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const pending = pendingSearchNavRef.current;
+        if (!pending) return;
+        scrollSearchHitIntoView(pending);
+      });
     });
   }
 
@@ -774,6 +807,19 @@ export default function EditorPage({
     if (anchor == null || !view) return;
     view.scrollTop = anchor * view.scrollHeight - view.clientHeight / 2;
   }, [zoom]);
+
+  // 검색 이동 직후 쪽 크기가 늦게 오면(열자마자 검색 등) hit 스크롤을 한 번 더 맞춘다.
+  useLayoutEffect(() => {
+    if (!searchOpen) {
+      pendingSearchNavRef.current = null;
+      return;
+    }
+    const pending = pendingSearchNavRef.current;
+    if (!pending) return;
+    if (!pageSizes[pending.pageIndex]) return;
+    scrollSearchHitIntoView(pending);
+    pendingSearchNavRef.current = null;
+  }, [searchOpen, pageSizes, pageSrcs, zoom]);
 
   function commitPageInput(raw) {
     const value = Number.parseInt(String(raw).replace(/[^\d]/g, ''), 10);
@@ -1237,8 +1283,12 @@ export default function EditorPage({
     setSearchOpen(true);
     if (!text) {
       setSearchHits([]);
+      searchHitsRef.current = [];
       setSearchIndex(0);
+      searchIndexRef.current = 0;
       setSearchRanQuery('');
+      searchRanQueryRef.current = '';
+      pendingSearchNavRef.current = null;
       return;
     }
     setError('');
@@ -1246,9 +1296,13 @@ export default function EditorPage({
       const result = await api('pdf.search', { query: text });
       const hits = result.hits ?? [];
       setSearchHits(hits);
+      searchHitsRef.current = hits;
       setSearchIndex(0);
+      searchIndexRef.current = 0;
       setSearchRanQuery(text);
+      searchRanQueryRef.current = text;
       if (hits.length) goToHit(hits[0]);
+      else pendingSearchNavRef.current = null;
     } catch (err) {
       setError(err instanceof Error ? err.message : '검색하지 못했습니다.');
     }
@@ -1257,24 +1311,33 @@ export default function EditorPage({
   function closeSearch() {
     setSearchOpen(false);
     setSearchHits([]);
+    searchHitsRef.current = [];
     setSearchIndex(0);
+    searchIndexRef.current = 0;
     setSearchRanQuery('');
+    searchRanQueryRef.current = '';
+    pendingSearchNavRef.current = null;
   }
 
   async function jumpSearch(delta) {
-    if (!searchHits.length) {
-      await runSearch(searchQueryRef.current);
+    const hits = searchHitsRef.current;
+    const ran = searchRanQueryRef.current;
+    const live = searchQueryRef.current.trim();
+    // 입력만 바꾸고 Enter 를 안 친 상태면 이전 결과로 건너뛰지 않고 새 검색한다.
+    if (!hits.length || !ran || ran !== live) {
+      await runSearch(live);
       return;
     }
-    const next = (searchIndex + delta + searchHits.length) % searchHits.length;
+    const next = (searchIndexRef.current + delta + hits.length) % hits.length;
+    searchIndexRef.current = next;
     setSearchIndex(next);
-    goToHit(searchHits[next]);
+    goToHit(hits[next]);
   }
 
   async function submitSearch() {
     const text = searchQueryRef.current.trim();
     if (!text) return;
-    if (searchHits.length && searchQuery.trim() === text) {
+    if (searchHitsRef.current.length && searchRanQueryRef.current === text) {
       await jumpSearch(1);
       return;
     }
@@ -1976,11 +2039,9 @@ export default function EditorPage({
               index={searchIndex}
               inputRef={searchInputRef}
               onQueryChange={(value) => {
+                // 입력 중에는 이전 hit 을 지우지 않는다 (한글 IME 조합·오타 수정 시 결과·위치가 깜빡이지 않게).
+                // 상태 줄은 query ≠ ranQuery 이면 Enter 안내로 바뀌고, Enter 때 새 검색한다.
                 setSearchQuery(value);
-                // 검색어가 바뀌면 이전 결과는 버리고, Enter 를 눌러야 새로 검색한다.
-                setSearchHits([]);
-                setSearchIndex(0);
-                setSearchRanQuery('');
               }}
               onSubmit={() => void submitSearch()}
               onPrev={() => void jumpSearch(-1)}
@@ -2067,7 +2128,10 @@ export default function EditorPage({
                               onErase={commitErase}
                             />
                           ) : null}
-                          {src && searchOpen && searchHits[searchIndex]?.pageIndex === index ? (
+                          {searchOpen &&
+                          searchRanQuery &&
+                          searchQuery.trim() === searchRanQuery &&
+                          searchHits[searchIndex]?.pageIndex === index ? (
                             <div
                               data-search-hit
                               className="pointer-events-none absolute rounded-sm border border-orange-400 bg-yellow-300/40"
