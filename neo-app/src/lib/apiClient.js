@@ -109,7 +109,7 @@ export async function apiDownload(name, body = {}, options = {}) {
   return response.blob();
 }
 
-/** @returns {import('../../electron/preload.cjs') | null} */
+/** Native bridge exposed by preload.cjs as `window.frame`; undefined in a plain browser. */
 export function getNative() {
-  return window.tinyNative ?? null;
+  return typeof window !== 'undefined' ? window.frame ?? null : null;
 }

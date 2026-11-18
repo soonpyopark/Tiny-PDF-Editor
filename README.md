@@ -4,6 +4,16 @@
 
 Neo는 Tiny PDF Editor의 새로운 프론트엔드입니다. 메뉴, 썸네일, 본문, 대화상자를 Electron(데스크톱) + React 19 + Tailwind CSS 4로 새로 디자인했으며, PDF 편집 엔진은 Python 기반 `pdf_editor/engine.py`를 자식 프로세스로 사용합니다.
 
+## 실행 화면
+
+### Windows
+
+![Tiny PDF Editor - NEO Windows 실행 화면](assets/screenshot-windows.png)
+
+### macOS
+
+![Tiny PDF Editor - NEO macOS 실행 화면](assets/screenshot-macos.png)
+
 ## 기술 스택
 
 - **프론트엔드**: Electron, React 19, Tailwind CSS 4
