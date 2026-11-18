@@ -77,6 +77,13 @@ export function useImageEditing(ctxValue) {
   const api = (name, body) => ctx.current.api(name, body);
   const pageBox = (pageIndex) => pageOf(ctx.current.getPageBox, pageIndex);
 
+  /** 빈 문서(쪽 0개)에는 이미지를 올릴 곳이 없다. 엔진의 "페이지 번호가 올바르지 않습니다." 대신 안내한다. */
+  function requirePagesForImage() {
+    if ((ctx.current.docRef.current.pageCount || 0) >= 1) return true;
+    ctx.current.setError('이미지를 넣으려면 페이지가 있는 문서를 열어 주세요.');
+    return false;
+  }
+
   // ------------------------------------------------------------------ 쪽에 이미 있는 이미지 목록 (클릭해서 고르기용)
   const { doc, pageIndex } = ctxValue;
   useEffect(() => {
@@ -234,6 +241,7 @@ export function useImageEditing(ctxValue) {
   /** 클립보드/파일/드롭한 이미지를 올려 놓는다. opts: { fromClipboard, image, pageIndex, centerAt, rect, sizePt, params } */
   async function place(opts = {}) {
     if (!ctx.current.docRef.current.open) return;
+    if (!requirePagesForImage()) return;
     // 그리기를 끝내는 일(endDrawing)은 확정(commit)을 부르므로 줄 밖에서 먼저 한다. 줄 안에서 하면 서로 기다리며 멈춘다.
     if (ctx.current.drawOnRef.current) await ctx.current.endDrawing();
     return enqueue(async () => {
@@ -573,6 +581,7 @@ export function useImageEditing(ctxValue) {
 
   async function pasteInner() {
     if (!imageClipboard) return;
+    if (!requirePagesForImage()) return;
     await commitInner();
     const target = ctx.current.pageIndexRef.current;
     const page = pageBox(target);

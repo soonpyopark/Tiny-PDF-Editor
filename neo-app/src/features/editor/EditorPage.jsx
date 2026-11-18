@@ -276,6 +276,8 @@ export default function EditorPage({
   }, []);
   const [passwordPath, setPasswordPath] = useState('');
   const [passwordRejected, setPasswordRejected] = useState(false);
+  // 썸네일·메뉴로 파일 추가할 때 비밀번호를 기다리게 한다. resolve(password | null).
+  const passwordWaiterRef = useRef(/** @type {null | ((value: string | null) => void)} */ (null));
   const [facing, setFacing] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -574,11 +576,39 @@ export default function EditorPage({
     }
   }
 
-  // 비밀번호 확인 대화상자에서 입력한 암호로 연다. 틀리면 같은 대화상자에 안내를 남긴다.
+  /** 비밀번호 창을 띄우고, 확인되면 암호 문자열을, 취소면 null 을 돌려준다. */
+  function promptPassword(filePath, rejected = false) {
+    return new Promise((resolve) => {
+      // 이전 대기가 있으면 취소로 끝낸다.
+      if (passwordWaiterRef.current) passwordWaiterRef.current(null);
+      passwordWaiterRef.current = resolve;
+      setPasswordPath(filePath);
+      setPasswordRejected(Boolean(rejected));
+    });
+  }
+
+  function finishPasswordPrompt(value) {
+    const resolve = passwordWaiterRef.current;
+    passwordWaiterRef.current = null;
+    setPasswordPath('');
+    setPasswordRejected(false);
+    if (resolve) resolve(value);
+  }
+
+  // 비밀번호 확인 대화상자. 파일 추가 대기 중이면 암호만 검사해 넘기고, 아니면 문서를 연다.
   async function submitPassword(nextPassword) {
     if (!passwordPath || !nextPassword) return;
     setError('');
     try {
+      if (passwordWaiterRef.current) {
+        const check = await api('pdf.mergePreview', { path: passwordPath, password: nextPassword });
+        if (check.needsPassword) {
+          setPasswordRejected(true);
+          return;
+        }
+        finishPasswordPrompt(nextPassword);
+        return;
+      }
       const opened = await api('pdf.open', { path: passwordPath, password: nextPassword });
       if (opened.needsPassword) {
         setPasswordRejected(true);
@@ -593,8 +623,93 @@ export default function EditorPage({
   }
 
   function cancelPassword() {
+    if (passwordWaiterRef.current) {
+      finishPasswordPrompt(null);
+      return;
+    }
     setPasswordPath('');
     setPasswordRejected(false);
+  }
+
+  /**
+   * 추가할 파일 중 잠긴 PDF 는 비밀번호를 먼저 받는다.
+   * 취소한 잠긴 파일은 빼고, 나머지는 passwords 와 함께 돌려준다.
+   */
+  async function collectPasswordsForInsert(paths) {
+    const list = (paths || []).map(String).filter(Boolean);
+    if (!list.length) return { paths: [], passwords: {} };
+    const pdfPaths = list.filter((path) => path.toLowerCase().endsWith('.pdf'));
+    /** @type {Set<string>} */
+    const locked = new Set();
+    if (pdfPaths.length) {
+      try {
+        const inspected = await api('pdf.mergeInspect', { paths: pdfPaths, passwords: {} });
+        for (const item of inspected.items || []) {
+          if (item?.needsPassword && item.path) locked.add(String(item.path));
+        }
+      } catch {
+        // 검사에 실패해도 insert 가 다시 알려 줄 수 있으니, 잠긴 목록 없이 진행한다.
+      }
+    }
+    /** @type {Record<string, string>} */
+    const passwords = {};
+    const kept = [];
+    let skipped = 0;
+    for (const path of list) {
+      if (!locked.has(path)) {
+        kept.push(path);
+        continue;
+      }
+      let rejected = false;
+      let accepted = false;
+      while (!accepted) {
+        const password = await promptPassword(path, rejected);
+        if (!password) {
+          skipped += 1;
+          break;
+        }
+        passwords[path] = password;
+        kept.push(path);
+        accepted = true;
+      }
+    }
+    return { paths: kept, passwords, skipped };
+  }
+
+  /** 경로를 받아(필요하면 비밀번호를 모은 뒤) 문서에 끼워 넣는다. */
+  async function insertPathsAt(rawPaths, atIndex) {
+    const prepared = await collectPasswordsForInsert(rawPaths);
+    if (!prepared.paths.length) {
+      if (prepared.skipped) {
+        setToast({ message: '비밀번호가 필요한 파일은 추가하지 않았습니다.', type: 'info' });
+      }
+      return;
+    }
+    if (prepared.skipped) {
+      setToast({
+        message: `비밀번호를 입력하지 않은 파일 ${prepared.skipped}개는 건너뛰었습니다.`,
+        type: 'info',
+      });
+    }
+    await withProgress({ op: 'insert', title: '파일 추가 중', at: atIndex }, async () => {
+      const result = await api('pdf.insert', {
+        index: atIndex,
+        paths: prepared.paths,
+        passwords: prepared.passwords,
+      });
+      if (result.canceled) return;
+      if (result.needsPassword) {
+        // 검사 후에도 암호가 틀리거나 빠진 경우. 이미 들어간 쪽이 있으면 화면에 맞춘다.
+        if (result.doc) await applyDocResult(result, atIndex);
+        setToast({
+          message: `${String(result.path || '').split(/[\\/]/).pop() || '파일'}은 비밀번호가 필요해 추가하지 못했습니다.`,
+          type: 'warning',
+        });
+        return;
+      }
+      await applyDocResult(result, atIndex);
+      noticeStopped(result);
+    });
   }
 
   // 쪽으로 이동: 쪽 그림을 바꾸는 대신 그 쪽의 자리로 스크롤한다. 근처 쪽 그리기는 effect 가 맡는다.
@@ -813,12 +928,9 @@ export default function EditorPage({
   async function insertFiles() {
     setError('');
     try {
-      await withProgress({ op: 'insert', title: '파일 추가 중', at: pageIndex + 1 }, async () => {
-        const result = await api('pdf.insert', { index: pageIndex + 1 });
-        if (result.canceled) return;
-        await applyDocResult(result, pageIndex);
-        noticeStopped(result);
-      });
+      const picked = await api('pdf.insert', { pickOnly: true });
+      if (picked.canceled || !picked.paths?.length) return;
+      await insertPathsAt(picked.paths, pageIndex + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : '파일을 추가하지 못했습니다.');
     }
@@ -999,15 +1111,14 @@ export default function EditorPage({
           return;
         }
         case 'insertFiles': {
-          await withProgress({ op: 'insert', title: '파일 추가 중', at: targetIndex }, async () => {
-            const result = await api('pdf.insert', {
-              index: targetIndex,
-              paths: Array.isArray(action.paths) ? action.paths : undefined,
-            });
-            if (result.canceled) return;
-            await applyDocResult(result, targetIndex);
-            noticeStopped(result);
-          });
+          const paths = Array.isArray(action.paths) ? action.paths : [];
+          if (!paths.length) {
+            const picked = await api('pdf.insert', { pickOnly: true });
+            if (picked.canceled || !picked.paths?.length) return;
+            await insertPathsAt(picked.paths, targetIndex);
+          } else {
+            await insertPathsAt(paths, targetIndex);
+          }
           return;
         }
         case 'copy': {
@@ -1554,9 +1665,17 @@ export default function EditorPage({
         void dialog.alert({ title: 'PDF 파일 연결', body: 'Windows에서만 사용할 수 있습니다.' });
         return;
       }
+      const statusLine = statusInfo.registered ? '등록됨' : '등록 안 됨';
       const choice = await dialog.choose({
         title: 'PDF 파일 연결',
-        body: statusInfo.registered ? '현재 연결되어 있습니다.' : '연결되어 있지 않습니다.',
+        body:
+          `현재 상태: ${statusLine}\n\n` +
+          '「연결」: Windows 연결 프로그램 목록에 Tiny PDF Editor - NEO를 추가합니다.\n' +
+          '「연결 해제」: 이 프로그램으로 등록한 항목을 삭제합니다.\n' +
+          '「기본 앱 설정 열기」: Windows에서 PDF를 여는 기본 프로그램을 고릅니다.\n\n' +
+          '연결만으로는 기본 앱이 바뀌지 않습니다.\n' +
+          'PDF를 더블클릭해 이 프로그램으로 열려면, Windows 설정에서\n' +
+          '기본 앱을 「Tiny PDF Editor - NEO」로 선택하세요.',
         primaryLabel: statusInfo.registered ? '연결 해제' : '연결',
         extraLabel: '기본 앱 설정 열기',
         cancelLabel: '닫기',
@@ -1579,9 +1698,15 @@ export default function EditorPage({
         void dialog.alert({ title: '가상 프린터', body: '이 환경에서는 가상 프린터를 쓸 수 없습니다.' });
         return;
       }
+      const statusLine = statusInfo.installed ? '설치됨' : '설치 안 됨';
       const choice = await dialog.choose({
         title: '가상 프린터',
-        body: statusInfo.installed ? '설치되어 있습니다.' : '설치되어 있지 않습니다.',
+        body:
+          `현재 상태: ${statusLine}\n\n` +
+          '다른 프로그램의 인쇄 창에서 「Tiny PDF Editor」를 고르면\n' +
+          'PDF가 다운로드 폴더에 저장된 뒤 이 프로그램에서 열립니다.\n' +
+          '앱이 꺼져 있어도 인쇄하면 자동으로 열립니다.\n' +
+          'Windows 기본 「Microsoft Print to PDF」 드라이버를 사용합니다.',
         primaryLabel: statusInfo.installed ? '제거' : '설치',
         cancelLabel: '닫기',
       });
@@ -1590,7 +1715,11 @@ export default function EditorPage({
       else await api('pdf.printerInstall');
       void dialog.alert({
         title: '가상 프린터',
-        body: statusInfo.installed ? '제거했습니다.' : '설치했습니다. 인쇄 스풀 감시는 기존처럼 유지됩니다.',
+        body: statusInfo.installed
+          ? '가상 프린터를 제거했습니다.'
+          : '프린터 목록에 「Tiny PDF Editor」가 추가되었습니다.\n' +
+            '인쇄하면 PDF가 다운로드 폴더에 저장되고 이 프로그램에서 열립니다.\n' +
+            '앱이 꺼져 있어도 동작합니다.',
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : '가상 프린터를 처리하지 못했습니다.');
@@ -2256,6 +2385,7 @@ export default function EditorPage({
       <PasswordOpenDialog
         open={Boolean(passwordPath)}
         rejected={passwordRejected}
+        fileName={passwordPath ? passwordPath.split(/[\\/]/).pop() : ''}
         onSubmit={(nextPassword) => void submitPassword(nextPassword)}
         onCancel={cancelPassword}
       />

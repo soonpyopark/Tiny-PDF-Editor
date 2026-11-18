@@ -404,6 +404,9 @@ export function cleanEnv() {
  */
 export function launchEditor({ exe, prefixArgs = [], pdfPath = '' }) {
   const args = [...prefixArgs, ...(pdfPath ? [pdfPath] : [])];
+  // e2e/진단: env 만으로는 Chromium 이 포트를 못 여는 경우가 있어 CLI 로도 넘긴다.
+  const debugPort = String(process.env.TINY_DEBUG_PORT || '').trim();
+  if (debugPort) args.unshift(`--remote-debugging-port=${debugPort}`);
   const child = spawn(exe, args, {
     detached: true,
     stdio: 'ignore',

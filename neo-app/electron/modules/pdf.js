@@ -679,9 +679,24 @@ export function register() {
       const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
       if (picked.canceled || !picked.filePaths.length) return { canceled: true };
       paths = picked.filePaths;
+      // 렌더러가 비밀번호를 먼저 모을 수 있게, 고른 경로만 돌려준다.
+      if (body?.pickOnly) return { canceled: false, paths };
     }
     const index = Number.isInteger(body?.index) ? Number(body.index) : undefined;
-    const result = await engineOp({ op: 'insert', paths, index });
+    const result = await engineOp({
+      op: 'insert',
+      paths,
+      index,
+      passwords: passwordMap(body?.passwords),
+    });
+    if (result.needsPassword) {
+      return {
+        needsPassword: true,
+        path: result.path || null,
+        rejected: Boolean(result.rejected),
+        doc: result.doc || null,
+      };
+    }
     return { canceled: false, doc: result.doc, added: result.added, stopped: Boolean(result.stopped) };
   });
 

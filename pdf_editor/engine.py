@@ -644,7 +644,23 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
         paths = [str(path) for path in (req.get("paths") or []) if str(path).strip()]
         if not paths:
             raise ValueError("추가할 파일이 없습니다.")
-        added = doc.insert_files_at(index, paths, progress=_progress, should_cancel=_cancelled)
+        passwords = _str_map(req.get("passwords"))
+        try:
+            # 병합과 같이 알려진 비밀번호를 쓰고, 없으면 path 를 담아 화면에서 다시 묻게 한다.
+            added = doc.insert_files_at(
+                index,
+                paths,
+                progress=_progress,
+                should_cancel=_cancelled,
+                resolve_pdf_password=_merge_password_resolver(passwords),
+            )
+        except PdfPasswordRequired as exc:
+            return True, {
+                "needsPassword": True,
+                "path": getattr(exc, "path", None),
+                "rejected": isinstance(exc, PdfPasswordRejected),
+                "doc": _summary(doc, True),
+            }
         return True, {"doc": _summary(doc, True), "added": added, "stopped": _cancelled()}
     if op == "merge":
         paths = [str(path) for path in (req.get("paths") or []) if str(path).strip()]

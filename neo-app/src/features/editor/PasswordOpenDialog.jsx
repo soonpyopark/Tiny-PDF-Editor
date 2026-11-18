@@ -11,11 +11,12 @@ import { PasswordField, btnGhost, btnPrimary, passwordCardClass, passwordOverlay
  * @param {{
  *   open: boolean,
  *   rejected: boolean,
+ *   fileName?: string,
  *   onSubmit: (password: string) => void,
  *   onCancel: () => void,
  * }} props
  */
-export default function PasswordOpenDialog({ open, rejected, onSubmit, onCancel }) {
+export default function PasswordOpenDialog({ open, rejected, fileName = '', onSubmit, onCancel }) {
   const [password, setPassword] = useState('');
   const inputRef = useRef(/** @type {HTMLInputElement | null} */ (null));
 
@@ -43,7 +44,9 @@ export default function PasswordOpenDialog({ open, rejected, onSubmit, onCancel 
       <form className={passwordCardClass} onSubmit={submit}>
         <h2 className="mb-3 text-base font-semibold text-slate-900">PDF 비밀번호 확인</h2>
         <p className="mb-4 whitespace-pre-line text-xs leading-relaxed text-slate-500">
-          {'이 PDF를 열려면 비밀번호가 필요합니다.\n열기 비밀번호를 입력하세요.'}
+          {fileName
+            ? `${fileName}\n이 PDF를 열려면 비밀번호가 필요합니다.\n열기 비밀번호를 입력하세요.`
+            : '이 PDF를 열려면 비밀번호가 필요합니다.\n열기 비밀번호를 입력하세요.'}
         </p>
 
         <div className="flex flex-col gap-3">

@@ -11,6 +11,7 @@
  *   3. GitHub Release(제목 `v1.0.0.N`)를 만들고 산출물을 올림
  *        Windows: .msi + 포터블 .zip      macOS: .dmg + -mac- .zip
  *      릴리스가 이미 있으면(예: Windows 가 먼저 올린 뒤 macOS) 파일만 추가로 올린다.
+ *      새 릴리스 본문에는 직전 릴리스의 「변경」(+ 이미 쌓인 이력)을 「이전 버전 이력」으로 이어 붙인다.
  *   4. 업로드를 확인한 뒤에만 **이전 릴리스와 이전 태그를 모두 삭제** (원격 + 로컬)
  *        삭제한 태그와 커밋 SHA 는 .cache/logs/publish-release.log 에 남는다 (복구용).
  *
@@ -96,8 +97,68 @@ function semverOf(version) {
   return `${m[1]}.${m[2]}.${m[3]}-${m[4]}`;
 }
 
-function releaseBody(notes, fileNames) {
-  return `## 변경\n${notes.trim()}\n\n## 파일\n${fileNames.map((name) => `- ${name}`).join('\n')}\n`;
+const HISTORY_HEADING = '## 이전 버전 이력';
+
+/**
+ * 릴리스 본문에서 `## 변경` 구간만 꺼낸다. 없으면 파일·이력 제목을 뺀 나머지를 쓴다.
+ * @param {string} body
+ */
+function extractChanges(body) {
+  const text = String(body ?? '').replace(/\r\n/g, '\n');
+  // /m 을 쓰지 않는다. $ 가 줄 끝에 매칭되면 변경 첫 줄만 잘린다.
+  const match = /^##\s*변경\s*\n([\s\S]*?)(?=\n##\s|$)/i.exec(text);
+  if (match) return match[1].trim();
+  return text
+    .replace(/^##\s*파일\s*\n[\s\S]*?(?=\n##\s|$)/gi, '')
+    .replace(/^##\s*이전 버전 이력\s*\n[\s\S]*$/gi, '')
+    .trim();
+}
+
+/**
+ * 이미 쌓여 있던 `## 이전 버전 이력` 아래 내용(제목 줄 제외).
+ * @param {string} body
+ */
+function extractPriorHistory(body) {
+  const text = String(body ?? '').replace(/\r\n/g, '\n');
+  const match = /^##\s*이전 버전 이력\s*\n([\s\S]*)$/im.exec(text);
+  return match ? match[1].trim() : '';
+}
+
+/**
+ * 지우기 직전 Latest 릴리스(이번 태그 제외). 없으면 null.
+ * @param {string} repo
+ * @param {string} keepTag
+ */
+function fetchPreviousRelease(repo, keepTag) {
+  const list = JSON.parse(
+    gh(['release', 'list', '--repo', repo, '--limit', '50', '--json', 'tagName,isDraft,isLatest']).stdout || '[]',
+  );
+  const candidate =
+    list.find((item) => item.isLatest && !item.isDraft && item.tagName !== keepTag) ||
+    list.find((item) => !item.isDraft && item.tagName !== keepTag);
+  if (!candidate?.tagName) return null;
+  return JSON.parse(
+    gh(['release', 'view', candidate.tagName, '--repo', repo, '--json', 'body,name,tagName']).stdout,
+  );
+}
+
+/**
+ * 새 노트 + 파일 목록 + (있으면) 이전 릴리스 본문을 이력으로 이어 붙인 마크다운.
+ * 이전 릴리스를 지우기 전에 호출해야 이력이 남는다.
+ * @param {string} notes
+ * @param {string[]} fileNames
+ * @param {{ body?: string, name?: string, tagName?: string } | null} previous
+ */
+function releaseBody(notes, fileNames, previous = null) {
+  let text = `## 변경\n${notes.trim()}\n\n## 파일\n${fileNames.map((name) => `- ${name}`).join('\n')}\n`;
+  const prevBody = String(previous?.body ?? '').trim();
+  if (!prevBody) return text;
+  const title = previous.name || previous.tagName || '이전 버전';
+  const changes = extractChanges(prevBody) || '(이전 변경 내용 없음)';
+  const prior = extractPriorHistory(prevBody);
+  text += `\n${HISTORY_HEADING}\n\n### ${title}\n${changes}\n`;
+  if (prior) text += `\n${prior}\n`;
+  return text;
 }
 
 function main() {
@@ -154,9 +215,13 @@ function main() {
     const notesFile = argValue('--notes-file');
     const notes = argValue('--notes') ?? (notesFile ? fs.readFileSync(path.resolve(notesFile), 'utf8') : '');
     if (!notes.trim()) fail('릴리스를 새로 만들려면 --notes="…" 또는 --notes-file=경로 가 필요합니다.');
+    // 이전 릴리스는 곧 지우므로, 본문을 이력으로 먼저 이어 붙인다.
+    const previous = fetchPreviousRelease(repo, tag);
+    if (previous?.tagName) log(`이전 릴리스 본문을 이력에 포함: ${previous.name || previous.tagName}`);
+    else log('이전 릴리스가 없어 이력 없이 본문만 작성합니다.');
     const bodyFile = path.join(root, '.cache', 'release-body.md');
     fs.mkdirSync(path.dirname(bodyFile), { recursive: true });
-    fs.writeFileSync(bodyFile, releaseBody(notes, fileNames), 'utf8');
+    fs.writeFileSync(bodyFile, releaseBody(notes, fileNames, previous), 'utf8');
     gh(
       ['release', 'create', tag, ...artifacts, '--repo', repo, '--verify-tag', '--title', title, '--notes-file', bodyFile, '--latest'],
       { mutating: true },
@@ -241,9 +306,15 @@ function cleanupPrevious(repo, keepTag) {
   if (!dryRun) log(`삭제 기록(커밋 SHA 포함): ${path.relative(repoRoot, logFile)}`);
 }
 
-try {
-  main();
-} catch (error) {
-  console.error('[publish] 실패:', error instanceof Error ? error.message : error);
-  process.exit(1);
+export { HISTORY_HEADING, extractChanges, extractPriorHistory, releaseBody };
+
+const isMain =
+  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  try {
+    main();
+  } catch (error) {
+    console.error('[publish] 실패:', error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
 }

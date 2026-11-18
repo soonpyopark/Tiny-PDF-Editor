@@ -17,7 +17,7 @@ NAS4USB 류 앱을 만들 때 쓰는 Electron 기본 프레임. 로그인·회�
 | `npm run build:release` | Windows MSI + portable zip → `release/` |
 | `npm run build:release:mac` | macOS dmg + zip → `release/` (macOS 에서만 실행 가능) |
 | `npm run version:bump` | 배포 버전 +1 (`APP_VERSION` `1.0.0.N`, `package.json` `1.0.0-N`). 옵션: `--set=1.1.0.0` `--sync` |
-| `npm run publish:release` | 태그 `v1.0.0-N` + push + GitHub Release(msi·zip 업로드) + **이전 릴리스·태그 삭제**. 옵션: `--notes-file=` `--dry-run` `--keep-previous` |
+| `npm run publish:release` | 태그 `v1.0.0-N` + push + GitHub Release(msi·zip 업로드) + 직전 릴리스 본문을 「이전 버전 이력」으로 이어 붙인 뒤 **이전 릴리스·태그 삭제**. 옵션: `--notes-file=` `--dry-run` `--keep-previous` |
 | `npm run update:all` | npm(메이저 포함 `@latest`)·Electron·Python 엔진 패키지 최신화. 옵션: `--skip-git` `--skip-npm` `--skip-python` `--skip-majors` `--build` |
 | `npm run build:update_all` | 최신화 + `build:release` (Windows). `update_all.bat` 으로도 실행 가능 (로그: `.cache/logs/update-all.log`) |
 | `npm run build:update_all:mac` | 최신화 + `build:release:mac` (macOS) |

@@ -35,7 +35,7 @@ for (const stream of [process.stdout, process.stderr]) stream?.on?.('error', () 
 const isDev = !app.isPackaged;
 
 // 테스트·진단 전용: 원격 디버깅 포트를 연다. 평소에는 설정하지 않는다.
-if (process.env.TINY_DEBUG_PORT) {
+if (process.env.TINY_DEBUG_PORT && !process.argv.includes(WATCH_FLAG)) {
   app.commandLine.appendSwitch('remote-debugging-port', String(process.env.TINY_DEBUG_PORT));
 }
 
