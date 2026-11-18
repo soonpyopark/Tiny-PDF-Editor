@@ -3,6 +3,7 @@
  * The engine is a child process on this PC. It is not exposed as its own port.
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,6 +26,11 @@ import {
   printerInstalled,
   printerSupported,
 } from '../printService.js';
+import {
+  convertTextFileToPdf,
+  isHtmlPath,
+  isTextPath,
+} from '../textPdfExport.mjs';
 
 // neo-app/electron/modules/ 기준 두 단계 위가 Tiny PDF Editor - neo 루트(pdf_editor 패키지가 있는 곳).
 const engineRoot =
@@ -35,6 +41,7 @@ const OPEN_FILTERS = [
   { name: 'PDF', extensions: ['pdf'] },
   { name: '이미지', extensions: ['png', 'jpg', 'jpeg', 'bmp', 'gif', 'tif', 'tiff', 'webp'] },
   { name: '한글', extensions: ['hwp', 'hwpx'] },
+  { name: '텍스트·HTML', extensions: ['txt', 'md', 'markdown', 'json', 'html', 'htm'] },
 ];
 
 /** 파일 열기: 전체(*.*)를 기본 필터로 두고 종류별 필터를 뒤에 붙인다. */
@@ -119,7 +126,23 @@ function writeOpenInNewWindow(enabled) {
   fs.writeFileSync(viewPrefsPath, JSON.stringify({ openInNewWindow: Boolean(enabled) }, null, 2), 'utf8');
 }
 const MERGE_SUPPORTED_EXT = new Set([
-  '.pdf', '.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tif', '.tiff', '.webp', '.hwp', '.hwpx',
+  '.pdf',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.bmp',
+  '.gif',
+  '.tif',
+  '.tiff',
+  '.webp',
+  '.hwp',
+  '.hwpx',
+  '.txt',
+  '.md',
+  '.markdown',
+  '.json',
+  '.html',
+  '.htm',
 ]);
 
 function isDirectory(target) {
@@ -186,6 +209,52 @@ function uniquePdfPath(folder, stemName) {
     candidate = path.join(folder, `${stemName} (${index}).pdf`);
     if (!fs.existsSync(candidate)) return candidate;
   }
+}
+
+/**
+ * TXT/MD/HTML → Chromium printToPDF.
+ * TXT·MD 실패 시에만 엔진 MuPDF 조판으로 폴백 (HTML 은 Chromium 전용).
+ * @param {string} source
+ * @param {string} target
+ */
+async function textFileToPdfPath(source, target) {
+  try {
+    return await convertTextFileToPdf(source, target);
+  } catch (error) {
+    if (isHtmlPath(source)) throw error;
+    const message = error instanceof Error ? error.message : String(error || '');
+    console.warn('[textPdfExport] Chromium convert failed, falling back to engine:', message);
+    const result = await engineOp({ op: 'textConvert', path: source, output: target });
+    return String(result.path || target);
+  }
+}
+
+/** @param {string} source */
+async function textConvertToTempPdf(source) {
+  const stemName = path.basename(source, path.extname(source)) || 'document';
+  const target = uniquePdfPath(os.tmpdir(), `tiny-neo-text-${stemName}`);
+  return textFileToPdfPath(source, target);
+}
+
+/**
+ * 열기·삽입·병합 전에 텍스트 경로를 임시 PDF 로 바꾼다.
+ * @param {string[]} paths
+ * @returns {Promise<{ paths: string[], temps: string[] }>}
+ */
+async function materializeTextPaths(paths) {
+  const out = [];
+  const temps = [];
+  for (const raw of paths) {
+    const filePath = String(raw || '');
+    if (isTextPath(filePath) && fs.existsSync(filePath)) {
+      const converted = await textConvertToTempPdf(filePath);
+      out.push(converted);
+      temps.push(converted);
+    } else {
+      out.push(filePath);
+    }
+  }
+  return { paths: out, temps };
 }
 
 /** Same rules as merge_pdf_dialog._sanitize_filename. */
@@ -433,21 +502,40 @@ async function engineOp(payload) {
 }
 
 async function openPath(filePath, password) {
-  const opened = await engineOp({
-    op: 'open',
-    path: filePath,
-    password: password ? String(password) : null,
-  });
-  if (opened.needsPassword) {
-    return {
-      needsPassword: true,
-      rejected: opened.rejected,
-      path: filePath,
-      error: opened.error,
-    };
+  let openTarget = filePath;
+  let forgetPath = false;
+  let tempPdf = null;
+  if (isTextPath(filePath) && fs.existsSync(filePath)) {
+    tempPdf = await textConvertToTempPdf(filePath);
+    openTarget = tempPdf;
+    forgetPath = true;
   }
-  rememberRecent(filePath);
-  return { doc: opened.doc, path: filePath };
+  try {
+    const opened = await engineOp({
+      op: 'open',
+      path: openTarget,
+      password: password ? String(password) : null,
+      forgetPath,
+    });
+    if (opened.needsPassword) {
+      return {
+        needsPassword: true,
+        rejected: opened.rejected,
+        path: filePath,
+        error: opened.error,
+      };
+    }
+    rememberRecent(filePath);
+    return { doc: opened.doc, path: filePath };
+  } finally {
+    if (tempPdf) {
+      try {
+        fs.unlinkSync(tempPdf);
+      } catch {
+        /* 임시 PDF 정리는 실패해도 열기 결과에 영향 없음 */
+      }
+    }
+  }
 }
 
 export function register() {
@@ -683,21 +771,41 @@ export function register() {
       if (body?.pickOnly) return { canceled: false, paths };
     }
     const index = Number.isInteger(body?.index) ? Number(body.index) : undefined;
-    const result = await engineOp({
-      op: 'insert',
-      paths,
-      index,
-      passwords: passwordMap(body?.passwords),
-    });
-    if (result.needsPassword) {
-      return {
-        needsPassword: true,
-        path: result.path || null,
-        rejected: Boolean(result.rejected),
-        doc: result.doc || null,
-      };
+    const materialized = await materializeTextPaths(paths);
+    try {
+      const result = await engineOp({
+        op: 'insert',
+        paths: materialized.paths,
+        index,
+        passwords: passwordMap(body?.passwords),
+      });
+      if (result.needsPassword) {
+        return {
+          needsPassword: true,
+          path: result.path || null,
+          rejected: Boolean(result.rejected),
+          doc: result.doc || null,
+        };
+      }
+      let doc = result.doc;
+      // 빈 문서에 TXT/MD 하나만 넣으면 엔진이 임시 PDF 경로를 source 로 잡는다 → 떼어 낸다.
+      const boundTemp =
+        doc?.path &&
+        materialized.temps.some((temp) => path.resolve(temp) === path.resolve(String(doc.path)));
+      if (boundTemp) {
+        const detached = await engineOp({ op: 'detachSource' });
+        doc = detached.doc;
+      }
+      return { canceled: false, doc, added: result.added, stopped: Boolean(result.stopped) };
+    } finally {
+      for (const temp of materialized.temps) {
+        try {
+          fs.unlinkSync(temp);
+        } catch {
+          /* ignore */
+        }
+      }
     }
-    return { canceled: false, doc: result.doc, added: result.added, stopped: Boolean(result.stopped) };
   });
 
   /** 진행 중인 긴 작업(파일 추가·이미지 저장)을 멈추게 한다. 엔진이 다음 파일/쪽 사이에서 알아채고 그때까지 한 것만 남긴다. */
@@ -768,14 +876,30 @@ export function register() {
   defineApi('pdf.mergePreview', 'user', async (body) => {
     const filePath = String(body?.path || '').trim();
     if (!filePath) throw new ApiError('파일 경로가 없습니다.');
-    const result = await engineOp({
-      op: 'previewFile',
-      path: filePath,
-      password: body?.password ? String(body.password) : null,
-    });
-    if (result.needsPassword) return { needsPassword: true, rejected: Boolean(result.rejected) };
-    if (result.unsupported) return { unsupported: true };
-    return { png: result.png, width: result.width, height: result.height, pageCount: result.pageCount };
+    let previewPath = filePath;
+    let tempPdf = null;
+    if (isTextPath(filePath) && fs.existsSync(filePath)) {
+      tempPdf = await textConvertToTempPdf(filePath);
+      previewPath = tempPdf;
+    }
+    try {
+      const result = await engineOp({
+        op: 'previewFile',
+        path: previewPath,
+        password: body?.password ? String(body.password) : null,
+      });
+      if (result.needsPassword) return { needsPassword: true, rejected: Boolean(result.rejected) };
+      if (result.unsupported) return { unsupported: true };
+      return { png: result.png, width: result.width, height: result.height, pageCount: result.pageCount };
+    } finally {
+      if (tempPdf) {
+        try {
+          fs.unlinkSync(tempPdf);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
   });
 
   defineApi('pdf.mergeRun', 'user', async (body) => {
@@ -786,17 +910,28 @@ export function register() {
     const target = path.join(folder, `${sanitizeMergeName(body?.name)}.pdf`);
     if (fs.existsSync(target) && !body?.overwrite) return { exists: true, target };
 
-    const merged = await engineOp({
-      op: 'mergeFiles',
-      paths,
-      output: target,
-      passwords: passwordMap(body?.passwords),
-    });
-    if (merged.needsPassword) {
-      return { needsPassword: true, path: merged.path, rejected: Boolean(merged.rejected) };
+    const materialized = await materializeTextPaths(paths);
+    try {
+      const merged = await engineOp({
+        op: 'mergeFiles',
+        paths: materialized.paths,
+        output: target,
+        passwords: passwordMap(body?.passwords),
+      });
+      if (merged.needsPassword) {
+        return { needsPassword: true, path: merged.path, rejected: Boolean(merged.rejected) };
+      }
+      writeMergeSaveFolder(folder);
+      return { canceled: false, path: merged.path, pages: merged.pages, added: merged.added };
+    } finally {
+      for (const temp of materialized.temps) {
+        try {
+          fs.unlinkSync(temp);
+        } catch {
+          /* ignore */
+        }
+      }
     }
-    writeMergeSaveFolder(folder);
-    return { canceled: false, path: merged.path, pages: merged.pages, added: merged.added };
   });
 
   defineApi('pdf.merge', 'user', async () => {
@@ -808,8 +943,19 @@ export function register() {
     };
     const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
     if (picked.canceled || picked.filePaths.length < 1) return { canceled: true };
-    const merged = await engineOp({ op: 'merge', paths: picked.filePaths });
-    return { canceled: false, doc: merged.doc, added: merged.added };
+    const materialized = await materializeTextPaths(picked.filePaths);
+    try {
+      const merged = await engineOp({ op: 'merge', paths: materialized.paths });
+      return { canceled: false, doc: merged.doc, added: merged.added };
+    } finally {
+      for (const temp of materialized.temps) {
+        try {
+          fs.unlinkSync(temp);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
   });
 
   defineApi('pdf.deletePages', 'user', async (body) => {
@@ -1076,19 +1222,47 @@ export function register() {
     return { doc: result.doc, hitCount: result.hitCount, areaCount: result.areaCount };
   });
 
-  // 이미지 넣기: 클립보드 또는 파일에서 이미지를 읽어 base64 로 돌려준다.
-  async function readImageToPlace(body) {
-    if (body?.image) return { canceled: false, image: String(body.image) };
-    if (body?.fromClipboard) {
-      // Electron 44+ 의 clipboard 는 Promise 기반(read) 이다.
+  /**
+   * OS 클립보드에서 이미지 한 장을 읽는다. 없으면 null.
+   * Electron 44+ clipboard.read() (Promise).
+   * @returns {Promise<{ buffer: Buffer, mime: string } | null>}
+   */
+  async function readClipboardImage() {
+    try {
       const items = await clipboard.read();
       for (const item of items) {
         const type = item.types.find((t) => t.startsWith('image/'));
         if (!type) continue;
         const blob = await item.getType(type);
-        return { canceled: false, image: Buffer.from(await blob.arrayBuffer()).toString('base64') };
+        return { buffer: Buffer.from(await blob.arrayBuffer()), mime: type };
       }
-      throw new ApiError('클립보드에 이미지가 없습니다.');
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  /** @param {string} mime */
+  function imageExtForMime(mime) {
+    const map = {
+      'image/png': '.png',
+      'image/jpeg': '.jpg',
+      'image/jpg': '.jpg',
+      'image/webp': '.webp',
+      'image/gif': '.gif',
+      'image/bmp': '.bmp',
+      'image/tiff': '.tiff',
+    };
+    return map[String(mime || '').toLowerCase()] || '.png';
+  }
+
+  // 이미지 넣기: 클립보드 또는 파일에서 이미지를 읽어 base64 로 돌려준다.
+  async function readImageToPlace(body) {
+    if (body?.image) return { canceled: false, image: String(body.image) };
+    if (body?.fromClipboard) {
+      const clip = await readClipboardImage();
+      if (!clip) throw new ApiError('클립보드에 이미지가 없습니다.');
+      return { canceled: false, image: clip.buffer.toString('base64') };
     }
     const win = ownerWindow();
     const options = {
@@ -1100,6 +1274,42 @@ export function register() {
     if (picked.canceled || !picked.filePaths[0]) return { canceled: true };
     return { canceled: false, image: fs.readFileSync(picked.filePaths[0]).toString('base64') };
   }
+
+  /** 썸네일 우클릭 메뉴: OS 클립보드 이미지 여부와 내용 지문(쪽 복사 이후 새 이미지인지 판별). */
+  defineApi('pdf.clipboardImageAvailable', 'user', async () => {
+    const clip = await readClipboardImage();
+    if (!clip?.buffer?.length) return { available: false, fingerprint: null };
+    const fingerprint = createHash('sha1').update(clip.buffer).digest('hex');
+    return { available: true, fingerprint };
+  });
+
+  /**
+   * 썸네일 "여기에 붙여넣기": OS 클립보드 이미지를 새 쪽으로 삽입한다
+   * (파일 드롭과 같이 이미지가 한 쪽이 된다).
+   */
+  defineApi('pdf.insertClipboardImage', 'user', async (body) => {
+    const clip = await readClipboardImage();
+    if (!clip) throw new ApiError('클립보드에 이미지가 없습니다.');
+    const ext = imageExtForMime(clip.mime);
+    const tempPath = path.join(os.tmpdir(), `tiny-neo-clip-${Date.now()}${ext}`);
+    fs.writeFileSync(tempPath, clip.buffer);
+    try {
+      const index = Number.isInteger(body?.index) ? Number(body.index) : undefined;
+      const result = await engineOp({
+        op: 'insert',
+        paths: [tempPath],
+        index,
+        passwords: {},
+      });
+      return { doc: result.doc, added: result.added, stopped: Boolean(result.stopped) };
+    } finally {
+      try {
+        fs.unlinkSync(tempPath);
+      } catch {
+        /* ignore */
+      }
+    }
+  });
 
   // 이미지 넣기: PDF 에 바로 넣지 않고, 미리보기(이동·크기 조절)용으로 이미지를 정리해 돌려준다.
   // 복사한 이미지를 붙여 넣을 때는 image(base64 원본)와 params/sizePt 를 직접 준다.
@@ -1330,9 +1540,20 @@ export function register() {
     return { path: result.path };
   });
 
+  /** 썸네일 드롭 등: TXT/MD/HTML 을 Chromium 으로 임시 PDF 로 바꾼다. */
+  defineApi('pdf.textConvertQuick', 'user', async (body) => {
+    const source = String(body?.source || '').trim();
+    if (!source || !isTextPath(source) || !fs.existsSync(source)) {
+      throw new ApiError('TXT/Markdown/JSON/HTML 파일을 찾을 수 없습니다.');
+    }
+    const target = await textConvertToTempPdf(source);
+    return { path: target };
+  });
+
   /**
    * "PDF 변환 > 개별 변환": 파일 하나를 PDF 하나로 바꾼다. 렌더러가 한 개씩 부르므로 진행 표시와 중지가 된다.
    *   - 한글(HWP/HWPX): 한컴 한글로 변환 (기존 hwpConvert)
+   *   - 텍스트(TXT/MD/HTML): Chromium printToPDF (TXT·MD 실패 시 엔진 폴백)
    *   - 이미지: 병합 엔진에 파일 하나로 넘겨 한 쪽짜리 PDF 로 저장
    *   - PDF: 이미 PDF 라 변환할 것이 없다
    * 같은 이름이 있고 덮어쓰기가 아니면 "이름 (2).pdf" 식으로 피한다 (원본 _destination_for).
@@ -1342,6 +1563,7 @@ export function register() {
     if (!source || !fs.existsSync(source)) throw new ApiError('파일을 찾을 수 없습니다.');
     const ext = path.extname(source).toLowerCase();
     const isHwp = isHwpPath(source);
+    const isText = isTextPath(source);
     if (ext === '.pdf') throw new ApiError('이미 PDF 파일입니다.');
     if (!isHwp && !MERGE_SUPPORTED_EXT.has(ext)) throw new ApiError('변환할 수 없는 파일 형식입니다.');
 
@@ -1353,15 +1575,27 @@ export function register() {
     const target = body?.overwrite
       ? path.join(folder, `${stemName}.pdf`)
       : uniquePdfPath(folder, stemName);
-    const result = isHwp
-      ? await engineOp({ op: 'hwpConvert', path: source, output: target })
-      : await engineOp({ op: 'mergeFiles', paths: [source], output: target, passwords: {} });
+    let outPath;
+    if (isHwp) {
+      const result = await engineOp({ op: 'hwpConvert', path: source, output: target });
+      outPath = result.path;
+    } else if (isText) {
+      outPath = await textFileToPdfPath(source, target);
+    } else {
+      const result = await engineOp({
+        op: 'mergeFiles',
+        paths: [source],
+        output: target,
+        passwords: {},
+      });
+      outPath = result.path;
+    }
 
     // 저장 위치 기억: 병합과 같은 폴더 설정을 쓴다.
     const prev = readHwpPrefs();
     writeHwpPrefs({ besideSource, saveFolder: prev.saveFolder });
     if (!besideSource) writeMergeSaveFolder(folder);
-    return { path: result.path };
+    return { path: outPath };
   });
 
   // ---- 인쇄 ----

@@ -25,6 +25,10 @@ from pdf_editor.hwp_convert import (
     HWP_EXTENSIONS,
     convert_hwp_to_temp_pdf,
 )
+from pdf_editor.text_convert import (
+    TEXT_EXTENSIONS,
+    convert_text_file_to_temp_pdf,
+)
 from pdf_editor.image_stamp import (
     IMAGE_ANNOT_TITLE,
     KEY_ORIG,
@@ -93,10 +97,11 @@ _IMAGE_DRAW_RE = re.compile(
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".tif", ".webp"}
 PDF_EXTENSIONS = {".pdf"}
 SUPPORTED_FILE_FILTER = (
-    "지원 파일 (*.pdf *.png *.jpg *.jpeg *.bmp *.gif *.tiff *.tif *.webp *.hwp *.hwpx);;"
+    "지원 파일 (*.pdf *.png *.jpg *.jpeg *.bmp *.gif *.tiff *.tif *.webp *.hwp *.hwpx *.txt *.md *.json *.html *.htm);;"
     "PDF (*.pdf);;"
     "이미지 (*.png *.jpg *.jpeg *.bmp *.gif *.tiff *.tif *.webp);;"
     "한글 문서 (*.hwp *.hwpx);;"
+    "텍스트·HTML (*.txt *.md *.json *.html *.htm);;"
     "모든 파일 (*.*)"
 )
 
@@ -402,6 +407,21 @@ class PdfDocument:
             tmp_pdf: Path | None = None
             try:
                 tmp_pdf = convert_hwp_to_temp_pdf(path)
+                pdf_bytes = tmp_pdf.read_bytes()
+            finally:
+                if tmp_pdf is not None:
+                    try:
+                        tmp_pdf.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            new_doc = PdfDocument._open_pdf_bytes(pdf_bytes, password=password)
+            self._source_path = None
+            self._source_had_encryption = False
+            self._password_options = None
+        elif ext in TEXT_EXTENSIONS:
+            tmp_pdf = None
+            try:
+                tmp_pdf = convert_text_file_to_temp_pdf(path)
                 pdf_bytes = tmp_pdf.read_bytes()
             finally:
                 if tmp_pdf is not None:
@@ -3616,6 +3636,7 @@ class PdfDocument:
             if Path(file_path).suffix.lower() in PDF_EXTENSIONS
             or Path(file_path).suffix.lower() in IMAGE_EXTENSIONS
             or Path(file_path).suffix.lower() in HWP_EXTENSIONS
+            or Path(file_path).suffix.lower() in TEXT_EXTENSIONS
         )
         files_done = 0
         for file_path in file_paths:
@@ -3624,6 +3645,7 @@ class PdfDocument:
                 ext not in PDF_EXTENSIONS
                 and ext not in IMAGE_EXTENSIONS
                 and ext not in HWP_EXTENSIONS
+                and ext not in TEXT_EXTENSIONS
             ):
                 continue
             if should_cancel is not None and should_cancel():
@@ -3645,6 +3667,21 @@ class PdfDocument:
                 tmp_pdf: Path | None = None
                 try:
                     tmp_pdf = convert_hwp_to_temp_pdf(file_path)
+                    added += self._insert_pdf_at(
+                        index + added,
+                        str(tmp_pdf),
+                        resolve_pdf_password=resolve_pdf_password,
+                    )
+                finally:
+                    if tmp_pdf is not None:
+                        try:
+                            tmp_pdf.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+            elif ext in TEXT_EXTENSIONS:
+                tmp_pdf = None
+                try:
+                    tmp_pdf = convert_text_file_to_temp_pdf(file_path)
                     added += self._insert_pdf_at(
                         index + added,
                         str(tmp_pdf),
@@ -5013,4 +5050,5 @@ class PdfDocument:
             ext in PDF_EXTENSIONS
             or ext in IMAGE_EXTENSIONS
             or ext in HWP_EXTENSIONS
+            or ext in TEXT_EXTENSIONS
         )

@@ -2,7 +2,8 @@
 /**
  * 배포 버전을 한 번에 올린다. (All In One Tools 와 같은 표기 규칙)
  *
- *   npm run version:bump               1.0.0.1 → 1.0.0.2   (N 을 1 올림)
+ *   npm run version:bump               1.0.0.8 → 1.0.0.9, 1.0.0.9 → 1.0.1.0
+ *                                      (끝자리 0–9, 9 다음은 세 번째 자리를 올리고 끝자리는 0)
  *   npm run version:bump -- --set=1.1.0.0
  *   npm run version:bump -- --sync     올리지 않고 package.json·lock 만 APP_VERSION 에 맞춤
  *
@@ -59,7 +60,13 @@ if (setArg) {
   if (!VERSION_RE.test(next)) throw new Error(`--set 값은 1.0.0.N 형식이어야 합니다: ${next}`);
 } else if (!args.includes('--sync')) {
   const m = VERSION_RE.exec(current);
-  next = `${m[1]}.${m[2]}.${m[3]}.${Number(m[4]) + 1}`;
+  const major = Number(m[1]);
+  const minor = Number(m[2]);
+  const patch = Number(m[3]);
+  const build = Number(m[4]);
+  // 끝자리는 한 자리(0–9). 9 다음은 patch+1.0 (1.0.0.9 → 1.0.1.0).
+  if (build >= 9) next = `${major}.${minor}.${patch + 1}.0`;
+  else next = `${major}.${minor}.${patch}.${build + 1}`;
 }
 
 if (next !== current) {

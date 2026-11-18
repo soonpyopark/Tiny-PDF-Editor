@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import GeneralSettingsPanel from './GeneralSettingsPanel.jsx';
 
 /**
- * 환경설정 탭. 로컬 전용이라 일반만 둡니다.
+ * 환경설정 탭. 로컬 전용이라 「일반」만 둡니다 (회원·서버·IP·백업 없음).
  * @type {{ id: string, label: string, component: import('react').ComponentType }[]}
  */
 const SETTINGS_TABS = [{ id: 'general', label: '일반', component: GeneralSettingsPanel }];

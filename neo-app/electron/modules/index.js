@@ -5,11 +5,10 @@
  * `register()` 에서 `defineApi()` 로 API 를 등록한 뒤, 아래 배열에 추가하세요.
  * 프론트엔드 쪽 등록 지점은 `src/features/registry.js` 입니다.
  */
-import * as home from './home.js';
 import * as pdf from './pdf.js';
 
 /** @type {{ register: () => void }[]} */
-const MODULES = [home, pdf];
+const MODULES = [pdf];
 
 export function registerModules() {
   for (const mod of MODULES) mod.register();

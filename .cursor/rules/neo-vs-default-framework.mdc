@@ -15,8 +15,7 @@ alwaysApply: true
 | MSI `UpgradeCode`, 컴포넌트 `Guid` | `neo-app/installer/Product.wxs` | 한쪽 MSI 설치가 다른 쪽을 "업그레이드"로 교체 |
 | `APP_ID`, `APP_NAME`, `APP_FILE_NAME`, `productName` | `shared/constants.js`, `package.json` | userData 폴더·단일 인스턴스 락·작업표시줄 고정·로그인 자동 실행 공유 |
 | `DEFAULT_PORT` | `shared/constants.js` | `dev:stop` 이 상대 앱을 종료, 브라우저 localStorage 혼합 |
-| 백업 `manifest.app`, IP 목록 `kind` | `backupService.js`, `ipAllowlistIo.js` | 상대 앱 파일을 가져와 설정·회원 정보를 덮어씀 |
-| 브라우저 저장소 키 | `src/lib/apiClient.js`, `updateCheckUi.js` | 같은 origin 에서 로그인 토큰 공유 |
+| 브라우저 저장소 키 | `src/lib/updateCheckUi.js` 등 | 같은 origin 에서 UI 상태 혼합 |
 
 ## 하지 말 것
 

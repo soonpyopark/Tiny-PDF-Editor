@@ -343,6 +343,8 @@ export default function EditorPage({
   }, [fullscreen]);
   const [convertOpen, setConvertOpen] = useState(false);
   const [clipboardCount, setClipboardCount] = useState(0);
+  /** 쪽을 복사·잘라낼 때 OS 클립보드에 있던 이미지 지문. 같은 이미지가 남아 있으면 쪽 붙여넣기를 우선한다. */
+  const [pageClipImageFp, setPageClipImageFp] = useState(/** @type {string | null} */ (null));
   const requestId = useRef(0);
   const zoomRef = useRef(zoom);
   const viewRef = useRef(null);
@@ -1171,16 +1173,34 @@ export default function EditorPage({
           if (!indices.length) return;
           const result = await api('pdf.copyPages', { indices });
           setClipboardCount(result.count || indices.length);
+          try {
+            const clip = await api('pdf.clipboardImageAvailable');
+            setPageClipImageFp(clip?.fingerprint || null);
+          } catch {
+            setPageClipImageFp(null);
+          }
           return;
         }
         case 'cut': {
           if (!indices.length) return;
           const result = await api('pdf.cutPages', { indices });
           setClipboardCount(result.count || indices.length);
+          try {
+            const clip = await api('pdf.clipboardImageAvailable');
+            setPageClipImageFp(clip?.fingerprint || null);
+          } catch {
+            setPageClipImageFp(null);
+          }
           await applyDocResult(result, Math.max(0, Math.min(...indices) - 1));
           return;
         }
         case 'paste': {
+          // 쪽 복사 이후에 OS 클립보드 이미지가 바뀐 경우에만 이미지를 우선한다.
+          if (action.preferImage) {
+            const result = await api('pdf.insertClipboardImage', { index: targetIndex });
+            await applyDocResult(result, targetIndex);
+            return;
+          }
           const result = await api('pdf.pastePages', { index: targetIndex });
           await applyDocResult(result, targetIndex);
           await refreshClipboardCount();
@@ -2014,6 +2034,7 @@ export default function EditorPage({
           markups={markups}
           markupTabRequest={markupTabRequest}
           clipboardCount={clipboardCount}
+          pageClipImageFp={pageClipImageFp}
           onSelectPage={(index) => void goTo(index)}
           onThumbAction={(action) => void handleThumbAction(action)}
           pendingInsert={pendingInsert}
@@ -2157,7 +2178,7 @@ export default function EditorPage({
                 <div className="max-w-md text-center">
                   <h1 className="m-0 text-lg font-semibold text-slate-800">빈 문서</h1>
                   <p className="mt-2 text-sm leading-relaxed text-slate-500">
-                    병합할 PDF, 이미지나 한글(HWP, HWPX) 파일을
+                    PDF, 이미지, 한글(HWP/HWPX), 텍스트(TXT/MD/JSON), HTML 파일을
                     <br />
                     좌측 썸네일 창으로 드래그 앤 드롭 해주세요
                   </p>

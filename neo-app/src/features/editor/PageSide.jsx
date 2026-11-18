@@ -81,6 +81,7 @@ export default function PageSide({
   thumbs,
   markups,
   clipboardCount,
+  pageClipImageFp = null,
   onSelectPage,
   onThumbAction,
   collapsed,
@@ -186,6 +187,7 @@ export default function PageSide({
           pageIndex={pageIndex}
           pageCount={pageCount || thumbs.length || 0}
           clipboardCount={clipboardCount || 0}
+          pageClipImageFp={pageClipImageFp}
           pending={pendingInsert}
           onSelectPage={onSelectPage}
           onAction={onThumbAction}

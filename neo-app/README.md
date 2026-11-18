@@ -2,9 +2,7 @@
 
 Tiny PDF Editor - neo 저장소 안의 Electron + React 화면입니다. 편집 엔진은 상위 폴더의 `pdf_editor/engine.py`를 씁니다. 실행은 상위 폴더에서 `npm run neo`, 재시작은 `npm run neo:restart`를 씁니다.
 
-아래 내용은 앱 골격(로그인·설정·업데이트 등)에 대한 원래 설명입니다.
-
-NAS4USB 류 앱을 만들 때 쓰는 Electron 기본 프레임. 로그인·회원·환경설정·백업·업데이트 확인이 이미 들어 있고, **기능만 추가**하면 된다.
+**로컬 전용** PDF 에디터입니다. 로그인·회원·LAN 서버·설정 백업 UI는 없습니다. 창은 `127.0.0.1` HTTP로 UI를 띄웁니다.
 
 ## 명령
 
@@ -18,7 +16,7 @@ NAS4USB 류 앱을 만들 때 쓰는 Electron 기본 프레임. 로그인·회�
 | `npm run build:release:mac` | macOS dmg + zip → `release/` (macOS 에서만 실행 가능) |
 | `npm run version:bump` | 배포 버전 +1 (`APP_VERSION` `1.0.0.N`, `package.json` `1.0.0-N`). 옵션: `--set=1.1.0.0` `--sync` |
 | `npm run publish:release` | 태그 `v1.0.0-N` + push + GitHub Release(msi·zip 업로드) + 직전 릴리스 본문을 「이전 버전 이력」으로 이어 붙인 뒤 **이전 릴리스·태그 삭제**. 옵션: `--notes-file=` `--dry-run` `--keep-previous` |
-| `npm run update:all` | npm(메이저 포함 `@latest`)·Electron·Python 엔진 패키지 최신화. 옵션: `--skip-git` `--skip-npm` `--skip-python` `--skip-majors` `--build` |
+| `npm run update:all` | npm(메이저 포함 `@latest`)·Electron·Python·OCR 모델(upstream 해시 바뀌면 핀 갱신) 최신화. 옵션: `--skip-git` `--skip-npm` `--skip-python` `--skip-ocr` `--skip-majors` `--build` |
 | `npm run build:update_all` | 최신화 + `build:release` (Windows). `update_all.bat` 으로도 실행 가능 (로그: `.cache/logs/update-all.log`) |
 | `npm run build:update_all:mac` | 최신화 + `build:release:mac` (macOS) |
 
@@ -35,15 +33,14 @@ NAS4USB 류 앱을 만들 때 쓰는 Electron 기본 프레임. 로그인·회�
 
 `-portable-` / `-mac-` 는 업데이트 확인이 플랫폼별 zip 을 구분하는 표시이고, 스탬프는 같은 버전을 다시 빌드했을 때 새 빌드인지 비교하는 데 씁니다. 업데이트 확인(`shared/updateCheck.js`)은 예전 이름(`TinyPDFEditor-NEO_<stamp>_…`, `_portable_`, `_mac_`)도 읽습니다.
 
-기본 로그인: `admin` / `admin1234` (로그인 후 회원 관리에서 변경).
-기본 포트 3021, 기본 접속 범위는 이 PC(127.0.0.1) 만. 환경설정 > 서버 관리에서 변경.
+기본 포트 3021 (`127.0.0.1` 전용). 포트만 `data/settings.json` 의 `webServerPort` 또는 `APP_PORT` 로 바꿀 수 있습니다.
 
 ## 구조
 
 - `main.js`, `preload.cjs` — Electron 진입점
-- `electron/httpServer.js` — UI + `POST /api/<name>` RPC 를 한 포트로 서비스
-- `electron/api/coreApi.js` — 기본 API (로그인, 회원, 설정, IP, 백업, 업데이트)
-- `electron/services/*` — 설정·회원·인증·백업 등 서비스
+- `electron/httpServer.js` — UI + `POST /api/<name>` RPC 를 한 포트로 서비스 (로컬 HTTP)
+- `electron/api/coreApi.js` — 앱 정보·설정·업데이트 확인
+- `electron/modules/pdf.js` — PDF 편집 API
 - `shared/*` — 메인/화면 공용 코드 (`constants.js` 에 앱 이름·버전)
 - `src/` — React 화면. `src/lib/apiClient.js` 가 API 클라이언트 (※ `src/api/` 폴더는 `/api/` 라우트와 충돌하므로 만들지 말 것)
 
@@ -55,6 +52,8 @@ NAS4USB 류 앱을 만들 때 쓰는 Electron 기본 프레임. 로그인·회�
 4. 환경설정 탭 추가: `src/components/settings/SettingsView.jsx` 의 탭 배열
 
 ## 데이터 위치
+
+로컬 전용 앱입니다 (로그인·LAN 서버·설정 백업 UI 없음).
 
 - 개발: `<프로젝트>/data`
 - portable: exe 옆 `data` (zip 안에 `.portable` 표시 파일 포함)

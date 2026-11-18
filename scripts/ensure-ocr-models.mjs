@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
- * Download official PP-OCRv5 ONNX weights into ocr/models (build / dev).
+ * Official PP-OCRv5 ONNX weights in ocr/models.
+ *
+ *   node scripts/ensure-ocr-models.mjs           # missing/wrong hash → download (pinned sha)
+ *   node scripts/ensure-ocr-models.mjs --update  # fetch upstream; if hash changed, replace + update pins
  */
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -9,6 +12,10 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MODELS_DIR = path.join(ROOT, "ocr", "models");
+const ENSURE_SCRIPT = fileURLToPath(import.meta.url);
+const OCR_MODELS_PY = path.join(ROOT, "pdf_editor", "ocr_models.py");
+
+/** @type {{ name: string, filename: string, url: string, sha256: string }[]} */
 const MODELS = [
   {
     name: "PP-OCRv5 mobile det",
@@ -36,23 +43,77 @@ function sha256File(filePath) {
   return digest.digest("hex");
 }
 
-async function download(spec, dest) {
+function sha256Buffer(buffer) {
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
+/**
+ * @param {{ name: string, url: string }} spec
+ * @returns {Promise<Buffer>}
+ */
+async function fetchModelBytes(spec) {
   const response = await fetch(spec.url, {
-    headers: { "User-Agent": "TinyPDFEditor/1.1.9" },
+    headers: { "User-Agent": "TinyPDFEditor-NEO/ocr-models" },
+    redirect: "follow",
   });
   if (!response.ok) {
     throw new Error(`${spec.name} 다운로드 실패 (HTTP ${response.status})`);
   }
-  const tmp = `${dest}.part`;
-  fs.writeFileSync(tmp, Buffer.from(await response.arrayBuffer()));
-  const digest = sha256File(tmp);
+  return Buffer.from(await response.arrayBuffer());
+}
+
+/**
+ * @param {{ name: string, filename: string, url: string, sha256: string }} spec
+ * @param {string} dest
+ */
+async function downloadPinned(spec, dest) {
+  const body = await fetchModelBytes(spec);
+  const digest = sha256Buffer(body);
   if (digest !== spec.sha256) {
-    fs.unlinkSync(tmp);
-    throw new Error(`${spec.name} 해시가 맞지 않습니다.`);
+    throw new Error(
+      `${spec.name} 해시가 핀과 다릅니다.\n  기대: ${spec.sha256}\n  실제: ${digest}\n` +
+        `upstream 이 바뀌었으면: node scripts/ensure-ocr-models.mjs --update`,
+    );
   }
+  const tmp = `${dest}.part`;
+  fs.writeFileSync(tmp, body);
   fs.renameSync(tmp, dest);
 }
 
+/**
+ * @param {string} filename
+ * @param {string} newSha
+ */
+function updatePinnedHashes(filename, newSha) {
+  const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  let ensureText = fs.readFileSync(ENSURE_SCRIPT, "utf8");
+  const ensureNext = ensureText.replace(
+    new RegExp(`(filename:\\s*"${escaped}",[\\s\\S]*?sha256:\\s*")[a-f0-9]{64}(")`),
+    `$1${newSha}$2`,
+  );
+  if (ensureNext === ensureText) {
+    throw new Error(`ensure-ocr-models.mjs 에서 ${filename} sha256 핀을 찾지 못했습니다.`);
+  }
+  fs.writeFileSync(ENSURE_SCRIPT, ensureNext, "utf8");
+
+  let pyText = fs.readFileSync(OCR_MODELS_PY, "utf8");
+  const pyNext = pyText.replace(
+    new RegExp(`(filename="${escaped}",\\s*sha256=")[a-f0-9]{64}(")`),
+    `$1${newSha}$2`,
+  );
+  if (pyNext === pyText) {
+    throw new Error(`ocr_models.py 에서 ${filename} sha256 핀을 찾지 못했습니다.`);
+  }
+  fs.writeFileSync(OCR_MODELS_PY, pyNext, "utf8");
+
+  const entry = MODELS.find((item) => item.filename === filename);
+  if (entry) entry.sha256 = newSha;
+}
+
+/**
+ * Missing / wrong local hash → download matching the pinned sha256.
+ */
 export async function ensureOcrModels() {
   fs.mkdirSync(MODELS_DIR, { recursive: true });
   for (const spec of MODELS) {
@@ -60,15 +121,76 @@ export async function ensureOcrModels() {
     if (fs.existsSync(dest) && sha256File(dest) === spec.sha256) {
       continue;
     }
-    console.log(`[ocr] ${spec.name} 받는 중...`);
-    await download(spec, dest);
+    console.log(`[ocr] ${spec.name} 받는 중 (핀 해시)…`);
+    await downloadPinned(spec, dest);
   }
   return MODELS.map((spec) => path.join(MODELS_DIR, spec.filename));
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  ensureOcrModels()
-    .then((files) => {
+/**
+ * Fetch upstream; if content hash differs from the pin, replace the file and
+ * update sha256 in ensure-ocr-models.mjs + pdf_editor/ocr_models.py.
+ *
+ * @returns {Promise<{ updated: string[], unchanged: string[] }>}
+ */
+export async function updateOcrModelsFromUpstream() {
+  fs.mkdirSync(MODELS_DIR, { recursive: true });
+  /** @type {string[]} */
+  const updated = [];
+  /** @type {string[]} */
+  const unchanged = [];
+
+  for (const spec of MODELS) {
+    const dest = path.join(MODELS_DIR, spec.filename);
+    console.log(`[ocr] ${spec.name} upstream 확인 중…`);
+    const body = await fetchModelBytes(spec);
+    const digest = sha256Buffer(body);
+
+    if (digest === spec.sha256) {
+      if (!fs.existsSync(dest) || sha256File(dest) !== digest) {
+        const tmp = `${dest}.part`;
+        fs.writeFileSync(tmp, body);
+        fs.renameSync(tmp, dest);
+        console.log(`[ocr] ${spec.name}: 핀과 동일 — 로컬 파일만 맞춤`);
+      } else {
+        console.log(`[ocr] ${spec.name}: 최신 (변경 없음)`);
+      }
+      unchanged.push(spec.filename);
+      continue;
+    }
+
+    console.log(`[ocr] ${spec.name}: upstream 변경 감지`);
+    console.log(`[ocr]   이전 핀: ${spec.sha256}`);
+    console.log(`[ocr]   새 해시: ${digest}`);
+    const tmp = `${dest}.part`;
+    fs.writeFileSync(tmp, body);
+    fs.renameSync(tmp, dest);
+    updatePinnedHashes(spec.filename, digest);
+    updated.push(spec.filename);
+    console.log(`[ocr] ${spec.name}: 파일·핀 갱신 완료`);
+  }
+
+  if (updated.length) {
+    console.log(`[ocr] 업데이트됨: ${updated.join(", ")}`);
+  } else {
+    console.log("[ocr] upstream 변경 없음 — 핀 유지");
+  }
+  return { updated, unchanged };
+}
+
+const isMain =
+  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isMain) {
+  const doUpdate = process.argv.includes("--update");
+  const run = doUpdate ? updateOcrModelsFromUpstream : ensureOcrModels;
+  run()
+    .then((result) => {
+      if (doUpdate) {
+        console.log("[ocr] upstream 확인 완료");
+        return;
+      }
+      const files = /** @type {string[]} */ (result);
       for (const file of files) {
         if (!fs.existsSync(file)) {
           throw new Error(`OCR model missing: ${file}`);

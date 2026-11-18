@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { api } from '../../lib/apiClient.js';
 import { useMenuPlacement } from '../../lib/menuPlacement.js';
 
 /** Matches pdf_editor.thumbnail_panel.THUMB_SCALE_LEVELS */
@@ -44,8 +45,9 @@ function ocrLabel(indices) {
  *   pageIndex: number,
  *   pageCount: number,
  *   clipboardCount?: number,
+ *   pageClipImageFp?: string | null,
  *   onSelectPage: (index: number) => void,
- *   onAction: (action: { type: string, indices?: number[], targetIndex?: number, degrees?: number, paths?: string[] }) => void,
+ *   onAction: (action: { type: string, indices?: number[], targetIndex?: number, degrees?: number, paths?: string[], preferImage?: boolean }) => void,
  * }} props
  */
 export default function ThumbnailPanel({
@@ -54,6 +56,7 @@ export default function ThumbnailPanel({
   pageIndex,
   pageCount,
   clipboardCount = 0,
+  pageClipImageFp = null,
   pending = null,
   onSelectPage,
   onAction,
@@ -61,6 +64,8 @@ export default function ThumbnailPanel({
   const [selected, setSelected] = useState(/** @type {number[]} */ ([]));
   const [scaleLevel, setScaleLevel] = useState(DEFAULT_THUMB_SCALE_LEVEL);
   const [menu, setMenu] = useState(/** @type {null | { x: number, y: number, insertIndex: number, indices: number[] }} */ (null));
+  const [clipboardHasImage, setClipboardHasImage] = useState(false);
+  const [clipboardImageFp, setClipboardImageFp] = useState(/** @type {string | null} */ (null));
   const [dragOverIndex, setDragOverIndex] = useState(/** @type {number | null} */ (null));
   const anchorRef = useRef(0);
   const listRef = useRef(null);
@@ -178,6 +183,24 @@ export default function ThumbnailPanel({
     else selectOnly(index);
   }
 
+  function probeClipboardImage() {
+    setClipboardHasImage(false);
+    setClipboardImageFp(null);
+    void api('pdf.clipboardImageAvailable')
+      .then((result) => {
+        setClipboardHasImage(Boolean(result?.available));
+        setClipboardImageFp(result?.fingerprint || null);
+      })
+      .catch(() => {
+        setClipboardHasImage(false);
+        setClipboardImageFp(null);
+      });
+  }
+
+  // 쪽 복사 이후에 클립보드 이미지가 바뀐 경우에만 이미지를 우선한다.
+  const preferClipboardImage =
+    clipboardHasImage && (clipboardCount <= 0 || clipboardImageFp !== pageClipImageFp);
+
   function openMenu(event, index) {
     event.preventDefault();
     event.stopPropagation();
@@ -192,6 +215,7 @@ export default function ThumbnailPanel({
       insertIndex: index,
       indices,
     });
+    probeClipboardImage();
   }
 
   function openEmptyMenu(event) {
@@ -202,6 +226,7 @@ export default function ThumbnailPanel({
       insertIndex: pageCount,
       indices: sortedSelected,
     });
+    probeClipboardImage();
   }
 
   function run(type, extra = {}) {
@@ -400,7 +425,10 @@ export default function ThumbnailPanel({
 
       <div
         ref={listRef}
-        className="relative min-h-0 flex-1 overflow-auto p-2"
+        className={`relative min-h-0 flex-1 p-2 ${
+          // 빈 문서에서는 안내 문구·드롭만 있으므로 세로 스크롤이 생기지 않게 한다.
+          pageCount > 0 || pending ? 'overflow-auto' : 'overflow-hidden'
+        }`}
         title="페이지를 드래그해 순서를 바꾸거나, 파일을 끌어다 놓으세요"
         onMouseDown={onListMouseDown}
         onContextMenu={openEmptyMenu}
@@ -448,13 +476,13 @@ export default function ThumbnailPanel({
         }}
       >
         {!docOpen && !pending ? (
-          <div className="flex h-full items-center justify-center">
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-2">
             <p className="text-center text-sm text-slate-400">
               Drag & Drop files here.
             </p>
           </div>
         ) : pageCount === 0 && !pending ? (
-          <div className="flex h-full items-center justify-center">
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-2">
             <p className="text-center text-sm text-slate-400">
               Drag & Drop files here.
             </p>
@@ -507,7 +535,10 @@ export default function ThumbnailPanel({
           })
         )}
         {pending && (pending.at >= thumbs.length || !thumbs.length) ? skeletons : null}
-        {dragOverIndex === pageCount && docOpen ? <DropLine className="relative -top-1" /> : null}
+        {/* 빈 문서(쪽 0)는 넣을 자리가 하나뿐이라 삽입 라인을 그리지 않는다. */}
+        {dragOverIndex === pageCount && docOpen && pageCount > 0 ? (
+          <DropLine className="relative -top-1" />
+        ) : null}
         {bandRect ? (
           <div
             className="pointer-events-none absolute z-20 border border-app-accent bg-app-accent/20"
@@ -553,10 +584,19 @@ export default function ThumbnailPanel({
           <div className="my-1 h-px bg-[#e8e8e8]" />
           <div className="px-3 py-1.5 text-[11px] text-slate-500">이 위치에 삽입 (페이지 {insertAt} 앞)</div>
           <MenuItem
-            disabled={clipboardCount <= 0}
-            onClick={() => run('paste', { targetIndex: menu.insertIndex })}
+            disabled={clipboardCount <= 0 && !clipboardHasImage}
+            onClick={() =>
+              run('paste', {
+                targetIndex: menu.insertIndex,
+                preferImage: preferClipboardImage,
+              })
+            }
           >
-            {clipboardCount > 0 ? `여기에 ${clipboardCount}페이지 붙여넣기` : '여기에 붙여넣기'}
+            {preferClipboardImage
+              ? `여기에 이미지 붙여넣기 (페이지 ${insertAt} 앞)`
+              : clipboardCount > 0
+                ? `여기에 ${clipboardCount}페이지 붙여넣기 (페이지 ${insertAt} 앞)`
+                : `여기에 붙여넣기 (페이지 ${insertAt} 앞)`}
           </MenuItem>
           <MenuItem onClick={() => run('insertBlank', { targetIndex: menu.insertIndex })}>
             {`빈 페이지 삽입 (페이지 ${insertAt} 앞)`}

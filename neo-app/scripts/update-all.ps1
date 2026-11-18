@@ -12,6 +12,9 @@
 .PARAMETER SkipPython
   Python 엔진 패키지 최신화(pip, requirements.txt 갱신)를 건너뜁니다.
 
+.PARAMETER SkipOcr
+  OCR 모델(PP-OCRv5 ONNX) upstream 확인·핀 갱신을 건너뜁니다.
+
 .PARAMETER SkipMajors
   package.json 범위를 유지하고 Electron / electron-builder 만 최신으로 올립니다.
 
@@ -22,6 +25,7 @@ param(
     [switch]$SkipGit,
     [switch]$SkipNpm,
     [switch]$SkipPython,
+    [switch]$SkipOcr,
     [switch]$SkipMajors,
     [switch]$BuildDist
 )
@@ -46,6 +50,7 @@ $nodeArgs = @('scripts/update-all.mjs')
 if ($SkipGit) { $nodeArgs += '--skip-git' }
 if ($SkipNpm) { $nodeArgs += '--skip-npm' }
 if ($SkipPython) { $nodeArgs += '--skip-python' }
+if ($SkipOcr) { $nodeArgs += '--skip-ocr' }
 if ($SkipMajors) { $nodeArgs += '--skip-majors' }
 if ($BuildDist) { $nodeArgs += '--build' }
 

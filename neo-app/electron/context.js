@@ -26,7 +26,7 @@ export function getAppContext() {
   return context;
 }
 
-/** Folder holding every mutable file (settings, members, backups, …). */
+/** Folder holding mutable app state (settings.json 등). */
 export function getStateRoot() {
   return getAppContext().stateRoot;
 }

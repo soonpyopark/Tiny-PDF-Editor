@@ -9,7 +9,6 @@
  *   id: string,
  *   label: string,
  *   icon?: string,
- *   adminOnly?: boolean,
  *   component: import('react').ComponentType,
  * }} FeatureDefinition
  */

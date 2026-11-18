@@ -52,6 +52,11 @@ if /I "%~1"=="skip-python" (
     shift
     goto parse_args
 )
+if /I "%~1"=="skip-ocr" (
+    set "EXTRA_ARGS=%EXTRA_ARGS% -SkipOcr"
+    shift
+    goto parse_args
+)
 if /I "%~1"=="skip-majors" (
     set "EXTRA_ARGS=%EXTRA_ARGS% -SkipMajors"
     shift
@@ -69,7 +74,7 @@ echo ============================================================
 echo  Root : %APP_ROOT%
 echo  Log  : .cache\logs\update-all.log
 echo.
-echo  Options: build skip-git skip-npm skip-python skip-majors
+echo  Options: build skip-git skip-npm skip-python skip-ocr skip-majors
 echo ============================================================
 echo.
 

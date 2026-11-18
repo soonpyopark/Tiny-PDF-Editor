@@ -3,15 +3,15 @@
  * the HTTP layer (electron/httpServer.js) exposes them as `POST /api/<name>`
  * and the renderer calls them with `api('<name>', body)` (src/lib/apiClient.js).
  *
- * Access levels:
- *   public — no login (login screen, app info)
- *   user   — any logged-in member
- *   admin  — super_admin only (환경설정)
+ * Access levels (로컬 전용: 요청마다 local 슈퍼관리자 컨텍스트가 붙는다):
+ *   public — 앱 정보 등
+ *   user   — 일반 기능
+ *   admin  — 환경설정
  *
  * @typedef {'public' | 'user' | 'admin'} ApiAccess
  *
  * @typedef {{
- *   user: import('../authService.js').SessionUser | null,
+ *   user: { id: string, loginId: string, displayName: string, role: string } | null,
  *   token: string,
  *   clientIp: string,
  *   windowId?: string,
@@ -65,7 +65,7 @@ export function currentWindowId() {
 }
 
 /**
- * @param {string} name e.g. `members.list`
+ * @param {string} name e.g. `pdf.search`
  * @param {ApiAccess} access
  * @param {ApiHandler} handler
  */
@@ -84,9 +84,9 @@ export async function dispatchApi(name, body, ctx) {
   if (!route) throw new ApiError(`알 수 없는 요청입니다: ${name}`, 404);
 
   if (route.access !== 'public') {
-    if (!ctx.user) throw new ApiError('로그인이 필요합니다.', 401);
+    if (!ctx.user) throw new ApiError('요청을 처리할 수 없습니다.', 401);
     if (route.access === 'admin' && ctx.user.role !== 'super_admin') {
-      throw new ApiError('총괄관리자만 사용할 수 있습니다.', 403);
+      throw new ApiError('이 요청을 사용할 수 없습니다.', 403);
     }
   }
   return windowStore.run(ctx.windowId || 'main', () => route.handler(body ?? {}, ctx));

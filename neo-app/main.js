@@ -5,11 +5,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { APP_ID, APP_NAME } from './shared/constants.js';
 import { registerCoreApi } from './electron/api/coreApi.js';
-import { startBackupScheduler, stopBackupScheduler } from './electron/backupService.js';
 import { setAppContext } from './electron/context.js';
 import { createEnvReader } from './electron/envConfig.js';
 import { createServerManager } from './electron/httpServer.js';
-import { ensureBootstrapAdmin } from './electron/membersService.js';
 import { registerModules } from './electron/modules/index.js';
 import { disposeEngineSession } from './electron/modules/pdf.js';
 import {
@@ -23,7 +21,6 @@ import {
 import { runtime } from './electron/runtime.js';
 import { getSettings } from './electron/settingsService.js';
 import { createSplashWindow, registerSplashIpc, toggleAboutSplash } from './electron/splash.js';
-import { isOwnServerCertificate } from './electron/tlsCerts.js';
 import { createTrayController } from './electron/tray.js';
 import { hideTitleBarIcon } from './electron/windowIcon.js';
 
@@ -77,7 +74,7 @@ if (process.platform === 'win32') {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Where settings / members / backups live:
+ * Where settings live:
  *   - APP_DATA_DIR env override
  *   - dev            → <project>/data
  *   - portable zip   → <exe folder>/data   (marker file `.portable` beside the exe)
@@ -231,7 +228,6 @@ async function boot() {
     set: (enabled) => app.setLoginItemSettings({ openAtLogin: Boolean(enabled) }),
   };
 
-  await ensureBootstrapAdmin();
   registerCoreApi();
   registerModules();
 
@@ -273,7 +269,6 @@ async function boot() {
   // 꺼져 있으면 닫기(X)가 종료이므로 트레이가 필요 없고, 종료 뒤에도 인쇄 감시자는 따로 살아 있다.
   runtime.syncTray = syncTray;
   syncTray();
-  startBackupScheduler();
   // 가상 프린터 + 백그라운드 인쇄 감시. 창이 뜬 뒤에 하므로 시작 속도에 영향이 없다.
   void ensurePrintService().catch((err) => console.warn('[print] ensure failed:', err));
 
@@ -287,11 +282,18 @@ async function boot() {
 /* -------------------------------------------------------------------------- */
 
 function resolveIconPath() {
-  const candidates = [
-    path.join(__dirname, 'build', 'icon.png'),
-    path.join(process.resourcesPath ?? '', 'icon.png'),
-  ];
-  return candidates.find((candidate) => fs.existsSync(candidate));
+  // Windows taskbar prefers .ico (especially under electron.exe in npm run dev).
+  // Packaged builds and mac/linux keep using PNG where that is what we ship.
+  const names =
+    process.platform === 'win32' ? ['icon.ico', 'icon.png'] : ['icon.png', 'icon.ico'];
+  const dirs = [path.join(__dirname, 'build'), process.resourcesPath || ''].filter(Boolean);
+  for (const dir of dirs) {
+    for (const name of names) {
+      const candidate = path.join(dir, name);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
 }
 
 /** @param {string} url */
@@ -398,7 +400,7 @@ function createAppWindow(appUrl, { main, windowId }) {
   });
   win.webContents.on('will-navigate', (event, url) => {
     if (isAppUrl(url)) return;
-    // Port changes in 서버 관리 navigate to the new port of this same server.
+    // Same-origin navigation within this app's local UI server.
     if (/^https?:\/\/(127\.0\.0\.1|localhost):\d+/i.test(url)) return;
     event.preventDefault();
     openExternalSafe(url);
@@ -598,26 +600,7 @@ function setupMenu() {
 }
 
 /* -------------------------------------------------------------------------- */
-/* HTTPS: trust the certificate this app issued for itself                    */
-/* -------------------------------------------------------------------------- */
-
-// The window talks to our own server, whose certificate is signed by a local CA
-// that is not installed in the OS. Accept exactly that certificate and nothing else.
-app.on('certificate-error', (event, _webContents, url, _error, certificate, callback) => {
-  let trusted = false;
-  try {
-    const { hostname } = new URL(url);
-    trusted = (hostname === '127.0.0.1' || hostname === 'localhost') && isOwnServerCertificate(certificate);
-  } catch {
-    trusted = false;
-  }
-  if (!trusted) return callback(false);
-  event.preventDefault();
-  callback(true);
-});
-
-/* -------------------------------------------------------------------------- */
-/* IPC (Electron window only — browsers on the LAN never see these)           */
+/* IPC (Electron window only)                                                 */
 /* -------------------------------------------------------------------------- */
 
 function registerIpc() {
@@ -719,7 +702,6 @@ app.on('before-quit', (event) => {
   if (quitCleanupStarted) return;
   quitCleanupStarted = true;
 
-  stopBackupScheduler();
   trayController?.destroy();
   trayController = null;
   // 앱을 끈 직후에도 인쇄 PDF 가 열리도록 백그라운드 감시자가 살아 있게 한다.

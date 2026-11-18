@@ -5,9 +5,10 @@
  *
  * 순서: 개발 앱 중지 → git pull(변경 사항이 없을 때만) → npm install/update →
  *       직접 의존성 전부 @latest(메이저 포함) → Electron 실행 확인 →
- *       Python 엔진 패키지 최신화(requirements.txt 핀 갱신) → 아이콘 준비 → (옵션) 빌드
+ *       Python 엔진 패키지 최신화(requirements.txt 핀 갱신) →
+ *       OCR 모델 upstream 확인(해시 바뀌면 파일·핀 갱신) → 아이콘 준비 → (옵션) 빌드
  *
- * 옵션: --skip-git  --skip-npm  --skip-python  --skip-majors  --build  --build-mac
+ * 옵션: --skip-git  --skip-npm  --skip-python  --skip-ocr  --skip-majors  --build  --build-mac
  *
  * 주의: 설치된 Tiny PDF Editor - NEO 와 인쇄 감시(백그라운드)는 종료하지 않습니다.
  *       이 프로젝트 폴더에서 뜬 프로세스(개발용 Electron, 빌드 중간 산출물)만 정리합니다.
@@ -29,6 +30,7 @@ function parseArgs(argv) {
     skipGit: argv.includes('--skip-git'),
     skipNpm: argv.includes('--skip-npm'),
     skipPython: argv.includes('--skip-python'),
+    skipOcr: argv.includes('--skip-ocr'),
     skipMajors: argv.includes('--skip-majors'),
     build: argv.includes('--build'),
     buildMac: argv.includes('--build-mac'),
@@ -391,6 +393,16 @@ async function main() {
 
   if (!opts.skipPython) {
     await updatePythonStack();
+  }
+
+  if (!opts.skipOcr) {
+    // HuggingFace PP-OCRv5 ONNX: 원격 해시가 핀과 다르면 ocr/models + sha 핀을 함께 갱신.
+    run(
+      'OCR 모델 upstream 확인',
+      'node',
+      [path.join(repoRoot, 'scripts', 'ensure-ocr-models.mjs'), '--update'],
+      repoRoot,
+    );
   }
 
   run('prepare icons', 'npm', ['run', 'prepare:icons']);

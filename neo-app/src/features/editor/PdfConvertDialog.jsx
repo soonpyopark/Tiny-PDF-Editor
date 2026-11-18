@@ -8,12 +8,12 @@ import { useAnchoredPlacement } from '../../lib/menuPlacement.js';
  * "한글(HWP, HWPX) → PDF"(Tiny hwp_to_pdf_dialog.py)를 하나로 합친 것.
  *
  * 공통: 파일 추가 / 폴더에서 추가 / 끌어다 놓기, 선택 제거, 목록 순서, 첫 쪽 미리보기.
- * 파일 형식: PDF · 이미지 · 한글(HWP, HWPX).
+ * 파일 형식: PDF · 이미지 · 한글(HWP, HWPX) · 텍스트(TXT/MD/JSON) · HTML.
  *
  * 모드 (위쪽에서 고른다):
  *  - 병합: 목록 순서대로 PDF 하나로 합친다. 파일 이름·저장 폴더를 정하고, 같은 이름이 있으면 덮어쓰기를 확인한다.
  *          암호 PDF 는 해당 파일에서 바로 비밀번호를 받는다. 끝나면 저장한 파일을 연다.
- *  - 개별 변환: 이미지·한글 파일을 각각 PDF 로 저장한다 (이미 PDF 인 파일은 제외).
+ *  - 개별 변환: 이미지·한글·텍스트·HTML 파일을 각각 PDF 로 저장한다 (이미 PDF 인 파일은 제외).
  *          원본과 같은 폴더 또는 지정 폴더, 덮어쓰기(기본은 "이름 (2).pdf"), 변환 후 열기.
  *          파일 하나씩 변환하며 진행을 보여 주고, 중지는 다음 파일부터 멈춘다.
  *
@@ -47,11 +47,21 @@ function stem(filePath) {
   return dot > 0 ? name.slice(0, dot) : name;
 }
 
-/** @returns {'pdf' | 'hwp' | 'image'} */
+/** @returns {'pdf' | 'hwp' | 'text' | 'image'} */
 function kindOf(filePath) {
   const ext = (/\.([^.\\/]+)$/.exec(filePath || '')?.[1] || '').toLowerCase();
   if (ext === 'pdf') return 'pdf';
   if (ext === 'hwp' || ext === 'hwpx') return 'hwp';
+  if (
+    ext === 'txt' ||
+    ext === 'md' ||
+    ext === 'markdown' ||
+    ext === 'json' ||
+    ext === 'html' ||
+    ext === 'htm'
+  ) {
+    return 'text';
+  }
   return 'image';
 }
 
@@ -282,7 +292,7 @@ export default function PdfConvertDialog({ open, onClose, onDone }) {
       if (!result.paths.length) {
         void dialog.alert({
           title: TITLE,
-          body: '선택한 폴더에 PDF, 이미지 또는 한글(HWP/HWPX) 파일이 없습니다.',
+          body: '선택한 폴더에 PDF, 이미지, 한글(HWP/HWPX), 텍스트(TXT/MD/JSON) 또는 HTML 파일이 없습니다.',
         });
         return;
       }
@@ -493,10 +503,12 @@ export default function PdfConvertDialog({ open, onClose, onDone }) {
     if (isMerge) {
       if (file.locked) return { text: '암호 보호 PDF', tone: 'text-slate-500' };
       if (kind === 'hwp') return { text: '한글 문서 · 병합할 때 PDF로 변환', tone: 'text-slate-500' };
+      if (kind === 'text') return { text: '텍스트·HTML · 병합할 때 PDF로 변환', tone: 'text-slate-500' };
       return { text: file.pages != null ? `${file.pages}페이지` : '페이지 수 확인 중…', tone: 'text-slate-500' };
     }
     if (kind === 'pdf') return { text: '이미 PDF · 변환에서 제외', tone: 'text-slate-400' };
     if (kind === 'hwp') return { text: '한글 문서 → PDF', tone: 'text-slate-500' };
+    if (kind === 'text') return { text: '텍스트·HTML → PDF', tone: 'text-slate-500' };
     return { text: '이미지 → PDF', tone: 'text-slate-500' };
   }
 
@@ -531,7 +543,7 @@ export default function PdfConvertDialog({ open, onClose, onDone }) {
             <p className="m-0 mt-0.5 text-xs text-slate-500">
               {isMerge
                 ? '목록 순서대로 PDF 하나로 합칩니다. 끌어서 순서를 바꾸거나 파일을 끌어다 놓을 수 있습니다.'
-                : '이미지·한글 파일을 각각 PDF로 저장합니다. 이미 PDF인 파일은 제외됩니다.'}
+                : '이미지·한글·텍스트·HTML 파일을 각각 PDF로 저장합니다. 이미 PDF인 파일은 제외됩니다.'}
             </p>
           </div>
           <div
@@ -621,7 +633,7 @@ export default function PdfConvertDialog({ open, onClose, onDone }) {
               {files.length === 0 ? (
                 <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-3 text-center">
                   <p className="m-0 text-sm text-slate-600">파일을 여기로 끌어다 놓거나 “파일 추가”를 누르세요.</p>
-                  <p className="m-0 text-xs text-slate-400">PDF · 이미지 · 한글(HWP, HWPX)</p>
+                  <p className="m-0 text-xs text-slate-400">PDF · 이미지 · 한글 · 텍스트 · HTML</p>
                 </div>
               ) : (
                 <ol className="m-0 grid list-none gap-1.5 p-0">
@@ -770,7 +782,7 @@ export default function PdfConvertDialog({ open, onClose, onDone }) {
                 {isMerge
                   ? '목록에서 파일을 위·아래로 끌면 병합 순서가 바뀝니다.'
                   : files.length && !convertible.length
-                    ? '변환할 이미지나 한글 파일이 없습니다. 이미 PDF인 파일을 합치려면 “하나의 PDF로 병합”을 고르세요.'
+                    ? '변환할 이미지·한글·텍스트·HTML 파일이 없습니다. 이미 PDF인 파일을 합치려면 “하나의 PDF로 병합”을 고르세요.'
                     : '파일을 하나씩 변환합니다. 중지하면 다음 파일부터 멈춥니다.'}
               </p>
             )}

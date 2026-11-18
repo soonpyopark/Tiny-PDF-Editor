@@ -20,7 +20,7 @@ alwaysApply: true
 
 ## 순서 (Windows)
 
-1. **버전 올리기** — `npm run version:bump` (N+1). 사용자가 버전을 지정하면 `-- --set=1.1.0.0`.
+1. **버전 올리기** — `npm run version:bump` (끝자리 0–9, `1.0.0.9` → `1.0.1.0`). 사용자가 버전을 지정하면 `-- --set=1.1.0.0`.
 2. **빌드** — `npm run build:release` (엔진 동결 → 렌더러 → Electron → MSI + 포터블 zip, 빌드 스탬프 갱신).
 3. **검증** — `tiny-no-regression` 규칙 그대로:
    - 동결 엔진 스모크, 인쇄 e2e(Tiny 켜짐 / 꺼짐 / 종료 직후), `npm run check:identity`

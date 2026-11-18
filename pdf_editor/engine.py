@@ -514,6 +514,7 @@ def _preview_file(raw_path: str, password: str | None) -> dict:
     """First page of a file as PNG for the merge sidebar."""
     from pdf_editor.document import IMAGE_EXTENSIONS, PDF_EXTENSIONS
     from pdf_editor.hwp_convert import HWP_EXTENSIONS
+    from pdf_editor.text_convert import TEXT_EXTENSIONS, convert_text_file_to_temp_pdf
 
     if not raw_path:
         raise ValueError("파일 경로가 없습니다.")
@@ -523,16 +524,18 @@ def _preview_file(raw_path: str, password: str | None) -> dict:
     ext = target.suffix.lower()
     if ext in HWP_EXTENSIONS:
         return {"unsupported": True}
+    tmp_text: Path | None = None
+    src = None
     try:
         if ext in IMAGE_EXTENSIONS:
             src = PdfDocument._open_image_as_document(str(target))
         elif ext in PDF_EXTENSIONS:
             src = PdfDocument._open_pdf_path(str(target), password)
+        elif ext in TEXT_EXTENSIONS:
+            tmp_text = convert_text_file_to_temp_pdf(str(target))
+            src = PdfDocument._open_pdf_path(str(tmp_text), None)
         else:
             return {"unsupported": True}
-    except PdfPasswordRequired as exc:
-        return {"needsPassword": True, "rejected": isinstance(exc, PdfPasswordRejected)}
-    try:
         if len(src) < 1:
             return {"unsupported": True}
         page = src[0]
@@ -540,8 +543,16 @@ def _preview_file(raw_path: str, password: str | None) -> dict:
         zoom = _PREVIEW_WIDTH / width
         pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
         return {**_png(pix), "pageCount": len(src)}
+    except PdfPasswordRequired as exc:
+        return {"needsPassword": True, "rejected": isinstance(exc, PdfPasswordRejected)}
     finally:
-        src.close()
+        if src is not None:
+            src.close()
+        if tmp_text is not None:
+            try:
+                tmp_text.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
@@ -566,7 +577,14 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
         password = req.get("password")
         password = str(password) if password else None
         doc.open_file(str(target), password=password)
+        # Electron 이 TXT/MD 를 임시 PDF 로 바꿔 열 때: 저장 경로를 임시 파일에 묶지 않는다.
+        if bool(req.get("forgetPath")):
+            doc._source_path = None
         return True, {"doc": _summary(doc, True)}
+    if op == "detachSource":
+        _require_open(opened)
+        doc._source_path = None
+        return opened, {"doc": _summary(doc, opened)}
     if op == "pageSizes":
         # 연속 스크롤에서 아직 그리지 않은 쪽의 자리를 잡는다. 단위는 pt (1/72 inch).
         if not opened:
@@ -1295,6 +1313,19 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
         out_raw = str(req.get("output") or "").strip()
         output = Path(out_raw).expanduser() if out_raw else None
         result = convert_hwp_to_pdf(raw_path, output)
+        return opened, {"path": str(result)}
+    if op == "textConvert":
+        from pdf_editor.text_convert import convert_text_file_to_pdf, is_text_file
+
+        raw_path = str(req.get("path") or "").strip()
+        if not raw_path:
+            raise ValueError("텍스트 파일 경로가 없습니다.")
+        if not is_text_file(raw_path):
+            raise ValueError("TXT 또는 Markdown 파일만 변환할 수 있습니다.")
+        out_raw = str(req.get("output") or "").strip()
+        if not out_raw:
+            raise ValueError("저장 경로가 없습니다.")
+        result = convert_text_file_to_pdf(raw_path, out_raw)
         return opened, {"path": str(result)}
     if op == "assocStatus":
         from pdf_editor.windows_file_assoc import is_pdf_association_registered, is_windows
