@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import errno
 import functools
 import io
 import os
 import re
+import shutil
 import sys
+import tempfile
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -309,8 +313,50 @@ class PdfDocument:
         return doc
 
     @staticmethod
+    def _read_path_bytes(path: str) -> bytes:
+        """Read a file fully, with retries for flaky network mounts (NAS / SMB on macOS).
+
+        Finder drop from a mounted share can surface ``[Errno 9] Bad file descriptor``
+        if the SMB handle goes stale between the drop and the engine open. A fresh
+        open (and, if needed, a local temp copy) avoids that.
+        """
+        target = str(path)
+        retry_errnos = {
+            errno.EBADF,
+            errno.EIO,
+            errno.EBUSY,
+            getattr(errno, "ESTALE", errno.EIO),
+        }
+        last_error: OSError | None = None
+        for attempt in range(4):
+            try:
+                with open(target, "rb") as handle:
+                    return handle.read()
+            except OSError as exc:
+                last_error = exc
+                if exc.errno not in retry_errnos:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+        suffix = Path(target).suffix or ".bin"
+        fd, tmp_name = tempfile.mkstemp(prefix="tiny-read-", suffix=suffix)
+        os.close(fd)
+        try:
+            shutil.copyfile(target, tmp_name)
+            with open(tmp_name, "rb") as handle:
+                return handle.read()
+        except OSError:
+            if last_error is not None:
+                raise last_error
+            raise
+        finally:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+
+    @staticmethod
     def _open_pdf_path(path: str, password: str | None = None) -> fitz.Document:
-        return PdfDocument._open_pdf_bytes(Path(path).read_bytes(), password=password)
+        return PdfDocument._open_pdf_bytes(PdfDocument._read_path_bytes(path), password=password)
 
     @staticmethod
     def _blank_page_pixmap(width: float, height: float, zoom: float) -> fitz.Pixmap:
@@ -333,7 +379,7 @@ class PdfDocument:
         path = str(Path(path))
         ext = Path(path).suffix.lower()
         if ext in PDF_EXTENSIONS:
-            pdf_bytes = Path(path).read_bytes()
+            pdf_bytes = PdfDocument._read_path_bytes(path)
             had_encryption = PdfDocument._pdf_bytes_encrypted(pdf_bytes)
             new_doc = PdfDocument._open_pdf_bytes(pdf_bytes, password=password)
             if password is not None:
@@ -413,21 +459,25 @@ class PdfDocument:
 
     @staticmethod
     def _open_image_as_document(path: str) -> fitz.Document:
+        # 경로를 바로 열지 않고 바이트로 읽는다 (NAS 드롭의 EBADF 방지).
+        raw = PdfDocument._read_path_bytes(path)
+        ext = Path(path).suffix.lower().lstrip(".") or "png"
         try:
-            img_doc = fitz.open(path)
+            img_doc = fitz.open(stream=raw, filetype=ext)
             try:
                 pdf_bytes = img_doc.convert_to_pdf()
             finally:
                 img_doc.close()
         except Exception:
             # MuPDF 가 열지 못하는 형식(예: WebP)은 Pillow 로 읽어 PNG 로 바꾼 뒤 PDF 로 만든다.
-            pdf_bytes = PdfDocument._image_to_pdf_bytes_via_pillow(path)
+            pdf_bytes = PdfDocument._image_to_pdf_bytes_via_pillow(path, raw=raw)
         return fitz.open(stream=pdf_bytes, filetype="pdf")
 
     @staticmethod
-    def _image_to_pdf_bytes_via_pillow(path: str) -> bytes:
+    def _image_to_pdf_bytes_via_pillow(path: str, *, raw: bytes | None = None) -> bytes:
         try:
-            with Image.open(path) as source:
+            payload = raw if raw is not None else PdfDocument._read_path_bytes(path)
+            with Image.open(io.BytesIO(payload)) as source:
                 source.load()
                 image = ImageOps.exif_transpose(source)
                 if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
@@ -4755,7 +4805,7 @@ class PdfDocument:
         password: str | None = None,
         resolve_pdf_password: Callable[[str, bool], str | None] | None = None,
     ) -> int:
-        pdf_bytes = Path(pdf_path).read_bytes()
+        pdf_bytes = PdfDocument._read_path_bytes(pdf_path)
         file_had_encryption = PdfDocument._pdf_bytes_encrypted(pdf_bytes)
         while True:
             try:

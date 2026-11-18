@@ -51,7 +51,8 @@ wix eula accept wix7
 - **현재 macOS 빌드는 PDF 엔진을 포함하지 않고, 가상 프린터(PDF Services/CUPS) 흐름도 Neo로 이식되지 않았습니다.**
   macOS 배포 전에 별도 작업이 필요합니다.
 - 최초 실행 시 Gatekeeper 경고가 나오면 앱을 Control-클릭 → **열기**, 또는 **시스템 설정 → 개인정보 보호 및 보안**에서 허용합니다.
-- HWP/HWPX → PDF 변환, PDF 파일 연결 메뉴는 Windows 전용입니다.
+- HWP/HWPX → PDF 변환, Windows 「PDF 파일 연결」 메뉴는 Windows 전용입니다.
+- macOS: 앱 Info.plist 에 PDF 문서 타입이 있어 Finder 「다음으로 열기」에 표시됩니다 (기본 앱을 가로채지 않음). Applications 에 넣은 뒤 한 번 실행하면 Launch Services 에 등록됩니다.
 
 ## 시스템 요구 사항
 

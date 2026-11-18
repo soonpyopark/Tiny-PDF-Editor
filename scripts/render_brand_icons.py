@@ -247,7 +247,7 @@ def _knockout_guide_backdrop(image: Image.Image) -> Image.Image:
     return Image.fromarray(data[top : bottom + 1, left : right + 1])
 
 
-def _fit_artwork(icon: Image.Image, size: int, *, fill: bool = False, match_desktop_width: bool = False) -> Image.Image:
+def _fit_artwork(icon: Image.Image, size: int, *, fill: bool = False) -> Image.Image:
     canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     fitted = icon.convert("RGBA")
     width, height = fitted.size
@@ -262,12 +262,6 @@ def _fit_artwork(icon: Image.Image, size: int, *, fill: bool = False, match_desk
         right = max(left + 1, width - left)
         bottom = max(top + 1, height - top)
         fitted = fitted.crop((left, top, right, bottom))
-        fitted = fitted.resize((size, size), Image.Resampling.LANCZOS)
-        canvas.paste(fitted, (0, 0), fitted)
-        return canvas
-    if match_desktop_width:
-        # PDF file icon source is portrait. Stretch to the full square so its
-        # horizontal span matches the desktop / app icon (no side gutters).
         fitted = fitted.resize((size, size), Image.Resampling.LANCZOS)
         canvas.paste(fitted, (0, 0), fitted)
         return canvas
@@ -367,7 +361,7 @@ def _draw_block_t(
 def render_windows_file(size: int, *, compact: bool | None = None) -> Image.Image:
     art = _source_art("file")
     if art is not None:
-        return _round_corners(_fit_artwork(art, size, match_desktop_width=True))
+        return _round_corners(_fit_artwork(art, size))
     return _round_corners(_render_windows_file_plain(size, compact=compact))
 
 
@@ -375,10 +369,9 @@ def _render_windows_file_plain(size: int, *, compact: bool | None = None) -> Ima
     compact = size <= 48 if compact is None else compact
     canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
-    # 바탕화면(앱) 아이콘과 같은 가로 폭: 좌우 inset 없이 거의 꽉 채운다.
-    pad = 1 if size <= 24 else max(1, size // 64)
-    inset = 0 if size <= 24 else max(1, size // 48)
-    box = (pad + inset, pad, size - pad - inset, size - pad)
+    pad = 1 if size <= 24 else max(1, size // 16)
+    inset = 1 if size <= 24 else size // 8
+    box = (pad + inset, pad, size - pad - max(1, inset // 2), size - pad)
     if size <= 24:
         draw.rectangle(box, fill=WIN_FILE, outline=WIN_FILE_EDGE)
     else:

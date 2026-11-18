@@ -105,7 +105,17 @@
           "target": "dir"
         }
       ]
-    }
+    },
+    "fileAssociations": [
+      {
+        "ext": "pdf",
+        "name": "PDF Document",
+        "description": "PDF Document",
+        "mimeType": "application/pdf",
+        "role": "Editor",
+        "rank": "Alternate"
+      }
+    ]
   },
   "allowScripts": {
     "electron@45.3.3": true

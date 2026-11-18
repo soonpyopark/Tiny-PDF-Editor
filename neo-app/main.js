@@ -34,6 +34,23 @@ for (const stream of [process.stdout, process.stderr]) stream?.on?.('error', () 
 
 const isDev = !app.isPackaged;
 
+/** 렌더러가 받을 준비가 되기 전에 온 경로를 잠시 쌓아 둔다. */
+/** @type {string[]} */
+const pendingOpenPaths = [];
+/** 메인 창 렌더러가 frame:openPaths 를 받을 준비가 됐는지. */
+let rendererOpenReady = false;
+
+// macOS: Finder 「다음으로 열기」는 ready 전에 open-file 이 올 수 있어 가장 먼저 받는다.
+if (process.platform === 'darwin') {
+  app.on('open-file', (event, filePath) => {
+    event.preventDefault();
+    if (typeof filePath !== 'string' || !filePath) return;
+    pendingOpenPaths.push(filePath);
+    // 이미 화면이 준비된 뒤에 온 추가 열기만 바로 넘긴다. 시작 직전 큐는 openPathsReady 에서 flush.
+    if (rendererOpenReady) flushOpenPaths();
+  });
+}
+
 // 테스트·진단 전용: 원격 디버깅 포트를 연다. 평소에는 설정하지 않는다.
 if (process.env.TINY_DEBUG_PORT && !process.argv.includes(WATCH_FLAG)) {
   app.commandLine.appendSwitch('remote-debugging-port', String(process.env.TINY_DEBUG_PORT));
@@ -141,11 +158,8 @@ if (printWatchMode) {
     focusMainWindow();
     deliverExternalPaths(pathsFromArgv(argv, workingDirectory));
   });
-  // macOS: Finder/Dock 으로 파일을 열면 open-file 이 온다.
-  app.on('open-file', (event, filePath) => {
-    event.preventDefault();
-    deliverExternalPaths([filePath]);
-  });
+  // macOS open-file 은 위에서 이미 등록함 (ready 전 이벤트 유실 방지).
+  // 앱이 떠 있는 동안의 추가 open-file 도 같은 큐로 들어온 뒤 flush 된다.
   app.whenReady().then(boot).catch(fatal);
 }
 
@@ -168,12 +182,6 @@ function focusMainWindow() {
 /* -------------------------------------------------------------------------- */
 /* 외부에서 넘어온 파일 (인쇄 PDF, 더블클릭/연결 프로그램, 명령줄)           */
 /* -------------------------------------------------------------------------- */
-
-/** 렌더러가 받을 준비가 되기 전에 온 경로를 잠시 쌓아 둔다. */
-/** @type {string[]} */
-const pendingOpenPaths = [];
-/** 메인 창 렌더러가 frame:openPaths 를 받을 준비가 됐는지. */
-let rendererOpenReady = false;
 
 /** @param {string[]} paths */
 function deliverExternalPaths(paths) {
