@@ -49,7 +49,7 @@ export const APP_GIT_TAG = formatAppGitTag(APP_VERSION);
  * Package build id (YYMMDD_HHMMSS). Rewritten by `npm run build:release*`
  * (scripts/sync-build-stamp.mjs); matches the suffix of the produced files.
  */
-export const APP_BUILD_STAMP = '261118_141346';
+export const APP_BUILD_STAMP = '261118_142637';
 
 /**
  * Default web server port (Electron window + LAN browsers share it).
