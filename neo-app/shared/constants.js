@@ -60,9 +60,9 @@ export const DEFAULT_PORT = 3021;
 
 /**
  * GitHub repository (`owner/repo`) whose latest release is used by the
- * 업데이트 확인 button. Neo 전용 저장소 (Default Framework 와 다르다).
+ * 업데이트 확인 button. (Default Framework 와 다르다.)
  */
-export const UPDATE_REPO = 'soonpyopark/Tiny-PDF-Editor-neo';
+export const UPDATE_REPO = 'soonpyopark/Tiny-PDF-Editor';
 
 /** Content hash of build/icon-source.png (scripts/prepare-icons.mjs). */
 export { APP_ICON_REV } from './iconRev.js';
