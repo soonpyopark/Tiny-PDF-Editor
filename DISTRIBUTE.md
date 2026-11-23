@@ -15,6 +15,14 @@
 3. 설치 시 시작 메뉴·바탕화면 바로가기가 등록되고, 설치 직후 인쇄 감시가 시작됩니다.
 4. 앱을 처음 실행하면 가상 프린터 `Tiny PDF Editor`가 등록됩니다. (이후 `파일` → `가상 프린터...`에서 켜고 끌 수 있습니다.)
 
+### 이전 Tiny PDF Editor (Legacy)가 있는 경우
+
+같은 PC에 **Legacy MSI**(표시 이름 `Tiny PDF Editor`, 설치 폴더 `%LocalAppData%\Tiny PDF Editor`)가 있으면, Neo MSI 설치 과정에서 자동으로 제거한 뒤 Neo를 설치합니다. UpgradeCode는 서로 다르며, Neo가 Legacy를 “같은 제품 업그레이드”로 덮어쓰지 않고 별도로 찾아 제거합니다.
+
+- 제거 대상: Legacy **MSI 설치본**만
+- 제외: Legacy 포터블 zip·폴더 복사본(프로그램 추가/제거에 없음) — 필요하면 수동으로 지우세요
+- Legacy 설정·최근 파일은 Neo로 옮기지 않습니다
+
 WiX CLI 7 이상이 필요합니다.
 
 ```text

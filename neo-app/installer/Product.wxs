@@ -40,6 +40,23 @@
       AllowSameVersionUpgrades="yes"
       Schedule="afterInstallValidate"
       DowngradeErrorMessage="A newer version of $(AppName) is already installed." />
+
+    <!--
+      Legacy Tiny PDF Editor (PyQt, folder "Tiny PDF Editor - Legacy") uses a different
+      UpgradeCode on purpose. Detect it and let RemoveExistingProducts uninstall that MSI
+      before Neo is laid down. Do NOT reuse Legacy's UpgradeCode as this package's
+      UpgradeCode — that would make Neo and Legacy replace each other as the same product.
+      Portable / manually copied Legacy installs are not MSI products and are not removed.
+    -->
+    <Upgrade Id="A3C7E1F4-9B2D-4E6A-8C0F-1D5E7B9A2C4E">
+      <UpgradeVersion
+        Minimum="0.0.0.0"
+        Maximum="255.0.0.0"
+        Property="LEGACY_TINY_PDF"
+        IncludeMinimum="yes"
+        IncludeMaximum="yes" />
+    </Upgrade>
+
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
     <Icon Id="AppIcon.ico" SourceFile="$(StageDir)\app-icon.ico" />
@@ -58,6 +75,21 @@
       CloseMessage="yes"
       RebootPrompt="no"
       TerminateProcess="0" />
+
+    <!--
+      Legacy MSI runs Tiny PDF Editor.exe (app + print helper). Close it before
+      RemoveExistingProducts deletes Legacy, otherwise files stay locked.
+    -->
+    <util:CloseApplication
+      Id="CloseLegacyTinyPdfEditor"
+      Target="Tiny PDF Editor.exe"
+      Description="Tiny PDF Editor (Legacy)"
+      CloseMessage="yes"
+      EndSessionMessage="yes"
+      RebootPrompt="no"
+      PromptToContinue="no"
+      TerminateProcess="2000"
+      Timeout="5000" />
 
     <!--
       After install/upgrade restart the watcher right away, so printing works before the next
