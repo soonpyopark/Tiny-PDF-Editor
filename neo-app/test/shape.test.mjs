@@ -16,6 +16,7 @@ import {
 import { normalizeDrawState } from '../src/features/editor/draw/drawSettings.js';
 import {
   DEFAULT_SHAPE_STYLES,
+  LASSO_TOOL,
   SHAPE_KINDS,
   hasFill,
   normalizeShapeStyles,
@@ -24,7 +25,8 @@ import {
   snapWidth,
   styleToParams,
 } from '../src/features/editor/draw/shapeSettings.js';
-import { pickInk } from '../src/features/editor/draw/inkPick.js';
+import { inkBounds, moveInk, pickInk, scaleInk, sameInkStrokes } from '../src/features/editor/draw/inkPick.js';
+import { inkHitsLasso, pickLassoHits, shapeHitsLasso } from '../src/features/editor/draw/lassoPick.js';
 
 const rect = (r, params = {}) => ({ id: 1, pageIndex: 0, kind: 'rect', rect: r, params: { width: 2, fill: null, ...params } });
 const line = (points, kind = 'line', params = {}) => ({ id: 2, pageIndex: 0, kind, points, params: { width: 2, ...params } });
@@ -182,4 +184,76 @@ test('pickInk: hits stroke within width+slack and prefers the last drawn', () =>
   assert.equal(pickInk([below, above], 70, 40, 3), null);
   assert.equal(pickInk([below], 70, 12, 1).id, 1); // width/2 + slack = 3
   assert.equal(pickInk([below], 70, 20, 1), null);
+});
+
+test('lasso picks ink and shapes the path touches or encloses', () => {
+  const ink = {
+    id: 11,
+    width: 2,
+    strokes: [
+      [
+        [20, 20],
+        [80, 20],
+      ],
+    ],
+  };
+  const outside = {
+    id: 12,
+    width: 2,
+    strokes: [
+      [
+        [200, 200],
+        [220, 200],
+      ],
+    ],
+  };
+  const box = rect([30, 12, 70, 28], { fill: '#ff0000' });
+  box.id = 21;
+  // 가로로 획·상자를 가로지르는 올가미
+  const across = [
+    [10, 10],
+    [90, 10],
+    [90, 30],
+    [10, 30],
+  ];
+  assert.equal(inkHitsLasso(ink, across, 2), true);
+  assert.equal(inkHitsLasso(outside, across, 2), false);
+  assert.equal(shapeHitsLasso(box, across, 2), true);
+  const hits = pickLassoHits([ink, outside], [box], 0, across, 2);
+  assert.deepEqual(
+    hits.map((h) => `${h.kind}:${h.id}`),
+    ['ink:11', 'shape:21'],
+  );
+  assert.equal(normalizeDrawState({ tool: LASSO_TOOL }).tool, LASSO_TOOL);
+});
+
+test('ink move and scale keep strokes on the page', () => {
+  const ink = {
+    id: 1,
+    width: 2,
+    strokes: [
+      [
+        [10, 20],
+        [50, 20],
+      ],
+    ],
+  };
+  assert.deepEqual(inkBounds(ink), [10, 20, 50, 20]);
+  const moved = moveInk(ink, 5, 10, 200, 200);
+  assert.equal(sameInkStrokes(moved.strokes, [[[15, 30], [55, 30]]]), true);
+  const blocked = moveInk(ink, -100, 0, 200, 200);
+  assert.equal(sameInkStrokes(blocked.strokes, [[[0, 20], [40, 20]]]), true);
+  const taller = {
+    id: 2,
+    width: 2,
+    strokes: [
+      [
+        [10, 10],
+        [50, 10],
+        [50, 50],
+      ],
+    ],
+  };
+  const scaled = scaleInk(taller, 'se', 90, 90, 200, 200);
+  assert.equal(sameInkStrokes(scaled.strokes, [[[10, 10], [90, 10], [90, 90]]]), true);
 });

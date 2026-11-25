@@ -23,7 +23,7 @@ import DrawLayer from './draw/DrawLayer.jsx';
 import DrawToolbar from './draw/DrawToolbar.jsx';
 import ShapeLayer from './draw/ShapeLayer.jsx';
 import { hexToRgb01, loadDrawState, saveDrawState } from './draw/drawSettings.js';
-import { SELECT_TOOL, SHAPE_TOOL_IDS, styleGroupOf, styleToParams } from './draw/shapeSettings.js';
+import { LASSO_TOOL, SELECT_TOOL, SHAPE_TOOL_IDS, styleGroupOf, styleToParams } from './draw/shapeSettings.js';
 import { useShapeEditing } from './draw/useShapeEditing.js';
 import TerminalPanel from './TerminalPanel.jsx';
 
@@ -397,8 +397,10 @@ export default function EditorPage({
   const imageEditRef = useRef(imageEdit);
   imageEditRef.current = imageEdit;
 
-  // 도형(선·화살표·사각형·…·텍스트 상자): 그리기 모드에서 '선택' 또는 도형 도구일 때만 켠다.
-  const shapeToolOn = drawOn && (drawState.tool === SELECT_TOOL || SHAPE_TOOL_IDS.includes(drawState.tool));
+  // 도형·선택·올가미: 그리기 모드에서 해당 도구일 때만 ShapeLayer 를 켠다.
+  const shapeToolOn =
+    drawOn &&
+    (drawState.tool === SELECT_TOOL || drawState.tool === LASSO_TOOL || SHAPE_TOOL_IDS.includes(drawState.tool));
   const shapeEdit = useShapeEditing({
     api,
     doc,

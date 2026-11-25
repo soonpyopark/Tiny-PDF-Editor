@@ -14,6 +14,7 @@ from pdf_editor.ink_draw import (
     clean_rgb,
     clean_strokes,
     polyline_distance,
+    read_annot_opacity,
     stroke_hit_by_path,
 )
 
@@ -356,6 +357,61 @@ class InkEraseTests(unittest.TestCase):
             self.assertEqual(_ink_count(document), 1)
             self.assertTrue(document.undo())
             self.assertEqual(len(document.ink_items(0)), 2)
+            document.close()
+
+    def test_update_ink_moves_and_scales(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            document = _open(_make_pdf(tmp))
+            document.add_ink_strokes(0, [[(20, 20), (120, 20)]], rgb=(0, 0.4, 1), width=5, opacity=0.7)
+            item = document.ink_items(0)[0]
+            moved = document.update_ink(0, item["id"], [[(40, 40), (140, 40)]])
+            self.assertTrue(moved["changed"])
+            self.assertNotEqual(moved["newId"], item["id"])
+            after = document.ink_items(0)[0]
+            self.assertEqual(after["id"], moved["newId"])
+            self.assertAlmostEqual(after["strokes"][0][0][0], 40, places=1)
+            self.assertAlmostEqual(after["width"], 5, places=2)
+            self.assertAlmostEqual(after["opacity"], 0.7, places=2)
+            same = document.update_ink(0, after["id"], after["strokes"])
+            self.assertFalse(same["changed"])
+            self.assertTrue(document.undo())
+            restored = document.ink_items(0)[0]
+            self.assertAlmostEqual(restored["strokes"][0][0][0], 20, places=1)
+            document.close()
+
+    def test_update_ink_keeps_full_opacity_pen(self) -> None:
+        """펜(불투명)은 PyMuPDF opacity=-1 인데, 크기 조절 뒤에도 옅어지면 안 된다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            document = _open(_make_pdf(tmp))
+            document.add_ink_strokes(0, [[(20, 40), (180, 40)]], rgb=(0, 0, 0), width=8, opacity=1.0)
+            page = document._doc[0]
+            annot = next(a for a in document._iter_page_annots(page) if a.type[0] == fitz.PDF_ANNOT_INK)
+            self.assertLess(annot.opacity, 0)  # 미설정 = -1
+            self.assertEqual(read_annot_opacity(annot), 1.0)
+            item = document.ink_items(0)[0]
+            self.assertAlmostEqual(item["opacity"], 1.0, places=2)
+            before = document.render_page_pixmap(0, 2.0)
+
+            def avg(pix, x0, y0, x1, y1):
+                s = pix.samples
+                n = pix.n
+                vals = []
+                for y in range(y0, y1):
+                    for x in range(x0, x1):
+                        i = y * pix.stride + x * n
+                        vals.append((s[i] + s[i + 1] + s[i + 2]) / 3)
+                return sum(vals) / len(vals)
+
+            dark_before = avg(before, 100, 70, 140, 90)
+            result = document.update_ink(0, item["id"], [[(20, 40), (280, 40)]])
+            self.assertTrue(result["changed"])
+            after_item = document.ink_items(0)[0]
+            self.assertAlmostEqual(after_item["opacity"], 1.0, places=2)
+            after = document.render_page_pixmap(0, 2.0)
+            dark_after = avg(after, 100, 70, 140, 90)
+            self.assertLess(dark_before, 120)
+            self.assertLess(dark_after, 120)
+            self.assertLess(abs(dark_after - dark_before), 25)
             document.close()
 
 

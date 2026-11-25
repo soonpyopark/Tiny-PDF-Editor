@@ -1,7 +1,7 @@
 // 그리기 도구 설정. 값은 Whiteboard4Share 의 drawToolSettings.ts 와 같다 (단위: PDF pt / 불투명도 %).
 // 저장 키는 이 앱 전용이다 (다른 앱과 같은 origin 으로 열어도 섞이지 않게 접두사를 둔다).
 
-import { SELECT_TOOL, SHAPE_TOOL_IDS, normalizeShapeStyles } from './shapeSettings.js';
+import { LASSO_TOOL, SELECT_TOOL, SHAPE_TOOL_IDS, normalizeShapeStyles } from './shapeSettings.js';
 
 export const DRAW_STORAGE_KEY = 'tinypdfneo.draw';
 
@@ -31,7 +31,14 @@ export const MAIN_COLOR_PALETTE = [
 /** 그리는 도구(획이 남는 것). 지우개는 따로 다룬다. */
 export const DRAW_TOOLS = ['pen', 'pencil', 'highlighter'];
 
-export const TOOL_LABELS = { pen: '펜', pencil: '연필', highlighter: '형광펜', eraser: '지우개' };
+export const TOOL_LABELS = {
+  pen: '펜',
+  pencil: '연필',
+  highlighter: '형광펜',
+  eraser: '지우개',
+  [SELECT_TOOL]: '선택',
+  [LASSO_TOOL]: '올가미',
+};
 
 export const DEFAULT_TOOL_SETTINGS = {
   pen: { thickness: 1.5, opacity: 100, color: DEFAULT_DRAW_COLOR },
@@ -90,7 +97,9 @@ export function normalizeDrawState(raw) {
     };
   }
   return {
-    tool: [...DRAW_TOOLS, 'eraser', SELECT_TOOL, ...SHAPE_TOOL_IDS].includes(source.tool) ? source.tool : 'pen',
+    tool: [...DRAW_TOOLS, 'eraser', SELECT_TOOL, LASSO_TOOL, ...SHAPE_TOOL_IDS].includes(source.tool)
+      ? source.tool
+      : 'pen',
     tools,
     eraserRadius: snapEraserRadius(source.eraserRadius ?? ERASER_DEFAULT_RADIUS),
     shapes: normalizeShapeStyles(source.shapes),

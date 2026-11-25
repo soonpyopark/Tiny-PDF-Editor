@@ -48,6 +48,7 @@ from pdf_editor.ink_draw import (
     clean_rgb,
     clean_strokes,
     is_ink_annot,
+    read_annot_opacity,
     stroke_hit_by_path,
 )
 from pdf_editor.shape_annot import (
@@ -104,6 +105,19 @@ SUPPORTED_FILE_FILTER = (
     "텍스트·HTML (*.txt *.md *.json *.html *.htm);;"
     "모든 파일 (*.*)"
 )
+
+
+def _same_ink_strokes(a, b, eps: float = 0.05) -> bool:
+    """화면 좌표 획 목록이 (거의) 같은지 본다."""
+    if len(a) != len(b):
+        return False
+    for sa, sb in zip(a, b):
+        if len(sa) != len(sb):
+            return False
+        for (ax, ay), (bx, by) in zip(sa, sb):
+            if abs(float(ax) - float(bx)) > eps or abs(float(ay) - float(by)) > eps:
+                return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -4892,7 +4906,7 @@ class PdfDocument:
             width = float(border.get("width", 1.0) or 1.0)
             colors = annot.colors or {}
             stroke = colors.get("stroke") or (0.29, 0.29, 0.29)
-            opacity = float(annot.opacity if annot.opacity is not None else 1.0)
+            opacity = read_annot_opacity(annot)
         except (RuntimeError, ValueError, TypeError):
             return None
         strokes = self._ink_view_strokes(page, annot)
@@ -4941,6 +4955,50 @@ class PdfDocument:
         self._record_undo_checkpoint()
         page.delete_annot(target)
         self._touch()
+
+    def update_ink(self, page_index: int, xref: int, strokes) -> dict:
+        """선택 도구로 고른 잉크의 획 좌표를 바꾼다(이동·크기 조절). 반환: {id, newId, changed}."""
+        if not (0 <= page_index < len(self._doc)):
+            raise ValueError("페이지 번호가 올바르지 않습니다.")
+        page = self._doc[page_index]
+        target = None
+        for annot in self._iter_page_annots(page):
+            if annot.xref == int(xref) and is_ink_annot(annot):
+                target = annot
+                break
+        if target is None:
+            raise ValueError("잉크 획을 찾지 못했습니다.")
+        cleaned = clean_strokes(strokes, page.rect)
+        if not cleaned:
+            raise ValueError("잉크 좌표가 올바르지 않습니다.")
+        old_strokes = self._ink_view_strokes(page, target)
+        if _same_ink_strokes(old_strokes, cleaned):
+            return {"id": int(xref), "newId": int(xref), "changed": False}
+        try:
+            border = target.border or {}
+            line_width = clamp_width(float(border.get("width", 1.0) or 1.0))
+            colors = target.colors or {}
+            color = clean_rgb(colors.get("stroke") or (0.29, 0.29, 0.29))
+            alpha = read_annot_opacity(target)
+        except (RuntimeError, ValueError, TypeError):
+            line_width = 2.0
+            color = (0.29, 0.29, 0.29)
+            alpha = 1.0
+        self._record_undo_checkpoint()
+        old_id = int(target.xref)
+        page.delete_annot(target)
+        to_pdf = page.derotation_matrix
+        annot = page.add_ink_annot(
+            [[tuple(fitz.Point(x, y) * to_pdf) for x, y in stroke] for stroke in cleaned]
+        )
+        annot.set_border(width=line_width)
+        annot.set_colors(stroke=color)
+        if alpha < 1.0:
+            annot.set_opacity(alpha)
+        annot.set_info(title=INK_ANNOT_TITLE)
+        annot.update()
+        self._touch()
+        return {"id": old_id, "newId": int(annot.xref), "changed": True}
 
     def insert_blank_page_at(self, index: int) -> None:
         """Insert a blank page at *index* (same size as a nearby page, or A4 if empty)."""

@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   MIN_BOX,
+  clampDelta,
   clampPoint,
   dragHandle,
   draftShape,
@@ -15,18 +16,28 @@ import {
   snapAngle,
   withGeom,
 } from './shapeMath.js';
-import { pickInk } from './inkPick.js';
-import { CLOSED_KINDS, SELECT_TOOL, isPointKind } from './shapeSettings.js';
+import {
+  inkBounds,
+  inkHandleCursor,
+  inkHandles,
+  moveInk,
+  pickInk,
+  sameInkStrokes,
+  scaleInk,
+  withInkStrokes,
+} from './inkPick.js';
+import { pickLassoHits, selectionBounds } from './lassoPick.js';
+import { CLOSED_KINDS, LASSO_TOOL, SELECT_TOOL, isPointKind } from './shapeSettings.js';
 
 /**
  * 쪽 이미지 위에 겹치는 도형·잉크 선택 레이어.
  *
  * - 도형 자체는 PDF 주석으로 쪽 그림에 이미 그려져 있다. 이 레이어는 그리는 중 미리보기, 선택 표시(손잡이),
  *   끌어서 옮기거나 크기를 바꿀 때의 윤곽, 텍스트 상자 글 입력창만 맡는다.
- * - 도구가 '선택'이면 클릭으로 도형 또는 펜·연필·형광펜 획을 고른다. 도형은 끌어 옮기고 손잡이로 크기를 바꾸며,
- *   잉크 획은 고른 뒤 Delete 로 지운다. 텍스트 상자는 두 번 눌러 글을 고친다.
+ * - 도구가 '선택'이면 클릭으로 도형 또는 펜·연필·형광펜 획을 고른다. 둘 다 끌어 옮기고 손잡이로 크기를 바꾸며,
+ *   Delete 로 지운다. 올가미로 여러 개를 고른 뒤에는 한꺼번에 옮기거나 지울 수 있다.
+ * - 도구가 '올가미'이면 자유 곡선으로 감싸 경로에 닿거나 닫힌 영역 안의 잉크·도형을 고른다.
  * - 도구가 도형이면 끌어서(선·화살표·직사각형·타원형·텍스트 상자) 또는 점을 눌러서(다각형·클라우드·폴리라인) 그린다.
- *   점으로 그리는 도형은 Enter·두 번 누르기·(닫힌 도형은) 첫 점 누르기로 끝내고, Esc 로 취소, Backspace 로 마지막 점을 지운다.
  * - 좌표는 쪽 화면 좌표(pt, 회전 반영). 배율이 바뀌어도 제 자리에 있다.
  */
 
@@ -84,6 +95,36 @@ function ShapePreview({ shape, opacity = 0.85 }) {
   return <rect {...common} x={x0} y={y0} width={x1 - x0} height={y1 - y0} />;
 }
 
+function inkRgb(color) {
+  if (!Array.isArray(color) || color.length < 3) return 'rgb(74,74,74)';
+  const toByte = (v) => Math.round(Math.min(1, Math.max(0, Number(v) || 0)) * 255);
+  return `rgb(${toByte(color[0])},${toByte(color[1])},${toByte(color[2])})`;
+}
+
+/** 옮기거나 크기를 바꾸는 중 보이는 잉크 미리보기. */
+function InkPreview({ ink, opacity = 0.85 }) {
+  const width = Math.max(0.5, Number(ink.width) || 1);
+  const color = inkRgb(ink.color);
+  const stored = Number(ink.opacity);
+  const inkAlpha = Number.isFinite(stored) && stored >= 0 ? Math.min(1, stored) : 1;
+  const alpha = Math.min(opacity, inkAlpha);
+  return (
+    <g opacity={alpha}>
+      {(Array.isArray(ink.strokes) ? ink.strokes : []).map((stroke, index) => (
+        <polyline
+          key={index}
+          points={(Array.isArray(stroke) ? stroke : []).map((p) => `${p[0]},${p[1]}`).join(' ')}
+          fill="none"
+          stroke={color}
+          strokeWidth={width}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      ))}
+    </g>
+  );
+}
+
 export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, controller }) {
   const layerRef = useRef(null);
   const gestureRef = useRef(/** @type {any} */ (null));
@@ -93,18 +134,23 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
   const polyRef = useRef(poly);
   polyRef.current = poly;
   const [hoverId, setHoverId] = useState(/** @type {number | null} */ (null));
+  const [lassoPath, setLassoPath] = useState(/** @type {number[][] | null} */ (null));
   const isSelect = tool === SELECT_TOOL;
+  const isLasso = tool === LASSO_TOOL;
   const shapes = controller.shapes[pageIndex] || [];
   const inks = controller.inks?.[pageIndex] || [];
+  const pageSelection = (controller.selection || []).filter((item) => item.pageIndex === pageIndex);
+  const multiSelect = pageSelection.length > 1;
   const selected =
-    controller.selected && controller.selected.pageIndex === pageIndex && controller.selected.kind !== 'ink'
+    !multiSelect && controller.selected && controller.selected.pageIndex === pageIndex && controller.selected.kind !== 'ink'
       ? controller.selectedShape
       : null;
   const selectedInk =
-    controller.selected && controller.selected.pageIndex === pageIndex && controller.selected.kind === 'ink'
+    !multiSelect && controller.selected && controller.selected.pageIndex === pageIndex && controller.selected.kind === 'ink'
       ? controller.selectedInk
       : null;
   const editing = controller.textEdit && controller.textEdit.pageIndex === pageIndex ? controller.textEdit : null;
+  const unionBounds = pageSelection.length ? selectionBounds(pageSelection, inks, shapes) : null;
 
   useLayoutEffect(() => {
     const el = layerRef.current;
@@ -124,6 +170,7 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
     gestureRef.current = null;
     setGhost(null);
     setPoly(null);
+    setLassoPath(null);
     setHoverId(null);
   }, [tool]);
 
@@ -183,16 +230,55 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
     event.preventDefault();
     const point = toPt(event);
     const ppx = pxToPt();
+    if (isLasso) {
+      const inUnion =
+        pageSelection.length > 0 &&
+        unionBounds &&
+        point.x >= unionBounds[0] &&
+        point.x <= unionBounds[2] &&
+        point.y >= unionBounds[1] &&
+        point.y <= unionBounds[3];
+      if (inUnion) {
+        startGesture(event, { type: 'group-move', start: point, items: pageSelection, moved: false });
+        return;
+      }
+      const start = [point.x, point.y];
+      setLassoPath([start]);
+      startGesture(event, { type: 'lasso', start: point, points: [start], moved: false });
+      return;
+    }
     if (isSelect) {
+      const inUnion =
+        multiSelect &&
+        unionBounds &&
+        point.x >= unionBounds[0] &&
+        point.x <= unionBounds[2] &&
+        point.y >= unionBounds[1] &&
+        point.y <= unionBounds[3];
+      if (multiSelect && inUnion) {
+        startGesture(event, { type: 'group-move', start: point, items: pageSelection, moved: false });
+        return;
+      }
       const hit = pickShape(shapes, point.x, point.y, PICK_PX * ppx);
       if (hit) {
+        const already = pageSelection.some((item) => item.kind === 'shape' && item.id === hit.id);
+        if (multiSelect && already) {
+          startGesture(event, { type: 'group-move', start: point, items: pageSelection, moved: false });
+          return;
+        }
         controller.select({ pageIndex, id: hit.id, kind: 'shape' });
         startGesture(event, { type: 'move', start: point, shape: hit, moved: false });
         return;
       }
       const inkHit = pickInk(inks, point.x, point.y, PICK_PX * ppx);
       if (inkHit) {
+        const already = pageSelection.some((item) => item.kind === 'ink' && item.id === inkHit.id);
+        if (multiSelect && already) {
+          startGesture(event, { type: 'group-move', start: point, items: pageSelection, moved: false });
+          return;
+        }
         controller.select({ pageIndex, id: inkHit.id, kind: 'ink' });
+        startGesture(event, { type: 'ink-move', start: point, ink: inkHit, moved: false });
         return;
       }
       controller.select(null);
@@ -252,11 +338,28 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
     if (!gesture.moved && Math.hypot(point.x - gesture.start.x, point.y - gesture.start.y) < CLICK_PX * ppx) return;
     gesture.moved = true;
     gesture.last = point;
-    if (gesture.type === 'move') {
+    if (gesture.type === 'lasso') {
+      const pts = gesture.points;
+      const last = pts[pts.length - 1];
+      if (Math.hypot(point.x - last[0], point.y - last[1]) >= 1.5 * ppx) {
+        pts.push([point.x, point.y]);
+        setLassoPath(pts.slice());
+      }
+    } else if (gesture.type === 'group-move') {
+      const bounds = selectionBounds(gesture.items, inks, shapes) || [0, 0, 0, 0];
+      const [dx, dy] = clampDelta(bounds, point.x - gesture.start.x, point.y - gesture.start.y, ptW, ptH);
+      setGhost({ group: { dx, dy, items: gesture.items }, moving: true });
+    } else if (gesture.type === 'move') {
       const geom = moveGeom(gesture.shape, point.x - gesture.start.x, point.y - gesture.start.y, ptW, ptH);
       setGhost({ shape: withGeom(gesture.shape, geom), moving: true });
     } else if (gesture.type === 'resize') {
       setGhost({ shape: withGeom(gesture.shape, dragHandle(gesture.shape, gesture.handleId, point.x, point.y, ptW, ptH)), moving: true });
+    } else if (gesture.type === 'ink-move') {
+      const geom = moveInk(gesture.ink, point.x - gesture.start.x, point.y - gesture.start.y, ptW, ptH);
+      setGhost({ ink: withInkStrokes(gesture.ink, geom.strokes), moving: true });
+    } else if (gesture.type === 'ink-resize') {
+      const geom = scaleInk(gesture.ink, gesture.handleId, point.x, point.y, ptW, ptH);
+      setGhost({ ink: withInkStrokes(gesture.ink, geom.strokes), moving: true });
     } else if (gesture.type === 'create') {
       const geom = createGeom(gesture.kind, gesture.start, point, event.shiftKey);
       setGhost({ shape: draftShape(gesture.kind, geom, newParams), moving: false });
@@ -280,6 +383,30 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
     const point = toPt(event);
     if (cancelled) {
       setGhost(null);
+      setLassoPath(null);
+      return;
+    }
+    if (gesture.type === 'lasso') {
+      const pts = gesture.points.length >= 2 ? gesture.points : [[gesture.start.x, gesture.start.y], [point.x, point.y]];
+      setLassoPath(null);
+      if (!gesture.moved && pts.length < 3) {
+        controller.select(null);
+        return;
+      }
+      const hits = pickLassoHits(inks, shapes, pageIndex, pts, PICK_PX * ppx);
+      controller.selectMany(hits);
+      return;
+    }
+    if (gesture.type === 'group-move') {
+      if (!gesture.moved) {
+        setGhost(null);
+        return;
+      }
+      const bounds = selectionBounds(gesture.items, inks, shapes) || [0, 0, 0, 0];
+      const [dx, dy] = clampDelta(bounds, point.x - gesture.start.x, point.y - gesture.start.y, ptW, ptH);
+      setGhost(null);
+      if (Math.abs(dx) < 0.01 && Math.abs(dy) < 0.01) return;
+      void controller.moveSelection(dx, dy, ptW, ptH, gesture.items);
       return;
     }
     if (gesture.type === 'create') {
@@ -305,9 +432,22 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
       void controller.create(pageIndex, kind, geom, newParams).finally(() => setGhost(null));
       return;
     }
-    // move / resize
+    // move / resize (shape or ink)
     if (!gesture.moved) {
       setGhost(null);
+      return;
+    }
+    if (gesture.type === 'ink-move' || gesture.type === 'ink-resize') {
+      const geom =
+        gesture.type === 'ink-move'
+          ? moveInk(gesture.ink, point.x - gesture.start.x, point.y - gesture.start.y, ptW, ptH)
+          : scaleInk(gesture.ink, gesture.handleId, point.x, point.y, ptW, ptH);
+      if (sameInkStrokes(geom.strokes, gesture.ink.strokes)) {
+        setGhost(null);
+        return;
+      }
+      setGhost({ ink: withInkStrokes(gesture.ink, geom.strokes), moving: true });
+      void controller.updateInk(pageIndex, gesture.ink.id, geom.strokes).finally(() => setGhost(null));
       return;
     }
     const geom =
@@ -332,14 +472,32 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
     gestureRef.current = { pointerId: event.pointerId, type: 'resize', handleId: handle.id, shape: selected, start: toPt(event), moved: false };
   }
 
+  function onInkHandleDown(event, handle) {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    if (gestureRef.current || !selectedInk) return;
+    event.preventDefault();
+    event.stopPropagation();
+    layerRef.current.setPointerCapture?.(event.pointerId);
+    gestureRef.current = {
+      pointerId: event.pointerId,
+      type: 'ink-resize',
+      handleId: handle.id,
+      ink: selectedInk,
+      start: toPt(event),
+      moved: false,
+    };
+  }
+
   // ---- 그리기
   const px = unit; // 화면 px → pt
   const handles = isSelect && selected && !editing && !ghost ? shapeHandles(selected) : [];
   const bounds = isSelect && selected && !editing && !ghost ? shapeBounds(selected) : null;
-  const inkBounds =
-    isSelect && selectedInk && Array.isArray(selectedInk.rect) && selectedInk.rect.length === 4 ? selectedInk.rect : null;
+  const ghostInk = ghost?.ink || null;
+  const showInkSelection = isSelect && selectedInk && !ghost;
+  const inkBox = showInkSelection ? inkBounds(selectedInk) : ghostInk ? inkBounds(ghostInk) : null;
+  const inkHandleList = showInkSelection ? inkHandles(selectedInk) : [];
   const pad = selected ? Math.max(0, selected.params.width || 0) / 2 + 3 * px : 0;
-  const inkPad = selectedInk ? Math.max(0, Number(selectedInk.width) || 0) / 2 + 3 * px : 0;
+  const inkPad = selectedInk || ghostInk ? Math.max(0, Number((ghostInk || selectedInk).width) || 0) / 2 + 3 * px : 0;
 
   let polyShape = null;
   if (poly && poly.points.length) {
@@ -347,7 +505,26 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
     polyShape = draftShape(tool, { points: pts.length >= 2 ? pts : [...pts, pts[0]] }, newParams);
   }
 
-  const cursor = isSelect ? (hoverId != null ? 'move' : 'default') : tool === 'text' ? 'text' : 'crosshair';
+  const groupGhost = ghost?.group || null;
+  const groupGhostBounds =
+    groupGhost && unionBounds
+      ? [
+          unionBounds[0] + groupGhost.dx,
+          unionBounds[1] + groupGhost.dy,
+          unionBounds[2] + groupGhost.dx,
+          unionBounds[3] + groupGhost.dy,
+        ]
+      : null;
+  const multiBox = !ghost && multiSelect ? unionBounds : groupGhostBounds;
+  const cursor = isLasso
+    ? 'crosshair'
+    : isSelect
+      ? hoverId != null || multiSelect
+        ? 'move'
+        : 'default'
+      : tool === 'text'
+        ? 'text'
+        : 'crosshair';
 
   return (
     <div
@@ -367,7 +544,7 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
       onContextMenu={(event) => event.preventDefault()}
     >
       <svg viewBox={`0 0 ${ptW} ${ptH}`} className="pointer-events-none absolute inset-0 h-full w-full overflow-visible" data-shape-svg="1">
-        {ghost ? (
+        {ghost?.shape ? (
           <g data-shape-ghost="1">
             <ShapePreview shape={ghost.shape} />
             {ghost.moving ? (
@@ -385,6 +562,24 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
             ) : null}
           </g>
         ) : null}
+        {ghostInk ? (
+          <g data-ink-ghost="1">
+            <InkPreview ink={ghostInk} />
+            {ghost?.moving && inkBox ? (
+              <rect
+                x={inkBox[0] - inkPad}
+                y={inkBox[1] - inkPad}
+                width={inkBox[2] - inkBox[0] + inkPad * 2}
+                height={inkBox[3] - inkBox[1] + inkPad * 2}
+                className="stroke-app-accent"
+                fill="none"
+                strokeWidth={1}
+                strokeDasharray="4 3"
+                vectorEffect="non-scaling-stroke"
+              />
+            ) : null}
+          </g>
+        ) : null}
         {polyShape ? (
           <g data-shape-poly="1">
             <ShapePreview shape={polyShape} />
@@ -393,19 +588,77 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
             ) : null}
           </g>
         ) : null}
-        {inkBounds ? (
+        {lassoPath && lassoPath.length ? (
+          <g data-lasso-path="1">
+            <polyline
+              points={lassoPath.map((p) => `${p[0]},${p[1]}`).join(' ')}
+              fill="none"
+              className="stroke-app-accent"
+              strokeWidth={1.25}
+              strokeDasharray="5 3"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+            />
+            {lassoPath.length >= 3 ? (
+              <line
+                x1={lassoPath[lassoPath.length - 1][0]}
+                y1={lassoPath[lassoPath.length - 1][1]}
+                x2={lassoPath[0][0]}
+                y2={lassoPath[0][1]}
+                className="stroke-app-accent"
+                strokeWidth={1}
+                strokeDasharray="3 3"
+                opacity={0.7}
+                vectorEffect="non-scaling-stroke"
+              />
+            ) : null}
+          </g>
+        ) : null}
+        {multiBox ? (
+          <g data-multi-selection="1">
+            <rect
+              x={multiBox[0] - 3 * px}
+              y={multiBox[1] - 3 * px}
+              width={multiBox[2] - multiBox[0] + 6 * px}
+              height={multiBox[3] - multiBox[1] + 6 * px}
+              className="stroke-app-accent"
+              fill="rgba(71, 85, 105, 0.06)"
+              strokeWidth={1}
+              strokeDasharray="4 3"
+              vectorEffect="non-scaling-stroke"
+            />
+          </g>
+        ) : null}
+        {showInkSelection && inkBox ? (
           <g data-ink-selection="1">
             <rect
-              x={inkBounds[0] - inkPad}
-              y={inkBounds[1] - inkPad}
-              width={inkBounds[2] - inkBounds[0] + inkPad * 2}
-              height={inkBounds[3] - inkBounds[1] + inkPad * 2}
+              x={inkBox[0] - inkPad}
+              y={inkBox[1] - inkPad}
+              width={inkBox[2] - inkBox[0] + inkPad * 2}
+              height={inkBox[3] - inkBox[1] + inkPad * 2}
               className="stroke-app-accent"
               fill="none"
               strokeWidth={1}
               strokeDasharray="4 3"
               vectorEffect="non-scaling-stroke"
             />
+            {inkHandleList.map((handle) => (
+              <rect
+                key={handle.id}
+                data-ink-handle={handle.id}
+                x={handle.x - (HANDLE_PX / 2) * px}
+                y={handle.y - (HANDLE_PX / 2) * px}
+                width={HANDLE_PX * px}
+                height={HANDLE_PX * px}
+                rx={px}
+                className="fill-white stroke-app-accent"
+                strokeWidth={1.5}
+                vectorEffect="non-scaling-stroke"
+                style={{ pointerEvents: 'all', cursor: inkHandleCursor(handle.id) }}
+                onPointerDown={(event) => onInkHandleDown(event, handle)}
+              />
+            ))}
           </g>
         ) : null}
         {bounds ? (

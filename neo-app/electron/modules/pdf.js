@@ -1479,6 +1479,16 @@ export function register() {
     return { doc: result.doc };
   });
 
+  defineApi('pdf.inkUpdate', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'inkUpdate',
+      pageIndex: Number(body?.pageIndex) || 0,
+      inkId: Number(body?.inkId),
+      strokes: Array.isArray(body?.strokes) ? body.strokes : [],
+    });
+    return { doc: result.doc, newId: Number(result.newId) || 0, changed: Boolean(result.changed) };
+  });
+
   // 도형(선·화살표·사각형·타원·다각형·클라우드·폴리라인·텍스트 상자): 표준 주석으로 넣고, 나중에 다시 고친다.
   // 좌표는 쪽 화면 좌표(pt, 회전 반영). 점으로 그리는 도형은 points, 상자로 그리는 도형은 rect.
   function shapeGeometry(body) {

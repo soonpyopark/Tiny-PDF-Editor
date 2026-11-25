@@ -22,6 +22,7 @@ import {
 } from './drawSettings.js';
 import {
   FONT_SIZES,
+  LASSO_TOOL,
   SELECT_TOOL,
   SHAPE_KINDS,
   SHAPE_LABELS,
@@ -84,6 +85,12 @@ function ShapeIcon({ kind }) {
       return (
         <svg {...iconProps}>
           <path d="M5 3l10 6.5-4.5 1.2L8 15.5z" />
+        </svg>
+      );
+    case LASSO_TOOL:
+      return (
+        <svg {...iconProps}>
+          <path d="M4 6c2-3 5-3 7-1s4 3 5 1c1 3-1 6-4 7s-6 0-7-3c0-2 1-3 2-4z" />
         </svg>
       );
     case 'line':
@@ -381,8 +388,9 @@ const toolButtonClass = (active) =>
 export default function DrawToolbar({ state, onChange, onDone, shapeEdit }) {
   const [shapeMenuOpen, setShapeMenuOpen] = useState(false);
   const isSelect = state.tool === SELECT_TOOL;
+  const isLasso = state.tool === LASSO_TOOL;
   const isShape = SHAPE_TOOL_IDS.includes(state.tool);
-  const tool = TOOL_BUTTONS.includes(state.tool) || isSelect || isShape ? state.tool : 'pen';
+  const tool = TOOL_BUTTONS.includes(state.tool) || isSelect || isLasso || isShape ? state.tool : 'pen';
   const isEraser = tool === 'eraser';
   const isInk = DRAW_TOOLS.includes(tool);
   // 지우개는 색·불투명도가 없다. 아래 값은 지우개일 때 쓰이지 않는다.
@@ -431,12 +439,23 @@ export default function DrawToolbar({ state, onChange, onDone, shapeEdit }) {
           type="button"
           role="radio"
           aria-checked={isSelect}
-          title="선택 — 도형·펜·연필·형광펜을 눌러 고르고, Delete 로 지웁니다"
+          title="선택 — 도형·펜·연필·형광펜을 눌러 고르고 옮기거나 크기를 바꾸며, Delete 로 지웁니다"
           data-draw-tool={SELECT_TOOL}
           onClick={() => pickTool(SELECT_TOOL)}
           className={toolButtonClass(isSelect)}
         >
           <ShapeIcon kind={SELECT_TOOL} />
+        </button>
+        <button
+          type="button"
+          role="radio"
+          aria-checked={isLasso}
+          title="올가미 — 경로에 닿거나 안쪽의 그리기를 한꺼번에 고른 뒤 옮기거나 Delete 로 지웁니다"
+          data-draw-tool={LASSO_TOOL}
+          onClick={() => pickTool(LASSO_TOOL)}
+          className={toolButtonClass(isLasso)}
+        >
+          <ShapeIcon kind={LASSO_TOOL} />
         </button>
         <div className="relative">
           <button

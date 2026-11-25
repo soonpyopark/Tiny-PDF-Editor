@@ -1,16 +1,30 @@
 import { useEffect, useRef, useState } from 'react';
+import { moveInk } from './inkPick.js';
+import { moveGeom } from './shapeMath.js';
 
 /**
- * 도형(선·화살표·사각형·타원·다각형·클라우드·폴리라인·텍스트 상자) 컨트롤러.
+ * 도형·잉크 선택/편집 컨트롤러.
  *
  * - 도형은 PDF 표준 주석으로 들어가 쪽 그림에 함께 그려진다. 이 훅은 목록을 가져와 클릭·선택에 쓰고,
  *   만들기·고치기·지우기를 엔진에 한 줄(queue)로 보내 순서가 뒤바뀌지 않게 한다.
  * - 고치면 주석이 새로 만들어져 id 가 바뀐다. 아직 대기 중인 요청이 옛 id 를 들고 있어도 되도록 옛 id → 새 id 를 기억한다.
- * - 모양(색·굵기 …) 바꾸기는 잠깐 모아서 한 번에 보낸다(슬라이더를 끌 때 되돌리기 단계가 쌓이지 않게).
+ * - 올가미로 여러 항목을 고르면 selection 배열로 옮기기·Delete 를 한꺼번에 한다.
+ * - 모양(색·굵기 …) 바꾸기는 항목이 하나일 때만 잠깐 모아서 한 번에 보낸다.
  * - 텍스트 상자의 글은 확정(commitText)할 때 엔진에 반영한다.
  */
 
 const PATCH_DELAY_MS = 350;
+
+/** @typedef {{ pageIndex: number, id: number, kind: 'shape' | 'ink' }} SelItem */
+
+function asItem(next) {
+  if (!next) return null;
+  return {
+    pageIndex: next.pageIndex,
+    id: next.id,
+    kind: next.kind === 'ink' ? 'ink' : 'shape',
+  };
+}
 
 export function useShapeEditing(ctxValue) {
   const ctx = useRef(ctxValue);
@@ -24,9 +38,9 @@ export function useShapeEditing(ctxValue) {
     map: /** @type {Record<number, any[]>} */ ({}),
     inks: /** @type {Record<number, any[]>} */ ({}),
   });
-  /** @type {null | { pageIndex: number, id: number, kind?: 'shape' | 'ink' }} */
-  const [selected, setSelectedState] = useState(null);
-  const selectedRef = useRef(selected);
+  /** @type {SelItem[]} */
+  const [selection, setSelectionState] = useState([]);
+  const selectionRef = useRef(selection);
   const [textEdit, setTextEditState] = useState(/** @type {null | any} */ (null));
   const textEditRef = useRef(textEdit);
   const [shown, setShown] = useState(/** @type {null | { id: number, patch: any }} */ (null));
@@ -36,9 +50,10 @@ export function useShapeEditing(ctxValue) {
   const busyRef = useRef(0);
   const renamedRef = useRef(new Map());
 
-  function setSelected(next) {
-    selectedRef.current = next;
-    setSelectedState(next);
+  function setSelection(next) {
+    const list = (Array.isArray(next) ? next : next ? [next] : []).map(asItem).filter(Boolean);
+    selectionRef.current = list;
+    setSelectionState(list);
   }
 
   function setTextEdit(next) {
@@ -68,6 +83,19 @@ export function useShapeEditing(ctxValue) {
     return current;
   }
 
+  function remapSelection(oldId, nextItem) {
+    const list = selectionRef.current;
+    if (!list.some((item) => item.id === oldId)) return;
+    setSelection(list.map((item) => (item.id === oldId ? { ...item, ...nextItem, id: nextItem.id } : item)));
+  }
+
+  function invalidatePage(index) {
+    if (cacheRef.current.doc) {
+      delete cacheRef.current.map[index];
+      delete cacheRef.current.inks[index];
+    }
+  }
+
   // ------------------------------------------------------------------ 쪽에 있는 도형·잉크 목록 (클릭해서 고르기용)
   useEffect(() => {
     if (!enabled || !doc.open || doc.pageCount < 1) {
@@ -87,15 +115,15 @@ export function useShapeEditing(ctxValue) {
     const publish = () => {
       setShapes({ ...cache.map });
       setInks({ ...cache.inks });
-      // 목록에 없는 항목을 가리키고 있으면(되돌리기 등으로 사라짐) 선택을 푼다.
-      const sel = selectedRef.current;
-      if (!sel || busyRef.current !== 0) return;
-      const shapesOnPage = cache.map[sel.pageIndex];
-      const inksOnPage = cache.inks[sel.pageIndex];
-      if (!shapesOnPage || !inksOnPage) return;
-      const kind = sel.kind === 'ink' ? 'ink' : 'shape';
-      const list = kind === 'ink' ? inksOnPage : shapesOnPage;
-      if (!list.some((item) => item.id === sel.id)) setSelected(null);
+      if (busyRef.current !== 0) return;
+      const kept = selectionRef.current.filter((sel) => {
+        const shapesOnPage = cache.map[sel.pageIndex];
+        const inksOnPage = cache.inks[sel.pageIndex];
+        if (!shapesOnPage || !inksOnPage) return true;
+        const list = sel.kind === 'ink' ? inksOnPage : shapesOnPage;
+        return list.some((item) => item.id === sel.id);
+      });
+      if (kept.length !== selectionRef.current.length) setSelection(kept);
     };
     if (!missing.length) {
       publish();
@@ -119,17 +147,16 @@ export function useShapeEditing(ctxValue) {
     };
   }, [doc, pageIndex, enabled]);
 
-  // 서버에서 새 목록이 오면 임시로 보여 주던 모양 값을 걷는다.
   useEffect(() => {
     if (!pendingRef.current && busyRef.current === 0) setShown(null);
   }, [shapes]);
 
   // ------------------------------------------------------------------ 만들기 / 고치기 / 지우기
-  function create(index, kind, geom, params, { select = false } = {}) {
+  function create(index, kind, geom, params, { select: doSelect = false } = {}) {
     return enqueue(async () => {
       const result = await api('pdf.shapeAdd', { pageIndex: index, kind, ...geom, params });
       await ctx.current.refreshPage(result.doc, index);
-      if (select) setSelected({ pageIndex: index, id: result.shapeId, kind: 'shape' });
+      if (doSelect) setSelection([{ pageIndex: index, id: result.shapeId, kind: 'shape' }]);
       return result.shapeId;
     });
   }
@@ -140,9 +167,8 @@ export function useShapeEditing(ctxValue) {
       const result = await api('pdf.shapeUpdate', { pageIndex: index, shapeId, ...(geom || {}), params });
       if (result.changed) {
         renamedRef.current.set(shapeId, result.newId);
-        if (selectedRef.current && selectedRef.current.id === shapeId) {
-          setSelected({ pageIndex: index, id: result.newId, kind: 'shape' });
-        }
+        remapSelection(shapeId, { pageIndex: index, id: result.newId, kind: 'shape' });
+        invalidatePage(index);
         await ctx.current.refreshPage(result.doc, index);
       } else {
         setShown(null);
@@ -151,30 +177,106 @@ export function useShapeEditing(ctxValue) {
     });
   }
 
-  function remove(target = selectedRef.current) {
-    if (!target) return Promise.resolve();
-    flushPatch();
-    const { pageIndex: index, id } = target;
-    const kind = target.kind === 'ink' ? 'ink' : 'shape';
-    if (selectedRef.current && selectedRef.current.id === id) setSelected(null);
+  function updateInk(index, id, strokes) {
     return enqueue(async () => {
-      const result =
-        kind === 'ink'
-          ? await api('pdf.inkDelete', { pageIndex: index, inkId: id })
-          : await api('pdf.shapeDelete', { pageIndex: index, shapeId: resolveId(id) });
-      // 같은 쪽 캐시를 비워 다음 목록 요청이 새 내용을 받게 한다.
-      if (cacheRef.current.doc) {
-        delete cacheRef.current.map[index];
-        delete cacheRef.current.inks[index];
+      const inkId = resolveId(id);
+      const result = await api('pdf.inkUpdate', { pageIndex: index, inkId, strokes });
+      if (result.changed) {
+        renamedRef.current.set(inkId, result.newId);
+        remapSelection(inkId, { pageIndex: index, id: result.newId, kind: 'ink' });
+        invalidatePage(index);
+        await ctx.current.refreshPage(result.doc, index);
       }
-      await ctx.current.refreshPage(result.doc, index);
+      return result.newId;
+    });
+  }
+
+  /** 선택(하나 또는 여러 개)을 같은 양만큼 옮긴다. */
+  function moveSelection(dx, dy, ptW, ptH, targets = selectionRef.current) {
+    const list = Array.isArray(targets) ? targets : [];
+    if (!list.length) return Promise.resolve();
+    flushPatch();
+    return enqueue(async () => {
+      let lastDoc = null;
+      const pages = new Set();
+      const nextSelection = [];
+      for (const target of list) {
+        const index = target.pageIndex;
+        pages.add(index);
+        if (target.kind === 'ink') {
+          const ink = (cacheRef.current.inks[index] || inks[index] || []).find((item) => item.id === target.id);
+          if (!ink) {
+            nextSelection.push(target);
+            continue;
+          }
+          const { strokes } = moveInk(ink, dx, dy, ptW, ptH);
+          const inkId = resolveId(target.id);
+          const result = await api('pdf.inkUpdate', { pageIndex: index, inkId, strokes });
+          lastDoc = result.doc;
+          if (result.changed) {
+            renamedRef.current.set(inkId, result.newId);
+            nextSelection.push({ pageIndex: index, id: result.newId, kind: 'ink' });
+          } else {
+            nextSelection.push(target);
+          }
+        } else {
+          const shape = (cacheRef.current.map[index] || shapes[index] || []).find((item) => item.id === target.id);
+          if (!shape) {
+            nextSelection.push(target);
+            continue;
+          }
+          const geom = moveGeom(shape, dx, dy, ptW, ptH);
+          const shapeId = resolveId(target.id);
+          const result = await api('pdf.shapeUpdate', { pageIndex: index, shapeId, ...geom });
+          lastDoc = result.doc;
+          if (result.changed) {
+            renamedRef.current.set(shapeId, result.newId);
+            nextSelection.push({ pageIndex: index, id: result.newId, kind: 'shape' });
+          } else {
+            nextSelection.push(target);
+          }
+        }
+      }
+      setSelection(nextSelection);
+      for (const index of pages) invalidatePage(index);
+      if (lastDoc) {
+        for (const index of pages) await ctx.current.refreshPage(lastDoc, index);
+      }
+    });
+  }
+
+  function remove(targets = selectionRef.current) {
+    const list = (Array.isArray(targets) ? targets : targets ? [targets] : []).map(asItem).filter(Boolean);
+    if (!list.length) return Promise.resolve();
+    flushPatch();
+    setSelection([]);
+    return enqueue(async () => {
+      let lastDoc = null;
+      const pages = new Set();
+      for (const target of list) {
+        pages.add(target.pageIndex);
+        const result =
+          target.kind === 'ink'
+            ? await api('pdf.inkDelete', { pageIndex: target.pageIndex, inkId: resolveId(target.id) })
+            : await api('pdf.shapeDelete', { pageIndex: target.pageIndex, shapeId: resolveId(target.id) });
+        lastDoc = result.doc;
+      }
+      for (const index of pages) invalidatePage(index);
+      if (lastDoc) {
+        for (const index of pages) await ctx.current.refreshPage(lastDoc, index);
+      }
     });
   }
 
   // ------------------------------------------------------------------ 선택 / 모양 바꾸기
   function select(next) {
     flushPatch();
-    setSelected(next);
+    setSelection(next ? [next] : []);
+  }
+
+  function selectMany(items) {
+    flushPatch();
+    setSelection(items || []);
   }
 
   function flushPatch() {
@@ -186,9 +288,8 @@ export function useShapeEditing(ctxValue) {
     void update(job.pageIndex, job.id, { params: job.patch });
   }
 
-  /** 선택한 도형의 모양을 바꾼다(엔진 모양 한 부분). 잠깐 모아서 한 번에 보낸다. 잉크 선택에는 쓰지 않는다. */
   function patchSelected(patch) {
-    const sel = selectedRef.current;
+    const sel = selectionRef.current.length === 1 ? selectionRef.current[0] : null;
     if (!sel || sel.kind === 'ink') return;
     const merged = pendingRef.current && pendingRef.current.id === sel.id ? { ...pendingRef.current.patch, ...patch } : patch;
     pendingRef.current = { pageIndex: sel.pageIndex, id: sel.id, patch: merged };
@@ -197,8 +298,6 @@ export function useShapeEditing(ctxValue) {
     timerRef.current = window.setTimeout(flushPatch, PATCH_DELAY_MS);
   }
 
-  // ------------------------------------------------------------------ 텍스트 상자 글 입력
-  /** 글 입력을 연다. id 가 없으면 새 상자(확정할 때 만들어짐), 있으면 기존 상자의 글 고치기. */
   function beginText({ pageIndex: index, id = null, rect, params, text = '' }) {
     flushPatch();
     void commitText();
@@ -226,38 +325,34 @@ export function useShapeEditing(ctxValue) {
     setTextEdit(null);
   }
 
-  // 저장·되돌리기·닫기 전에 부른다: 입력 중인 글과 모아 둔 모양 바꾸기를 모두 반영하고 기다린다.
   async function commit() {
     await commitText();
     flushPatch();
     await queueRef.current;
   }
 
-  // 그리기 끝내기·도구 바꾸기 등으로 도형 편집이 꺼지면 선택·입력을 정리한다.
   useEffect(() => {
     if (enabled) return;
     void commit();
-    setSelected(null);
+    setSelection([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
 
-  // 쪽이 바뀌거나 다른 문서가 열리면 선택을 푼다.
   useEffect(() => {
     if (!doc.open) {
-      setSelected(null);
+      setSelection([]);
       setTextEdit(null);
       renamedRef.current.clear();
     }
   }, [doc.open]);
 
-  // Delete 로 지우기, Esc 로 선택 풀기 (선택이 있을 때만; 없으면 Esc 는 그리기 끝내기로 간다).
   useEffect(() => {
     if (!enabled) return undefined;
     function onKeyDown(event) {
       const el = event.target;
       if (el instanceof HTMLTextAreaElement) return;
       if (el instanceof HTMLInputElement && !['range', 'checkbox', 'radio', 'button', 'color'].includes(el.type)) return;
-      if (!selectedRef.current) return;
+      if (!selectionRef.current.length) return;
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -273,6 +368,7 @@ export function useShapeEditing(ctxValue) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
 
+  const selected = selection.length === 1 ? selection[0] : null;
   const selectedKind = selected?.kind === 'ink' ? 'ink' : 'shape';
   const selectedInk =
     selected && selectedKind === 'ink'
@@ -290,13 +386,17 @@ export function useShapeEditing(ctxValue) {
     shapes,
     inks,
     selected,
+    selection,
     selectedShape,
     selectedInk,
     textEdit,
     create,
     update,
+    updateInk,
+    moveSelection,
     remove,
     select,
+    selectMany,
     patchSelected,
     beginText,
     setTextValue,

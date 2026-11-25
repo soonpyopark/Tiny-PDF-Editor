@@ -28,6 +28,8 @@ export function hasFill(kind) {
 }
 
 export const SELECT_TOOL = 'select';
+/** 올가미: 경로에 닿거나 닫힌 영역 안의 잉크·도형을 한꺼번에 고른다. */
+export const LASSO_TOOL = 'lasso';
 
 /** 모양 묶음: 텍스트 상자는 글자 설정이 있고 테두리가 기본으로 없다. 나머지 도형은 같은 설정을 나눠 쓴다. */
 export function styleGroupOf(kind) {

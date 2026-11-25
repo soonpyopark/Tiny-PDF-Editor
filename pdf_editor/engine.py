@@ -1308,6 +1308,11 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
         _require_open(opened)
         doc.delete_ink(int(req.get("pageIndex") or 0), int(req.get("inkId")))
         return True, {"doc": _summary(doc, True)}
+    if op == "inkUpdate":
+        # 선택 도구: 잉크 획 좌표 바꾸기(이동·크기 조절). 점은 쪽 화면 좌표(pt).
+        _require_open(opened)
+        result = doc.update_ink(int(req.get("pageIndex") or 0), int(req.get("inkId")), req.get("strokes"))
+        return True, {"doc": _summary(doc, True), "newId": result["newId"], "changed": result["changed"]}
     if op == "hwpStatus":
         from pdf_editor.hwp_convert import hancom_installed
 

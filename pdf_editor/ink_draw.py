@@ -54,6 +54,23 @@ def clamp_opacity(opacity: float) -> float:
     return min(1.0, max(0.05, value))
 
 
+def read_annot_opacity(annot) -> float:
+    """주석에 저장된 불투명도. PyMuPDF 는 미설정을 -1 로 돌려주므로 그때는 1.0 으로 본다."""
+    try:
+        raw = annot.opacity
+    except (RuntimeError, ValueError, TypeError, AttributeError):
+        return 1.0
+    if raw is None:
+        return 1.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(value) or value < 0:
+        return 1.0
+    return clamp_opacity(value)
+
+
 def clean_rgb(raw) -> tuple[float, float, float]:
     """[r, g, b] in 0..1 (or 0..255) -> clamped 0..1 triple. Bad input -> dark gray."""
     try:
