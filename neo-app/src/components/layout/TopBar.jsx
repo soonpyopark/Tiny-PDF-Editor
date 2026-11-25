@@ -69,7 +69,7 @@ export default function TopBar({ settingsOpen, onToggleSettings }) {
     void dialog.alert({
       title: appInfo.name,
       icon: <AppLogo size={72} />,
-      body: `버전: v${appInfo.version}\n빌드: ${appInfo.buildStampLabel}\n라이선스: MIT License`,
+      body: `버전: v${appInfo.version}\n빌드: ${appInfo.buildStampLabel}\n라이선스: AGPL-3.0`,
     });
   };
 

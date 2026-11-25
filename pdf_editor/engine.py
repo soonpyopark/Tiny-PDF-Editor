@@ -1300,6 +1300,14 @@ def _handle(doc: PdfDocument, opened: bool, req: dict) -> tuple[bool, dict]:
             continue_group=bool(req.get("continueGroup")),
         )
         return True, {"doc": _summary(doc, True), "removed": removed}
+    if op == "inkList":
+        _require_open(opened)
+        page_index = req.get("pageIndex")
+        return True, {"items": doc.ink_items(None if page_index is None else int(page_index))}
+    if op == "inkDelete":
+        _require_open(opened)
+        doc.delete_ink(int(req.get("pageIndex") or 0), int(req.get("inkId")))
+        return True, {"doc": _summary(doc, True)}
     if op == "hwpStatus":
         from pdf_editor.hwp_convert import hancom_installed
 

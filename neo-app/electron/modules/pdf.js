@@ -1461,6 +1461,24 @@ export function register() {
     return { doc: result.doc, removed: Number(result.removed) || 0 };
   });
 
+  // 선택 도구: 이 앱이 그린 잉크(펜·연필·형광펜) 목록. 쪽 화면 좌표의 strokes/rect 를 돌려준다.
+  defineApi('pdf.inkList', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'inkList',
+      pageIndex: body?.pageIndex === undefined || body?.pageIndex === null ? undefined : Number(body.pageIndex),
+    });
+    return { items: result.items || [] };
+  });
+
+  defineApi('pdf.inkDelete', 'user', async (body) => {
+    const result = await engineOp({
+      op: 'inkDelete',
+      pageIndex: Number(body?.pageIndex) || 0,
+      inkId: Number(body?.inkId),
+    });
+    return { doc: result.doc };
+  });
+
   // 도형(선·화살표·사각형·타원·다각형·클라우드·폴리라인·텍스트 상자): 표준 주석으로 넣고, 나중에 다시 고친다.
   // 좌표는 쪽 화면 좌표(pt, 회전 반영). 점으로 그리는 도형은 points, 상자로 그리는 도형은 rect.
   function shapeGeometry(body) {

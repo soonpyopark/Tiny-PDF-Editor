@@ -24,6 +24,7 @@ import {
   snapWidth,
   styleToParams,
 } from '../src/features/editor/draw/shapeSettings.js';
+import { pickInk } from '../src/features/editor/draw/inkPick.js';
 
 const rect = (r, params = {}) => ({ id: 1, pageIndex: 0, kind: 'rect', rect: r, params: { width: 2, fill: null, ...params } });
 const line = (points, kind = 'line', params = {}) => ({ id: 2, pageIndex: 0, kind, points, params: { width: 2, ...params } });
@@ -153,4 +154,32 @@ test('draw state: shape tools are valid saved tools; broken shape settings are r
   assert.equal(normalizeDrawState({ lastShape: 'x' }).lastShape, 'rect');
   assert.equal(normalizeDrawState({ shapes: 7 }).shapes.shape.width, 2);
   assert.equal(normalizeDrawState(null).tools.pen.thickness, 1.5); // 기존 펜 설정은 그대로
+});
+
+test('pickInk: hits stroke within width+slack and prefers the last drawn', () => {
+  const below = {
+    id: 1,
+    width: 4,
+    strokes: [
+      [
+        [10, 10],
+        [100, 10],
+      ],
+    ],
+  };
+  const above = {
+    id: 2,
+    width: 4,
+    strokes: [
+      [
+        [40, 10],
+        [40, 80],
+      ],
+    ],
+  };
+  assert.equal(pickInk([below, above], 40, 10, 3).id, 2);
+  assert.equal(pickInk([below, above], 70, 10, 3).id, 1);
+  assert.equal(pickInk([below, above], 70, 40, 3), null);
+  assert.equal(pickInk([below], 70, 12, 1).id, 1); // width/2 + slack = 3
+  assert.equal(pickInk([below], 70, 20, 1), null);
 });

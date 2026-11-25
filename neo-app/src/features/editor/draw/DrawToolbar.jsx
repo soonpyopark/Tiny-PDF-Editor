@@ -431,7 +431,7 @@ export default function DrawToolbar({ state, onChange, onDone, shapeEdit }) {
           type="button"
           role="radio"
           aria-checked={isSelect}
-          title="선택 — 도형을 눌러 고르고 옮기거나 크기를 바꿉니다"
+          title="선택 — 도형·펜·연필·형광펜을 눌러 고르고, Delete 로 지웁니다"
           data-draw-tool={SELECT_TOOL}
           onClick={() => pickTool(SELECT_TOOL)}
           className={toolButtonClass(isSelect)}

@@ -171,3 +171,24 @@ def stroke_hit_by_path(stroke: list[Point], stroke_width: float, path: list[Poin
     if sx1 + reach < px0 or px1 + reach < sx0 or sy1 + reach < py0 or py1 + reach < sy0:
         return False
     return polyline_distance(stroke, path) <= reach
+
+
+def point_hits_stroke(stroke: list[Point], stroke_width: float, point: Point, slack: float = 3.0) -> bool:
+    """True if *point* is within *stroke_width*/2 + *slack* of the polyline."""
+    if not stroke:
+        return False
+    reach = max(0.0, float(stroke_width)) / 2.0 + max(0.0, float(slack))
+    sx0, sy0, sx1, sy1 = bounds_of(stroke)
+    px, py = point
+    if px + reach < sx0 or sx1 + reach < px or py + reach < sy0 or sy1 + reach < py:
+        return False
+    if len(stroke) == 1:
+        return math.hypot(px - stroke[0][0], py - stroke[0][1]) <= reach
+    best = math.inf
+    for a, b in zip(stroke, stroke[1:]):
+        dist = _point_segment_distance(point, a, b)
+        if dist < best:
+            best = dist
+            if best <= reach:
+                return True
+    return best <= reach

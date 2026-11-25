@@ -15,7 +15,7 @@ import {
   ensurePrintService,
   handOffToLightWatcher,
   keepWatchAfterQuit,
-  pathsFromArgv,
+  resolveExternalPaths,
   watchInProcess,
 } from './electron/printService.js';
 import { runtime } from './electron/runtime.js';
@@ -152,8 +152,17 @@ if (printWatchMode) {
   app.exit(0);
 } else {
   app.on('second-instance', (_event, argv, workingDirectory) => {
-    focusMainWindow();
-    deliverExternalPaths(pathsFromArgv(argv, workingDirectory));
+    // 첨부 PDF 더블클릭: 임시 파일이 늦게 생길 수 있고, 메인 창을 먼저 올리면
+    // 이전에 보던 문서가 앞에 보여 "예전 파일이 열렸다"고 느낀다.
+    // 경로가 있으면 그 파일을 연 창이 포커스를 잡고, 경로가 없을 때만 메인 창을 올린다.
+    void (async () => {
+      const paths = await resolveExternalPaths(argv, workingDirectory);
+      if (paths.length) {
+        deliverExternalPaths(paths);
+        return;
+      }
+      focusMainWindow();
+    })();
   });
   // macOS open-file 은 위에서 이미 등록함 (ready 전 이벤트 유실 방지).
   // 앱이 떠 있는 동안의 추가 open-file 도 같은 큐로 들어온 뒤 flush 된다.
@@ -255,7 +264,8 @@ async function boot() {
   registerIpc();
   appUrlBase = info.appUrl;
   // 시작 인자(인쇄 PDF, 연결 프로그램으로 연 파일)의 첫 경로는 창 주소로, 나머지는 준비 뒤 전달한다.
-  const startupPaths = pathsFromArgv(process.argv);
+  // 웹 첨부는 실행 직후 파일이 아직 없을 수 있어 짧게 기다린다.
+  const startupPaths = await resolveExternalPaths(process.argv);
   createMainWindow(info.appUrl, startupPaths[0] ?? '');
   if (startupPaths.length > 1) deliverExternalPaths(startupPaths.slice(1));
   if (startupPaths.length) console.log('[open] startup paths:', startupPaths.join(' | '));
@@ -337,19 +347,20 @@ function openDocumentWindow(filePath) {
   const url = new URL(appUrlBase);
   url.searchParams.set('win', windowId);
   if (filePath) url.searchParams.set('open', filePath);
-  createAppWindow(url.toString(), { main: false, windowId });
+  // 새 문서 창이 메인(이전 문서)보다 앞에 오도록 포커스한다.
+  createAppWindow(url.toString(), { main: false, windowId, focusOnShow: true });
   return true;
 }
 
 /**
  * @param {string} appUrl
- * @param {{ main: boolean, windowId: string }} options
+ * @param {{ main: boolean, windowId: string, focusOnShow?: boolean }} options
  * @returns {BrowserWindow}
  */
 /** 창이 줄어들 수 있는 가장 작은 콘텐츠 너비(렌더러가 더 큰 값을 알려 주면 그 값을 쓴다). */
 const MIN_WINDOW_WIDTH = 960;
 
-function createAppWindow(appUrl, { main, windowId }) {
+function createAppWindow(appUrl, { main, windowId, focusOnShow = false }) {
   const icon = resolveIconPath();
 
   const win = new BrowserWindow({
@@ -376,6 +387,7 @@ function createAppWindow(appUrl, { main, windowId }) {
   win.once('ready-to-show', () => {
     win.setOpacity(0);
     win.show();
+    if (focusOnShow && !win.isDestroyed()) win.focus();
     if (main && splash) {
       // 메인 창이 뜨면 최소 표시 시간(700ms)을 채운 뒤 스플래시를 닫는다.
       splash.closeWhenReady();
@@ -673,6 +685,16 @@ function registerIpc() {
   ipcMain.handle('frame:openDocumentWindow', (_event, filePath) =>
     openDocumentWindow(String(filePath ?? '').trim()),
   );
+
+  /** 외부에서 연 파일이 이 창에 열렸을 때 이 창을 앞으로 가져온다. */
+  ipcMain.handle('frame:focusWindow', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return false;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    return true;
+  });
 }
 
 /* -------------------------------------------------------------------------- */

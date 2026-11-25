@@ -81,7 +81,7 @@ wix eula accept wix7
 
 ## 라이선스
 
-소스 코드는 MIT입니다. 배포판 재배포 시 `LICENSE`의 서드파티 고지(PyMuPDF, Electron 등)를 함께 제공하세요.
+소스·배포판은 AGPL-3.0입니다. 재배포 시 `LICENSE` 전문과 서드파티 고지(PyMuPDF, Electron 등)를 함께 제공하세요.
 
 ## 문의
 

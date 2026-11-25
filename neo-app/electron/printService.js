@@ -365,20 +365,38 @@ export function watchInProcess() {
 /* -------------------------------------------------------------------------- */
 
 /**
- * 명령줄에서 열 파일 경로만 골라낸다. 플래그·실행 파일·앱 폴더(개발 실행)는 건너뛴다.
+ * 명령줄에서 열 후보 경로만 골라낸다. 플래그·실행 파일·앱 폴더는 건너뛴다.
+ * 파일이 아직 없어도(브라우저가 첨부를 쓰는 중) 후보는 남긴다.
+ * @param {string[]} argv
+ * @param {string} [cwd]
+ * @returns {string[]}
+ */
+function candidatePathsFromArgv(argv, cwd = process.cwd()) {
+  const skip = new Set([path.resolve(process.execPath).toLowerCase()]);
+  if (!app.isPackaged) skip.add(path.resolve(app.getAppPath()).toLowerCase());
+  const result = [];
+  const seen = new Set();
+  for (const raw of argv.slice(1)) {
+    const arg = String(raw ?? '').trim();
+    if (!arg || arg.startsWith('--') || (arg.startsWith('-') && arg.length <= 3)) continue;
+    const full = path.resolve(cwd, arg);
+    const key = full.toLowerCase();
+    if (skip.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    result.push(full);
+  }
+  return result;
+}
+
+/**
+ * 명령줄에서 지금 존재하는 파일 경로만 골라낸다.
  * @param {string[]} argv
  * @param {string} [cwd]
  * @returns {string[]}
  */
 export function pathsFromArgv(argv, cwd = process.cwd()) {
-  const skip = new Set([path.resolve(process.execPath).toLowerCase()]);
-  if (!app.isPackaged) skip.add(path.resolve(app.getAppPath()).toLowerCase());
   const result = [];
-  for (const raw of argv.slice(1)) {
-    const arg = String(raw ?? '').trim();
-    if (!arg || arg.startsWith('--') || (arg.startsWith('-') && arg.length <= 3)) continue;
-    const full = path.resolve(cwd, arg);
-    if (skip.has(full.toLowerCase())) continue;
+  for (const full of candidatePathsFromArgv(argv, cwd)) {
     try {
       if (fs.statSync(full).isFile()) result.push(full);
     } catch {
@@ -386,4 +404,36 @@ export function pathsFromArgv(argv, cwd = process.cwd()) {
     }
   }
   return result;
+}
+
+/**
+ * 웹 첨부·다운로드처럼 실행 직후에야 파일이 생기는 경우를 위해 짧게 기다린다.
+ * @param {string[]} argv
+ * @param {string} [cwd]
+ * @param {{ waitMs?: number, stepMs?: number }} [options]
+ * @returns {Promise<string[]>}
+ */
+export async function resolveExternalPaths(argv, cwd = process.cwd(), options = {}) {
+  const waitMs = Math.max(0, Number(options.waitMs) || 2000);
+  const stepMs = Math.max(50, Number(options.stepMs) || 100);
+  const existing = pathsFromArgv(argv, cwd);
+  if (existing.length) return existing;
+
+  const candidates = candidatePathsFromArgv(argv, cwd);
+  if (!candidates.length || waitMs <= 0) return [];
+
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, stepMs));
+    const found = [];
+    for (const full of candidates) {
+      try {
+        if (fs.statSync(full).isFile()) found.push(full);
+      } catch {
+        // 아직 없음
+      }
+    }
+    if (found.length) return found;
+  }
+  return [];
 }

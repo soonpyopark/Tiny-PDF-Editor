@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('frame', {
   },
   /** 새 문서 창을 열고 파일 경로를 넘긴다. */
   openDocumentWindow: (filePath) => ipcRenderer.invoke('frame:openDocumentWindow', filePath),
+  /** 이 창을 앞으로 가져온다 (외부에서 연 파일이 이 창에 열렸을 때). */
+  focusWindow: () => ipcRenderer.invoke('frame:focusWindow'),
   /** 창 닫기·종료 요청이 오면 handler 를 부른다. 저장 여부를 묻고 respondClose 로 답한다. */
   onCloseRequest: (handler) => {
     const listener = () => handler();

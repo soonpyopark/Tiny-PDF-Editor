@@ -1008,6 +1008,10 @@ export default function EditorPage({
    * 2) 문서가 열려 있고 설정이 '새 창' -> 새 창으로 연다.
    * 3) 그 밖 -> 이 창에서 연다 (현재 문서를 교체하므로 수정 확인을 먼저 받는다).
    */
+  /**
+   * @param {string} filePath
+   * @returns {Promise<true | false | 'cancelled'>} 성공 true, 실패 false, 저장 확인 취소 'cancelled'
+   */
   async function openFileTarget(filePath) {
     const native = window.frame;
     if (!isEffectivelyEmpty(docRef.current)) {
@@ -1018,24 +1022,29 @@ export default function EditorPage({
         // 설정을 읽지 못하면 이 창에서 연다.
       }
       if (openInNewWindow && native?.openDocumentWindow) {
+        // 새 창이 ready 때 스스로 포커스한다 (메인에 남은 이전 문서가 앞에 남지 않게).
         await native.openDocumentWindow(filePath);
-        return;
+        return true;
       }
       // 새 탭: 현재 탭은 그대로 두고 이 창에 탭을 하나 더 만든다. 수정 확인은 필요 없다.
       if (onOpenInNewTab) {
         onOpenInNewTab(filePath);
-        return;
+        void native?.focusWindow?.();
+        return true;
       }
       const proceed = await confirmUnsavedChanges({
         title: '저장 여부',
         body: '현재 문서가 수정되었습니다.\n저장하시겠습니까?',
         extraLabel: '저장하지 않고 열기',
       });
-      if (!proceed) return;
+      if (!proceed) return 'cancelled';
     }
-    await openRecent(filePath);
+    const ok = await openRecent(filePath);
+    if (ok) void native?.focusWindow?.();
+    return ok;
   }
 
+  /** @returns {Promise<boolean>} */
   async function openRecent(filePath) {
     setError('');
     try {
@@ -1043,11 +1052,14 @@ export default function EditorPage({
       if (opened.needsPassword) {
         setPasswordPath(filePath);
         setPasswordRejected(Boolean(opened.rejected));
-        return;
+        void window.frame?.focusWindow?.();
+        return true;
       }
       await showDocument(opened.doc);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : '최근 파일을 열지 못했습니다.');
+      return false;
     }
   }
 
@@ -1862,7 +1874,12 @@ export default function EditorPage({
     onRegisterControls(tabKey, {
       confirmClose: () => confirmCloseRef.current(),
       closeDoc: () => closeDocRef.current?.(),
-      openPath: (filePath) => openFileTargetRef.current?.(filePath),
+      openPath: async (filePath) => {
+        const result = await openFileTargetRef.current?.(filePath);
+        if (result === false) {
+          throw new Error(`파일을 열지 못했습니다.\n${filePath || ''}`);
+        }
+      },
     });
     return () => onRegisterControls(tabKey, null);
     // eslint-disable-next-line react-hooks/exhaustive-deps

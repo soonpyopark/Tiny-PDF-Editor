@@ -239,7 +239,7 @@ Neo 창 우측 상단 ⚙️ 버튼에서 다음을 설정할 수 있습니다:
 
 ## 라이선스
 
-본 프로젝트는 **MIT License**입니다. `LICENSE` 파일을 참고하세요.
+본 프로젝트는 **GNU Affero General Public License v3.0 (AGPL-3.0)** 입니다. `LICENSE` 파일을 참고하세요.
 
 ---
 

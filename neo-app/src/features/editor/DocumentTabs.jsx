@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useDialog } from '../../context/DialogContext.jsx';
 import { api as apiRaw } from '../../lib/apiClient.js';
 import { useFullscreen } from '../../lib/fullscreen.js';
 import EditorPage from './EditorPage.jsx';
@@ -52,6 +53,7 @@ function sameState(a, b) {
 }
 
 export default function DocumentTabs() {
+  const dialog = useDialog();
   const [tabs, setTabs] = useState(() => [{ key: '', initialPath: readOpenParam() }]);
   const [activeKey, setActiveKey] = useState('');
   const [states, setStates] = useState(/** @type {Record<string, any>} */ ({}));
@@ -144,15 +146,19 @@ export default function DocumentTabs() {
         for (const filePath of paths) {
           try {
             await controlsRef.current.get(activeRef.current)?.openPath(filePath);
-          } catch {
-            // 한 파일이 실패해도 나머지는 계속 연다.
+          } catch (err) {
+            // 실패를 숨기면 이전 문서 창만 남아 "예전 파일이 열렸다"고 보인다.
+            void dialog.alert({
+              title: '파일 열기',
+              body: err instanceof Error ? err.message : '파일을 열지 못했습니다.',
+            });
           }
           // 새 탭이 활성 탭으로 바뀔 시간을 준 뒤 다음 파일로 간다.
           await new Promise((resolve) => setTimeout(resolve, 80));
         }
       });
     });
-  }, []);
+  }, [dialog]);
 
   // 전체화면에서는 탭 줄을 숨긴다 (원본: tabBar().hide()). 탭 아래 본문만 보인다.
   const fullscreen = useFullscreen();

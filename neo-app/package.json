@@ -32,7 +32,7 @@
     "frame",
     "boilerplate"
   ],
-  "license": "UNLICENSED",
+  "license": "AGPL-3.0-or-later",
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.5",
     "@vitejs/plugin-react": "^6.3.0",

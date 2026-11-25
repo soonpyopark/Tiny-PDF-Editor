@@ -4867,6 +4867,81 @@ class PdfDocument:
         self._finish_ink_edit()
         return removed
 
+    def _ink_view_strokes(self, page, annot) -> list[list[tuple[float, float]]]:
+        """Ink vertices in page-view coordinates (same space as the preview image)."""
+        to_view = page.rotation_matrix
+        strokes: list[list[tuple[float, float]]] = []
+        try:
+            vertices = annot.vertices or []
+        except (RuntimeError, ValueError, TypeError):
+            return strokes
+        for raw in vertices:
+            points: list[tuple[float, float]] = []
+            for p in raw:
+                q = fitz.Point(float(p[0]), float(p[1])) * to_view
+                points.append((float(q.x), float(q.y)))
+            if points:
+                strokes.append(points)
+        return strokes
+
+    def _ink_item(self, page_index: int, page, annot) -> dict | None:
+        if not is_ink_annot(annot):
+            return None
+        try:
+            border = annot.border or {}
+            width = float(border.get("width", 1.0) or 1.0)
+            colors = annot.colors or {}
+            stroke = colors.get("stroke") or (0.29, 0.29, 0.29)
+            opacity = float(annot.opacity if annot.opacity is not None else 1.0)
+        except (RuntimeError, ValueError, TypeError):
+            return None
+        strokes = self._ink_view_strokes(page, annot)
+        if not strokes:
+            return None
+        xs = [p[0] for stroke in strokes for p in stroke]
+        ys = [p[1] for stroke in strokes for p in stroke]
+        pad = max(0.5, width / 2.0)
+        return {
+            "id": int(annot.xref),
+            "pageIndex": int(page_index),
+            "kind": "ink",
+            "width": width,
+            "color": [float(stroke[0]), float(stroke[1]), float(stroke[2])] if len(stroke) >= 3 else [0.29, 0.29, 0.29],
+            "opacity": opacity,
+            "rect": [min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad],
+            "strokes": [[[float(x), float(y)] for x, y in stroke] for stroke in strokes],
+        }
+
+    def ink_items(self, page_index: int | None = None) -> list[dict]:
+        """이 앱이 그린 잉크(펜·연필·형광펜) 목록. page_index 가 None 이면 모든 쪽."""
+        indices = range(len(self._doc)) if page_index is None else [page_index]
+        items: list[dict] = []
+        for index in indices:
+            if not (0 <= index < len(self._doc)):
+                continue
+            page = self._doc[index]
+            for annot in PdfDocument._iter_page_annots(page):
+                item = self._ink_item(index, page, annot)
+                if item is not None:
+                    items.append(item)
+        return items
+
+    def delete_ink(self, page_index: int, xref: int) -> None:
+        """선택 도구로 고른 잉크 주석 하나를 지운다."""
+        if not (0 <= page_index < len(self._doc)):
+            raise ValueError("페이지 번호가 올바르지 않습니다.")
+        page = self._doc[page_index]
+        target = None
+        for annot in self._iter_page_annots(page):
+            if annot.xref == int(xref) and is_ink_annot(annot):
+                target = annot
+                break
+        if target is None:
+            raise ValueError("잉크 획을 찾지 못했습니다.")
+        self._record_undo_checkpoint()
+        page.delete_annot(target)
+        self._touch()
+
     def insert_blank_page_at(self, index: int) -> None:
         """Insert a blank page at *index* (same size as a nearby page, or A4 if empty)."""
         index = max(0, min(index, len(self._doc)))

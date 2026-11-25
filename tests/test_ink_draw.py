@@ -336,6 +336,28 @@ class InkEraseTests(unittest.TestCase):
             self.assertEqual(_ink_count(document), 2)
             document.close()
 
+    def test_ink_items_and_delete_ink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            document = _open(_make_pdf(tmp))
+            document.add_ink_strokes(0, [[(20, 20), (120, 20)]], rgb=(0, 0, 0), width=4)
+            document.add_ink_strokes(0, [[(20, 60), (120, 60)]], rgb=(1, 0, 0), width=6)
+            items = document.ink_items(0)
+            self.assertEqual(len(items), 2)
+            for item in items:
+                self.assertEqual(item["kind"], "ink")
+                self.assertIsInstance(item["id"], int)
+                self.assertEqual(len(item["rect"]), 4)
+                self.assertTrue(item["strokes"])
+            target = items[0]["id"]
+            document.delete_ink(0, target)
+            left = document.ink_items(0)
+            self.assertEqual(len(left), 1)
+            self.assertNotEqual(left[0]["id"], target)
+            self.assertEqual(_ink_count(document), 1)
+            self.assertTrue(document.undo())
+            self.assertEqual(len(document.ink_items(0)), 2)
+            document.close()
+
 
 if __name__ == "__main__":
     unittest.main()

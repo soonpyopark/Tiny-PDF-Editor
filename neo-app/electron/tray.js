@@ -61,7 +61,7 @@ export function createTrayController(options) {
       type: 'info',
       title: APP_NAME,
       message: APP_NAME,
-      detail: `버전: v${APP_VERSION}\n빌드: ${formatAppBuildStamp()}\n라이선스: MIT License`,
+      detail: `버전: v${APP_VERSION}\n빌드: ${formatAppBuildStamp()}\n라이선스: AGPL-3.0`,
       buttons: ['확인'],
       defaultId: 0,
       cancelId: 0,

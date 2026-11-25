@@ -15,14 +15,16 @@ import {
   snapAngle,
   withGeom,
 } from './shapeMath.js';
+import { pickInk } from './inkPick.js';
 import { CLOSED_KINDS, SELECT_TOOL, isPointKind } from './shapeSettings.js';
 
 /**
- * 쪽 이미지 위에 겹치는 도형 레이어.
+ * 쪽 이미지 위에 겹치는 도형·잉크 선택 레이어.
  *
  * - 도형 자체는 PDF 주석으로 쪽 그림에 이미 그려져 있다. 이 레이어는 그리는 중 미리보기, 선택 표시(손잡이),
  *   끌어서 옮기거나 크기를 바꿀 때의 윤곽, 텍스트 상자 글 입력창만 맡는다.
- * - 도구가 '선택'이면 클릭으로 도형을 고르고 끌어 옮긴다. 손잡이를 끌면 크기·꼭짓점을 바꾼다. 텍스트 상자는 두 번 눌러 글을 고친다.
+ * - 도구가 '선택'이면 클릭으로 도형 또는 펜·연필·형광펜 획을 고른다. 도형은 끌어 옮기고 손잡이로 크기를 바꾸며,
+ *   잉크 획은 고른 뒤 Delete 로 지운다. 텍스트 상자는 두 번 눌러 글을 고친다.
  * - 도구가 도형이면 끌어서(선·화살표·직사각형·타원형·텍스트 상자) 또는 점을 눌러서(다각형·클라우드·폴리라인) 그린다.
  *   점으로 그리는 도형은 Enter·두 번 누르기·(닫힌 도형은) 첫 점 누르기로 끝내고, Esc 로 취소, Backspace 로 마지막 점을 지운다.
  * - 좌표는 쪽 화면 좌표(pt, 회전 반영). 배율이 바뀌어도 제 자리에 있다.
@@ -93,7 +95,15 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
   const [hoverId, setHoverId] = useState(/** @type {number | null} */ (null));
   const isSelect = tool === SELECT_TOOL;
   const shapes = controller.shapes[pageIndex] || [];
-  const selected = controller.selected && controller.selected.pageIndex === pageIndex ? controller.selectedShape : null;
+  const inks = controller.inks?.[pageIndex] || [];
+  const selected =
+    controller.selected && controller.selected.pageIndex === pageIndex && controller.selected.kind !== 'ink'
+      ? controller.selectedShape
+      : null;
+  const selectedInk =
+    controller.selected && controller.selected.pageIndex === pageIndex && controller.selected.kind === 'ink'
+      ? controller.selectedInk
+      : null;
   const editing = controller.textEdit && controller.textEdit.pageIndex === pageIndex ? controller.textEdit : null;
 
   useLayoutEffect(() => {
@@ -175,12 +185,17 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
     const ppx = pxToPt();
     if (isSelect) {
       const hit = pickShape(shapes, point.x, point.y, PICK_PX * ppx);
-      if (!hit) {
-        controller.select(null);
+      if (hit) {
+        controller.select({ pageIndex, id: hit.id, kind: 'shape' });
+        startGesture(event, { type: 'move', start: point, shape: hit, moved: false });
         return;
       }
-      controller.select({ pageIndex, id: hit.id });
-      startGesture(event, { type: 'move', start: point, shape: hit, moved: false });
+      const inkHit = pickInk(inks, point.x, point.y, PICK_PX * ppx);
+      if (inkHit) {
+        controller.select({ pageIndex, id: inkHit.id, kind: 'ink' });
+        return;
+      }
+      controller.select(null);
       return;
     }
     if (isPointKind(tool) && !['line', 'arrow'].includes(tool)) {
@@ -208,7 +223,7 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
       const point = toPt(event);
       const hit = pickShape(shapes, point.x, point.y, PICK_PX * pxToPt());
       if (hit && hit.kind === 'text') {
-        controller.select({ pageIndex, id: hit.id });
+        controller.select({ pageIndex, id: hit.id, kind: 'shape' });
         controller.beginText({ pageIndex, id: hit.id, rect: hit.rect, params: hit.params, text: hit.params.text || '' });
       }
       return;
@@ -226,7 +241,8 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
       if (polyRef.current) setPoly((prev) => (prev ? { ...prev, hover: [point.x, point.y] } : prev));
       else if (isSelect) {
         const hit = pickShape(shapes, point.x, point.y, PICK_PX * pxToPt());
-        const next = hit ? hit.id : null;
+        const inkHit = hit ? null : pickInk(inks, point.x, point.y, PICK_PX * pxToPt());
+        const next = hit ? hit.id : inkHit ? inkHit.id : null;
         if (next !== hoverId) setHoverId(next);
       }
       return;
@@ -320,7 +336,10 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
   const px = unit; // 화면 px → pt
   const handles = isSelect && selected && !editing && !ghost ? shapeHandles(selected) : [];
   const bounds = isSelect && selected && !editing && !ghost ? shapeBounds(selected) : null;
+  const inkBounds =
+    isSelect && selectedInk && Array.isArray(selectedInk.rect) && selectedInk.rect.length === 4 ? selectedInk.rect : null;
   const pad = selected ? Math.max(0, selected.params.width || 0) / 2 + 3 * px : 0;
+  const inkPad = selectedInk ? Math.max(0, Number(selectedInk.width) || 0) / 2 + 3 * px : 0;
 
   let polyShape = null;
   if (poly && poly.points.length) {
@@ -372,6 +391,21 @@ export default function ShapeLayer({ pageIndex, ptW, ptH, tool, newParams, contr
             {CLOSED_KINDS.includes(tool) && poly.points.length >= 3 ? (
               <circle cx={poly.points[0][0]} cy={poly.points[0][1]} r={5 * px} className="fill-white stroke-app-accent" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
             ) : null}
+          </g>
+        ) : null}
+        {inkBounds ? (
+          <g data-ink-selection="1">
+            <rect
+              x={inkBounds[0] - inkPad}
+              y={inkBounds[1] - inkPad}
+              width={inkBounds[2] - inkBounds[0] + inkPad * 2}
+              height={inkBounds[3] - inkBounds[1] + inkPad * 2}
+              className="stroke-app-accent"
+              fill="none"
+              strokeWidth={1}
+              strokeDasharray="4 3"
+              vectorEffect="non-scaling-stroke"
+            />
           </g>
         ) : null}
         {bounds ? (
